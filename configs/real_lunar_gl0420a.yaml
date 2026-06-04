@@ -5,6 +5,8 @@ dtype: float64
 body:
   R_body: 1.0
   normalize_positions: true
+  physical_R_body: 1738.0
+  physical_R_body_units: km
   position_units: normalized
   potential_units: km^2/s^2
   acceleration_units: km/s^2
@@ -35,6 +37,9 @@ solver:
 loss:
   use_potential: true
   use_acceleration: true
+  normalize_targets: true
+  potential_scale: auto
+  acceleration_scale: auto
   lambda_potential: 0.2
   lambda_acceleration: 1.0
   lambda_l2: 1.0e-6
@@ -55,4 +60,3 @@ output:
   output_dir: outputs
   run_name: real_lunar_gl0420a
   save_plots: false
-

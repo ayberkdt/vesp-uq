@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import QProcess, Qt
-from PyQt6.QtGui import QAction, QFont, QTextCursor
+import yaml
+
+from PyQt6.QtCore import QSize, QProcess, Qt
+from PyQt6.QtGui import QAction, QFont, QPixmap, QTextCursor
 from PyQt6.QtWidgets import (
     QApplication,
     QAbstractItemView,
+    QComboBox,
     QFileDialog,
     QFrame,
     QGridLayout,
     QGroupBox,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -24,7 +29,9 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QPlainTextEdit,
+    QScrollArea,
     QSplitter,
+    QStyle,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -35,17 +42,31 @@ from PyQt6.QtWidgets import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SINGLE_CONFIG = PROJECT_ROOT / "experimental_vesp" / "configs" / "discrete_single_shell.yaml"
-DEFAULT_MULTI_CONFIG = PROJECT_ROOT / "experimental_vesp" / "configs" / "discrete_multishell.yaml"
+CONFIG_ROOT = PROJECT_ROOT / "configs"
+DEFAULT_SINGLE_CONFIG = CONFIG_ROOT / "discrete_single_shell.yaml"
+DEFAULT_MULTI_CONFIG = CONFIG_ROOT / "discrete_multishell.yaml"
+DEFAULT_ALTITUDE_CONFIG = CONFIG_ROOT / "altitude_ood.yaml"
+DEFAULT_REAL_CONFIG = CONFIG_ROOT / "real_lunar_gl0420a.yaml"
+DEFAULT_REAL_MULTI_CONFIG = CONFIG_ROOT / "real_lunar_gl0420a_multishell.yaml"
+DEFAULT_FEASIBILITY_CONFIG = CONFIG_ROOT / "feasibility_suite.yaml"
 DEFAULT_OUTPUTS = PROJECT_ROOT / "outputs"
+
+CONFIG_PRESETS = {
+    "Single Shell": DEFAULT_SINGLE_CONFIG,
+    "Multi Shell": DEFAULT_MULTI_CONFIG,
+    "Altitude OOD": DEFAULT_ALTITUDE_CONFIG,
+    "Real Lunar": DEFAULT_REAL_CONFIG,
+    "Real Lunar Multi": DEFAULT_REAL_MULTI_CONFIG,
+    "Feasibility Suite": DEFAULT_FEASIBILITY_CONFIG,
+}
 
 try:
     from .analysis import interpret_experiment, load_checkpoint_summary, make_markdown_report, write_markdown_report
-    from .advanced_analysis import make_advanced_report
+    from .advanced_analysis import make_advanced_report, write_analysis_pdf
 except ImportError:
     sys.path.insert(0, str(PROJECT_ROOT))
     from experimental_vesp.analysis import interpret_experiment, load_checkpoint_summary, make_markdown_report, write_markdown_report
-    from experimental_vesp.advanced_analysis import make_advanced_report
+    from experimental_vesp.advanced_analysis import make_advanced_report, write_analysis_pdf
 
 
 class VespWorkbench(QMainWindow):
@@ -56,6 +77,10 @@ class VespWorkbench(QMainWindow):
         self.process: QProcess | None = None
         self.checkpoint_paths: list[Path] = []
         self.current_report_markdown = ""
+        self.current_pdf_path: Path | None = None
+        self.current_assets_dir: Path | None = None
+        self.summary_labels: dict[str, QLabel] = {}
+        self.active_config: dict = {}
 
         self._build_menu()
         self._build_ui()
@@ -70,10 +95,14 @@ class VespWorkbench(QMainWindow):
         refresh = QAction("Refresh Checkpoints", self)
         refresh.triggered.connect(self._refresh_output_checkpoints)
 
+        load_root_configs = QAction("Root Config Presets", self)
+        load_root_configs.triggered.connect(lambda: self._load_config(DEFAULT_SINGLE_CONFIG))
+
         quit_action = QAction("Quit", self)
         quit_action.triggered.connect(self.close)
 
         file_menu = self.menuBar().addMenu("File")
+        file_menu.addAction(load_root_configs)
         file_menu.addAction(open_outputs)
         file_menu.addAction(refresh)
         file_menu.addSeparator()
@@ -98,239 +127,561 @@ class VespWorkbench(QMainWindow):
         header = QFrame()
         header.setObjectName("TopHeader")
         layout = QHBoxLayout(header)
-        layout.setContentsMargins(22, 16, 22, 14)
+        layout.setContentsMargins(24, 18, 24, 16)
         layout.setSpacing(18)
 
         title_block = QVBoxLayout()
-        title_block.setSpacing(2)
+        title_block.setSpacing(4)
         title = QLabel("MaxEnt-VESP Workbench")
         title.setObjectName("HeaderTitle")
-        subtitle = QLabel("Discrete equivalent-source experiments")
+        subtitle = QLabel("Stage 1-2 deterministic feasibility")
         subtitle.setObjectName("HeaderSubtitle")
         title_block.addWidget(title)
         title_block.addWidget(subtitle)
 
-        status = QLabel("Ridge: augmented least-squares  |  Analysis: prediction-level diagnostics")
-        status.setObjectName("HeaderStatus")
-        status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        status_row = QHBoxLayout()
+        status_row.setSpacing(8)
+        for text in ("Unit-safe CSV", "Target scales", "Run manifest"):
+            chip = QLabel(text)
+            chip.setObjectName("HeaderChip")
+            chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            status_row.addWidget(chip)
+        status_row.addStretch(1)
 
         layout.addLayout(title_block, stretch=1)
-        layout.addWidget(status, stretch=1)
+        layout.addLayout(status_row, stretch=0)
         return header
+
+    def _button(self, text: str, icon: QStyle.StandardPixmap) -> QPushButton:
+        button = QPushButton(text)
+        button.setIcon(self.style().standardIcon(icon))
+        button.setIconSize(QSize(16, 16))
+        return button
+
+    def _summary_card(self, key: str, title: str) -> QFrame:
+        card = QFrame()
+        card.setObjectName("SummaryCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(5)
+        label = QLabel(title)
+        label.setObjectName("SummaryTitle")
+        value = QLabel("-")
+        value.setObjectName("SummaryValue")
+        value.setWordWrap(True)
+        value.setMinimumWidth(140)
+        self.summary_labels[key] = value
+        layout.addWidget(label)
+        layout.addWidget(value)
+        return card
+
+    def _load_selected_preset(self, name: str) -> None:
+        path = CONFIG_PRESETS.get(name)
+        if path is not None and path != Path(self.config_path.text()):
+            self._load_config(path)
+
+    def _read_editor_config(self) -> dict:
+        text = self.config_editor.toPlainText() if hasattr(self, "config_editor") else ""
+        try:
+            loaded = yaml.safe_load(text) if text.strip() else {}
+        except yaml.YAMLError:
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+    def _refresh_config_summary_from_editor(self) -> None:
+        cfg = self._read_editor_config()
+        self.active_config = cfg
+        if not self.summary_labels:
+            return
+
+        if self._is_feasibility_config(cfg):
+            base = cfg.get("base", {})
+            feasibility = cfg.get("feasibility", {})
+            self.summary_labels["model"].setText("suite")
+            self.summary_labels["data"].setText("synthetic scenarios")
+            self.summary_labels["units"].setText(str(base.get("dtype", "float64")))
+            self.summary_labels["scaling"].setText("per scenario")
+            self.summary_labels["output"].setText(str(base.get("output", {}).get("output_dir", "outputs/feasibility")))
+            self.summary_labels["output"].setToolTip(", ".join(sorted(feasibility.keys())))
+            return
+
+        model = cfg.get("model", {})
+        data = cfg.get("data", {})
+        body = cfg.get("body", {})
+        loss = cfg.get("loss", {})
+        output = cfg.get("output", {})
+
+        model_type = str(model.get("type", "-"))
+        if model_type == "multishell":
+            shells = model.get("shell_alphas", [])
+            counts = model.get("n_sources_per_shell", [])
+            model_text = f"multishell / {len(shells)} shells / {sum(counts) if isinstance(counts, list) else counts} src"
+        else:
+            model_text = f"{model_type} / alpha {model.get('shell_alpha', '-')} / {model.get('n_source', '-')} src"
+
+        data_type = str(data.get("type", "synthetic"))
+        data_path = data.get("path")
+        data_text = data_type if not data_path else Path(str(data_path)).name
+
+        position_units = body.get("position_units", "normalized")
+        normalize_positions = body.get("normalize_positions", True)
+        r_body = body.get("R_body", 1.0)
+        units_text = f"R={r_body}, {'normalized' if normalize_positions else position_units}"
+
+        if bool(loss.get("normalize_targets", False)):
+            scale_text = f"auto: U={loss.get('potential_scale', 'auto')}, a={loss.get('acceleration_scale', 'auto')}"
+        else:
+            scale_text = "off"
+
+        run_name = output.get("run_name", "vesp_run")
+        output_dir = output.get("output_dir", "outputs")
+        self.summary_labels["model"].setText(model_text)
+        self.summary_labels["data"].setText(data_text)
+        self.summary_labels["units"].setText(units_text)
+        self.summary_labels["scaling"].setText(scale_text)
+        self.summary_labels["output"].setText(f"{output_dir}/{run_name}")
+
+    def _is_feasibility_config(self, cfg: dict | None = None) -> bool:
+        cfg = cfg if cfg is not None else self.active_config
+        return isinstance(cfg, dict) and "feasibility" in cfg and "model" not in cfg
 
     def _build_run_tab(self) -> QWidget:
         root = QWidget()
         layout = QVBoxLayout(root)
+        layout.setContentsMargins(18, 16, 18, 18)
+        layout.setSpacing(14)
 
         controls = QGroupBox("Experiment")
         grid = QGridLayout(controls)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(10)
+
+        self.preset_combo = QComboBox()
+        for name in CONFIG_PRESETS:
+            self.preset_combo.addItem(name)
+        self.preset_combo.currentTextChanged.connect(self._load_selected_preset)
 
         self.config_path = QLineEdit(str(DEFAULT_SINGLE_CONFIG))
-        browse_config = QPushButton("Browse")
+        browse_config = self._button("Browse", QStyle.StandardPixmap.SP_DialogOpenButton)
         browse_config.clicked.connect(self._browse_config)
 
-        load_single = QPushButton("Single Shell")
-        load_single.clicked.connect(lambda: self._load_config(DEFAULT_SINGLE_CONFIG))
-        load_multi = QPushButton("Multi Shell")
-        load_multi.clicked.connect(lambda: self._load_config(DEFAULT_MULTI_CONFIG))
-        save_config = QPushButton("Save Config")
+        save_config = self._button("Save", QStyle.StandardPixmap.SP_DialogSaveButton)
         save_config.clicked.connect(self._save_config)
 
-        run_discrete = QPushButton("Run Discrete")
-        run_discrete.clicked.connect(lambda: self._run_training("experimental_vesp.train_discrete"))
-        run_multi = QPushButton("Run Multi-Shell")
-        run_multi.clicked.connect(lambda: self._run_training("experimental_vesp.train_multishell"))
-        stop = QPushButton("Stop")
+        run_selected = self._button("Run", QStyle.StandardPixmap.SP_MediaPlay)
+        run_selected.setObjectName("PrimaryButton")
+        run_selected.clicked.connect(self._run_selected_config)
+        stop = self._button("Stop", QStyle.StandardPixmap.SP_MediaStop)
+        stop.setObjectName("DangerButton")
         stop.clicked.connect(self._stop_process)
 
-        grid.addWidget(QLabel("Config"), 0, 0)
-        grid.addWidget(self.config_path, 0, 1, 1, 5)
-        grid.addWidget(browse_config, 0, 6)
-        grid.addWidget(load_single, 1, 1)
-        grid.addWidget(load_multi, 1, 2)
-        grid.addWidget(save_config, 1, 3)
-        grid.addWidget(run_discrete, 1, 4)
-        grid.addWidget(run_multi, 1, 5)
-        grid.addWidget(stop, 1, 6)
+        preset_label = QLabel("Preset")
+        preset_label.setObjectName("FieldLabel")
+        config_label = QLabel("Config")
+        config_label.setObjectName("FieldLabel")
+        grid.addWidget(preset_label, 0, 0)
+        grid.addWidget(self.preset_combo, 0, 1, 1, 2)
+        grid.addWidget(save_config, 0, 3)
+        grid.addWidget(run_selected, 0, 4)
+        grid.addWidget(stop, 0, 5)
+        grid.addWidget(config_label, 1, 0)
+        grid.addWidget(self.config_path, 1, 1, 1, 4)
+        grid.addWidget(browse_config, 1, 5)
+
+        summary = QFrame()
+        summary.setObjectName("SummaryStrip")
+        summary_grid = QGridLayout(summary)
+        summary_grid.setContentsMargins(0, 0, 0, 0)
+        summary_grid.setHorizontalSpacing(12)
+        summary_grid.setVerticalSpacing(12)
+        for idx, (key, title) in enumerate(
+            [
+                ("model", "Model"),
+                ("data", "Data"),
+                ("units", "Units"),
+                ("scaling", "Target Scaling"),
+                ("output", "Output"),
+            ]
+        ):
+            card = self._summary_card(key, title)
+            summary_grid.addWidget(card, 0, idx)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.config_editor = QPlainTextEdit()
         self.config_editor.setFont(QFont("Consolas", 10))
-        self.config_editor.setPlaceholderText("YAML config will appear here.")
+        self.config_editor.setPlaceholderText("YAML config")
+        self.config_editor.textChanged.connect(self._refresh_config_summary_from_editor)
 
         self.run_log = QPlainTextEdit()
         self.run_log.setReadOnly(True)
         self.run_log.setFont(QFont("Consolas", 10))
-        self.run_log.setPlaceholderText("Training output will stream here.")
+        self.run_log.setPlaceholderText("Run log")
 
         splitter.addWidget(self.config_editor)
         splitter.addWidget(self.run_log)
         splitter.setSizes([560, 700])
 
         layout.addWidget(controls)
+        layout.addWidget(summary)
         layout.addWidget(splitter, stretch=1)
         return root
 
     def _build_analysis_tab(self) -> QWidget:
         root = QWidget()
         layout = QVBoxLayout(root)
+        layout.setContentsMargins(18, 16, 18, 18)
+        layout.setSpacing(14)
 
         controls = QGroupBox("Checkpoints")
         row = QHBoxLayout(controls)
-        add_files = QPushButton("Add Files")
+        add_files = self._button("Add Files", QStyle.StandardPixmap.SP_FileDialogNewFolder)
         add_files.clicked.connect(self._browse_checkpoints)
-        add_dir = QPushButton("Add Folder")
+        add_dir = self._button("Add Folder", QStyle.StandardPixmap.SP_DirOpenIcon)
         add_dir.clicked.connect(lambda: self._choose_checkpoint_dir())
-        remove = QPushButton("Remove Selected")
+        select_all = self._button("Select All", QStyle.StandardPixmap.SP_DialogApplyButton)
+        select_all.clicked.connect(self._select_all_checkpoints)
+        remove = self._button("Remove", QStyle.StandardPixmap.SP_DialogDiscardButton)
         remove.clicked.connect(self._remove_selected_checkpoints)
-        refresh = QPushButton("Refresh Outputs")
+        refresh = self._button("Refresh", QStyle.StandardPixmap.SP_BrowserReload)
         refresh.clicked.connect(self._refresh_output_checkpoints)
-        analyze = QPushButton("Generate Analysis")
+        analyze = self._button("Analyze", QStyle.StandardPixmap.SP_FileDialogDetailedView)
+        analyze.setObjectName("PrimaryButton")
         analyze.clicked.connect(self._generate_analysis)
-        deep_analyze = QPushButton("Deep Analysis")
+        deep_analyze = self._button("Deep Analysis", QStyle.StandardPixmap.SP_ComputerIcon)
         deep_analyze.clicked.connect(self._generate_deep_analysis)
-        save = QPushButton("Save Report")
+        pdf = self._button("PDF", QStyle.StandardPixmap.SP_FileIcon)
+        pdf.clicked.connect(self._export_pdf)
+        save = self._button("Save Report", QStyle.StandardPixmap.SP_DialogSaveButton)
         save.clicked.connect(self._save_report)
 
-        for widget in (add_files, add_dir, remove, refresh, analyze, deep_analyze, save):
+        for widget in (add_files, add_dir, select_all, remove, refresh, analyze, deep_analyze, pdf, save):
             row.addWidget(widget)
         row.addStretch(1)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.checkpoint_list = QListWidget()
+        self.checkpoint_list.setObjectName("CheckpointList")
         self.checkpoint_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.checkpoint_list.itemSelectionChanged.connect(self._update_results_table)
 
+        self.analysis_tabs = QTabWidget()
+
         self.report_view = QTextBrowser()
         self.report_view.setOpenExternalLinks(True)
-        self.report_view.setPlaceholderText("Analysis report will appear here.")
+        self.report_view.setPlaceholderText("Analysis")
+
+        self.analysis_table = self._make_analysis_table()
+
+        plot_root = QWidget()
+        plot_layout = QHBoxLayout(plot_root)
+        plot_layout.setContentsMargins(0, 0, 0, 0)
+        plot_layout.setSpacing(10)
+        self.plot_list = QListWidget()
+        self.plot_list.setObjectName("PlotList")
+        self.plot_list.itemSelectionChanged.connect(self._preview_selected_plot)
+        self.plot_preview = QLabel("Generate Deep Analysis to see plots.")
+        self.plot_preview.setObjectName("PlotPreview")
+        self.plot_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.plot_preview.setMinimumSize(520, 360)
+        self.plot_preview.setWordWrap(True)
+        plot_scroll = QScrollArea()
+        plot_scroll.setWidgetResizable(True)
+        plot_scroll.setWidget(self.plot_preview)
+        plot_layout.addWidget(self.plot_list, stretch=1)
+        plot_layout.addWidget(plot_scroll, stretch=3)
+
+        self.analysis_tabs.addTab(self.report_view, "Report")
+        self.analysis_tabs.addTab(self.analysis_table, "Table")
+        self.analysis_tabs.addTab(plot_root, "Plots")
+
+        self.pdf_status = QLabel("PDF: -")
+        self.pdf_status.setObjectName("PdfStatus")
 
         splitter.addWidget(self.checkpoint_list)
-        splitter.addWidget(self.report_view)
+        splitter.addWidget(self.analysis_tabs)
         splitter.setSizes([420, 880])
 
         layout.addWidget(controls)
         layout.addWidget(splitter, stretch=1)
+        layout.addWidget(self.pdf_status)
         return root
 
     def _build_results_tab(self) -> QWidget:
         root = QWidget()
         layout = QVBoxLayout(root)
-        self.results_table = QTableWidget(0, 8)
+        layout.setContentsMargins(18, 16, 18, 18)
+        layout.setSpacing(12)
+
+        toolbar = QFrame()
+        toolbar.setObjectName("InlineToolbar")
+        row = QHBoxLayout(toolbar)
+        row.setContentsMargins(12, 10, 12, 10)
+        row.setSpacing(8)
+        refresh = self._button("Refresh", QStyle.StandardPixmap.SP_BrowserReload)
+        refresh.clicked.connect(self._refresh_output_checkpoints)
+        analyze = self._button("Analyze Selected", QStyle.StandardPixmap.SP_FileDialogDetailedView)
+        analyze.setObjectName("PrimaryButton")
+        analyze.clicked.connect(self._generate_analysis)
+        row.addWidget(refresh)
+        row.addWidget(analyze)
+        row.addStretch(1)
+
+        self.results_table = QTableWidget(0, 12)
         self.results_table.setHorizontalHeaderLabels(
             [
                 "Run",
-                "Shells",
-                "Sources",
+                "Model",
+                "Data",
+                "Target Norm",
+                "U Scale",
+                "A Scale",
                 "Acc RMSE",
-                "Pot RMSE",
-                "Low/High",
-                "Acc Status",
-                "Pot Status",
+                "Rel Acc",
+                "Angle p95",
+                "Top 5%",
+                "Manifest",
+                "Path",
             ]
         )
         self.results_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.results_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.results_table.horizontalHeader().setStretchLastSection(True)
+        self.results_table.setAlternatingRowColors(True)
+        header = self.results_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(11, QHeaderView.ResizeMode.Stretch)
+        self.results_table.verticalHeader().setVisible(False)
+        layout.addWidget(toolbar)
         layout.addWidget(self.results_table)
         return root
+
+    def _make_analysis_table(self) -> QTableWidget:
+        table = QTableWidget(0, 12)
+        table.setHorizontalHeaderLabels(
+            [
+                "Run",
+                "Model",
+                "Data",
+                "Target Norm",
+                "U Scale",
+                "A Scale",
+                "Acc RMSE",
+                "Rel Acc",
+                "Angle p95",
+                "Top 5%",
+                "Manifest",
+                "Path",
+            ]
+        )
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setAlternatingRowColors(True)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(11, QHeaderView.ResizeMode.Stretch)
+        table.verticalHeader().setVisible(False)
+        return table
 
     def _apply_style(self) -> None:
         self.setStyleSheet(
             """
             QMainWindow {
-                background: #eef2f5;
+                background: #f3f6f8;
             }
             QMenuBar {
-                background: #101923;
-                color: #dfe8ef;
-                padding: 4px 8px;
+                background: #121820;
+                color: #edf3f6;
+                padding: 5px 10px;
             }
             QMenuBar::item {
                 background: transparent;
-                padding: 5px 10px;
+                padding: 6px 11px;
                 border-radius: 4px;
             }
             QMenuBar::item:selected {
-                background: #223242;
+                background: #24313d;
             }
             QMenu {
                 background: #ffffff;
-                color: #17212b;
-                border: 1px solid #cbd3dc;
+                color: #141c24;
+                border: 1px solid #d6dee5;
             }
             QMenu::item:selected {
-                background: #d7e8ef;
+                background: #e5f0ed;
             }
             #TopHeader {
-                background: #111a24;
-                border-bottom: 1px solid #273646;
+                background: #121820;
+                border-bottom: 1px solid #263240;
             }
             #HeaderTitle {
-                color: #f5f9fc;
-                font-size: 20px;
+                color: #f7fbfc;
+                font-size: 22px;
                 font-weight: 700;
             }
             #HeaderSubtitle {
-                color: #9db4c5;
+                color: #aab8c2;
                 font-size: 12px;
             }
-            #HeaderStatus {
-                color: #c7d7e2;
+            #HeaderChip {
+                color: #dce8e4;
+                background: #1d2a32;
+                border: 1px solid #354752;
+                border-radius: 8px;
+                padding: 6px 10px;
                 font-size: 12px;
             }
             QGroupBox {
                 font-weight: 600;
-                border: 1px solid #d2d8df;
-                border-radius: 6px;
+                border: 1px solid #d8e0e6;
+                border-radius: 8px;
                 margin-top: 12px;
-                padding: 10px;
+                padding: 12px;
                 background: #ffffff;
+                color: #17212b;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
                 left: 10px;
-                padding: 0 4px;
+                padding: 0 5px;
+                color: #2b3742;
             }
             QPushButton {
-                background: #1f5f76;
+                background: #1c6674;
                 color: white;
                 border: 0;
-                border-radius: 5px;
-                padding: 7px 11px;
+                border-radius: 7px;
+                padding: 8px 12px;
                 font-weight: 600;
             }
             QPushButton:hover {
-                background: #287892;
+                background: #247b8b;
             }
             QPushButton:pressed {
-                background: #174859;
+                background: #15505c;
             }
-            QLineEdit, QPlainTextEdit, QTextBrowser, QListWidget, QTableWidget {
+            #PrimaryButton {
+                background: #0f766e;
+            }
+            #PrimaryButton:hover {
+                background: #12867d;
+            }
+            #DangerButton {
+                background: #9f3a45;
+            }
+            #DangerButton:hover {
+                background: #b64955;
+            }
+            QToolButton {
+                background: #ffffff;
+                border: 1px solid #d8e0e6;
+                border-radius: 7px;
+                padding: 7px;
+            }
+            QLineEdit, QComboBox, QPlainTextEdit, QTextBrowser, QListWidget, QTableWidget {
                 background: #ffffff;
                 color: #17212b;
-                border: 1px solid #cbd3dc;
-                border-radius: 5px;
-                selection-background-color: #c7e5d9;
+                border: 1px solid #d1dbe3;
+                border-radius: 7px;
+                selection-background-color: #cfe8e2;
+                padding: 6px;
+            }
+            QPlainTextEdit, QTextBrowser, QListWidget, QTableWidget {
+                padding: 0px;
+            }
+            QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus, QTextBrowser:focus, QListWidget:focus, QTableWidget:focus {
+                border: 1px solid #1c6674;
+            }
+            QComboBox::drop-down {
+                border: 0;
+                width: 24px;
             }
             QTabWidget::pane {
                 border: 0;
-                background: #eef2f5;
+                background: #f3f6f8;
             }
             QTabBar::tab {
-                background: #202d3a;
-                color: #b9c9d5;
-                padding: 9px 18px;
-                margin-right: 1px;
+                background: #1c2731;
+                color: #b9c7cf;
+                padding: 10px 18px;
+                margin-right: 2px;
+                border-top-left-radius: 7px;
+                border-top-right-radius: 7px;
             }
             QTabBar::tab:selected {
                 background: #ffffff;
-                color: #102132;
+                color: #141c24;
                 font-weight: 600;
             }
             QTabBar::tab:hover:!selected {
-                background: #2a3a4a;
+                background: #2a3845;
                 color: #ffffff;
+            }
+            #SummaryStrip {
+                background: transparent;
+            }
+            #SummaryCard {
+                background: #ffffff;
+                border: 1px solid #d8e0e6;
+                border-radius: 8px;
+            }
+            #SummaryTitle {
+                color: #6d7a86;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            #SummaryValue {
+                color: #17212b;
+                font-size: 13px;
+                font-weight: 700;
+            }
+            #FieldLabel {
+                color: #4e5d68;
+                font-weight: 600;
+            }
+            #InlineToolbar {
+                background: #ffffff;
+                border: 1px solid #d8e0e6;
+                border-radius: 8px;
+            }
+            #CheckpointList::item {
+                padding: 8px;
+            }
+            #CheckpointList::item:selected {
+                background: #dcefeb;
+                color: #14242a;
+            }
+            #PlotList::item {
+                padding: 8px;
+            }
+            #PlotList::item:selected {
+                background: #dcefeb;
+                color: #14242a;
+            }
+            #PlotPreview {
+                background: #ffffff;
+                color: #66737c;
+                border: 1px solid #d8e0e6;
+                border-radius: 8px;
+                padding: 14px;
+            }
+            #PdfStatus {
+                color: #3c4a55;
+                background: #ffffff;
+                border: 1px solid #d8e0e6;
+                border-radius: 8px;
+                padding: 9px 12px;
+                font-weight: 600;
+            }
+            QHeaderView::section {
+                background: #e9eef2;
+                color: #32424f;
+                padding: 7px;
+                border: 0;
+                border-right: 1px solid #d4dde5;
+                font-weight: 700;
+            }
+            QTableWidget {
+                gridline-color: #e1e7ec;
+                alternate-background-color: #f8fafb;
             }
             """
         )
@@ -339,7 +690,7 @@ class VespWorkbench(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Select Config",
-            str(PROJECT_ROOT / "experimental_vesp" / "configs"),
+            str(CONFIG_ROOT),
             "YAML files (*.yaml *.yml);;All files (*)",
         )
         if path:
@@ -352,7 +703,14 @@ class VespWorkbench(QMainWindow):
             QMessageBox.critical(self, "Config Error", str(exc))
             return
         self.config_path.setText(str(path))
+        for idx, preset_path in enumerate(CONFIG_PRESETS.values()):
+            if preset_path.resolve() == path.resolve():
+                self.preset_combo.blockSignals(True)
+                self.preset_combo.setCurrentIndex(idx)
+                self.preset_combo.blockSignals(False)
+                break
         self.config_editor.setPlainText(text)
+        self._refresh_config_summary_from_editor()
 
     def _save_config(self) -> None:
         path = Path(self.config_path.text())
@@ -362,6 +720,11 @@ class VespWorkbench(QMainWindow):
             QMessageBox.critical(self, "Save Error", str(exc))
             return
         self._append_log(f"Saved config: {path}\n")
+
+    def _run_selected_config(self) -> None:
+        cfg = self._read_editor_config()
+        module = "experimental_vesp.feasibility" if self._is_feasibility_config(cfg) else "experimental_vesp.train"
+        self._run_training(module)
 
     def _run_training(self, module: str) -> None:
         if self.process is not None and self.process.state() != QProcess.ProcessState.NotRunning:
@@ -426,7 +789,9 @@ class VespWorkbench(QMainWindow):
     def _add_checkpoints_from_dir(self, path: Path) -> None:
         if not path.exists():
             return
-        self._add_checkpoint_paths(sorted(path.glob("*.pt")))
+        candidates = sorted(path.glob("*.pt"))
+        candidates.extend(sorted(path.glob("*/sigma.pt")))
+        self._add_checkpoint_paths(candidates)
 
     def _add_checkpoint_paths(self, paths) -> None:
         existing = {str(path.resolve()) for path in self.checkpoint_paths}
@@ -440,13 +805,13 @@ class VespWorkbench(QMainWindow):
                 continue
             self.checkpoint_paths.append(resolved)
             existing.add(str(resolved))
-            item = QListWidgetItem(resolved.name)
+            display = resolved.name if resolved.parent == DEFAULT_OUTPUTS.resolve() else f"{resolved.parent.name}/{resolved.name}"
+            item = QListWidgetItem(display)
             item.setToolTip(str(resolved))
             item.setData(Qt.ItemDataRole.UserRole, str(resolved))
             self.checkpoint_list.addItem(item)
             changed = True
         if changed:
-            self._select_all_checkpoints()
             self._update_results_table()
 
     def _select_all_checkpoints(self) -> None:
@@ -455,8 +820,6 @@ class VespWorkbench(QMainWindow):
 
     def _selected_checkpoint_paths(self) -> list[Path]:
         selected = self.checkpoint_list.selectedItems()
-        if not selected:
-            selected = [self.checkpoint_list.item(i) for i in range(self.checkpoint_list.count())]
         return [Path(item.data(Qt.ItemDataRole.UserRole)) for item in selected]
 
     def _remove_selected_checkpoints(self) -> None:
@@ -475,12 +838,23 @@ class VespWorkbench(QMainWindow):
             return
         try:
             report = make_markdown_report(paths)
+            assets_dir = DEFAULT_OUTPUTS / "ui_analysis_assets"
+            pdf_path = self._write_auto_pdf(
+                paths,
+                markdown=report,
+                assets_dir=assets_dir,
+                output_name="ui_analysis_review.pdf",
+            )
         except Exception as exc:
             QMessageBox.critical(self, "Analysis Error", str(exc))
             return
         self.current_report_markdown = report
+        self.current_pdf_path = pdf_path
+        self.current_assets_dir = assets_dir
         self.report_view.setMarkdown(report)
+        self._refresh_plot_gallery(assets_dir)
         self._update_results_table()
+        self.analysis_tabs.setCurrentWidget(self.report_view)
 
     def _generate_deep_analysis(self) -> None:
         paths = self._selected_checkpoint_paths()
@@ -490,12 +864,97 @@ class VespWorkbench(QMainWindow):
         try:
             assets_dir = DEFAULT_OUTPUTS / "ui_advanced_analysis_assets"
             report = make_advanced_report(paths, output_dir=assets_dir, device="cpu")
+            pdf_path = self._write_auto_pdf(
+                paths,
+                markdown=report,
+                assets_dir=assets_dir,
+                output_name="ui_advanced_analysis_review.pdf",
+            )
         except Exception as exc:
             QMessageBox.critical(self, "Deep Analysis Error", str(exc))
             return
         self.current_report_markdown = report
+        self.current_pdf_path = pdf_path
+        self.current_assets_dir = assets_dir
         self.report_view.setMarkdown(report)
+        self._refresh_plot_gallery(assets_dir)
         self._update_results_table()
+        self.analysis_tabs.setCurrentWidget(self.report_view)
+
+    def _write_auto_pdf(
+        self,
+        paths: list[Path],
+        *,
+        markdown: str,
+        assets_dir: Path,
+        output_name: str,
+    ) -> Path:
+        pdf_path = DEFAULT_OUTPUTS / output_name
+        pdf = write_analysis_pdf(
+            paths,
+            pdf_path,
+            output_dir=assets_dir,
+            markdown=markdown,
+            device="cpu",
+            include_deep=False,
+        )
+        self.pdf_status.setText(f"PDF: {pdf}")
+        self.pdf_status.setToolTip(str(pdf))
+        return pdf
+
+    def _export_pdf(self) -> None:
+        paths = self._selected_checkpoint_paths()
+        if not paths:
+            QMessageBox.information(self, "No Checkpoints", "Add or select at least one checkpoint.")
+            return
+        try:
+            markdown = self.current_report_markdown or make_markdown_report(paths)
+            assets_dir = self.current_assets_dir or (DEFAULT_OUTPUTS / "ui_analysis_assets")
+            pdf = self._write_auto_pdf(
+                paths,
+                markdown=markdown,
+                assets_dir=assets_dir,
+                output_name="ui_analysis_review.pdf",
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "PDF Error", str(exc))
+            return
+        self.current_pdf_path = pdf
+        QMessageBox.information(self, "PDF Ready", f"Saved PDF:\n{pdf}")
+
+    def _refresh_plot_gallery(self, assets_dir: Path) -> None:
+        self.plot_list.clear()
+        paths = sorted(Path(assets_dir).glob("*.png")) if Path(assets_dir).exists() else []
+        for path in paths:
+            item = QListWidgetItem(path.name)
+            item.setToolTip(str(path))
+            item.setData(Qt.ItemDataRole.UserRole, str(path))
+            self.plot_list.addItem(item)
+        if paths:
+            self.plot_list.item(0).setSelected(True)
+            self.analysis_tabs.setTabText(2, f"Plots ({len(paths)})")
+        else:
+            self.plot_preview.setPixmap(QPixmap())
+            self.plot_preview.setText("No plots for this analysis. Run Deep Analysis to generate prediction-level plots.")
+            self.analysis_tabs.setTabText(2, "Plots")
+
+    def _preview_selected_plot(self) -> None:
+        items = self.plot_list.selectedItems()
+        if not items:
+            return
+        path = Path(items[0].data(Qt.ItemDataRole.UserRole))
+        pixmap = QPixmap(str(path))
+        if pixmap.isNull():
+            self.plot_preview.setText(f"Could not load plot:\n{path}")
+            return
+        target = self.plot_preview.size()
+        scaled = pixmap.scaled(
+            target,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.plot_preview.setText("")
+        self.plot_preview.setPixmap(scaled)
 
     def _save_report(self) -> None:
         paths = self._selected_checkpoint_paths()
@@ -525,30 +984,100 @@ class VespWorkbench(QMainWindow):
         rows = []
         for path in paths:
             try:
-                rows.append(interpret_experiment(load_checkpoint_summary(path)))
+                summary = load_checkpoint_summary(path)
+                interpreted = interpret_experiment(summary)
+                rows.append(self._table_row_payload(path, summary, interpreted))
             except Exception:
                 continue
 
-        self.results_table.setRowCount(len(rows))
+        if hasattr(self, "results_table"):
+            self._populate_run_table(self.results_table, rows)
+        if hasattr(self, "analysis_table"):
+            self._populate_run_table(self.analysis_table, rows)
+
+    def _populate_run_table(self, table: QTableWidget, rows: list[dict[str, str]]) -> None:
+        table.setRowCount(len(rows))
         for row_idx, row in enumerate(rows):
-            shells = ", ".join(f"{v:.2f}" for v in row["shell_radii"]) or "-"
-            ratio = row["low_high_altitude_ratio"]
             values = [
                 row["name"],
-                shells,
-                str(row["n_sources"]),
-                f"{row['acceleration_rmse']:.6e}",
-                f"{row['potential_rmse']:.6e}",
-                "-" if ratio is None else f"{ratio:.2f}",
-                row["acceleration_status"],
-                row["potential_status"],
+                row["model"],
+                row["data"],
+                row["target_norm"],
+                row["potential_scale"],
+                row["acceleration_scale"],
+                row["acceleration_rmse"],
+                row["relative_acceleration_rmse"],
+                row["angle_deg_p95"],
+                row["top_5pct_source_contribution"],
+                row["manifest"],
+                row["path"],
             ]
             for col_idx, value in enumerate(values):
                 item = QTableWidgetItem(value)
-                if col_idx >= 2:
+                if col_idx in {4, 5, 6, 7, 8, 9}:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                self.results_table.setItem(row_idx, col_idx, item)
-        self.results_table.resizeColumnsToContents()
+                table.setItem(row_idx, col_idx, item)
+        table.resizeRowsToContents()
+
+    def _run_dir_for_checkpoint(self, checkpoint_path: Path, config: dict) -> Path:
+        if checkpoint_path.name == "sigma.pt":
+            return checkpoint_path.parent
+        output = config.get("output", {}) if isinstance(config, dict) else {}
+        output_dir = Path(str(output.get("output_dir", DEFAULT_OUTPUTS)))
+        if not output_dir.is_absolute():
+            output_dir = PROJECT_ROOT / output_dir
+        run_name = str(output.get("run_name", checkpoint_path.stem))
+        return output_dir / run_name
+
+    def _load_target_scales_for_run(self, run_dir: Path) -> dict:
+        path = run_dir / "target_scales.json"
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _table_row_payload(self, path: Path, summary: dict, interpreted: dict) -> dict[str, str]:
+        config = summary.get("config", {})
+        metrics = summary.get("metrics", {})
+        diagnostics = metrics.get("diagnostics") or {}
+        model_cfg = config.get("model", {}) if isinstance(config, dict) else {}
+        data_cfg = config.get("data", {}) if isinstance(config, dict) else {}
+        loss_cfg = config.get("loss", {}) if isinstance(config, dict) else {}
+        run_dir = self._run_dir_for_checkpoint(path, config)
+        target_scales = self._load_target_scales_for_run(run_dir)
+
+        shells = ", ".join(f"{v:.2f}" for v in interpreted["shell_radii"]) or "-"
+        model_type = model_cfg.get("type", "-")
+        model_text = f"{model_type} [{shells}] / {interpreted['n_sources']}"
+        data_path = data_cfg.get("path")
+        data_text = Path(str(data_path)).name if data_path else str(data_cfg.get("type", "synthetic"))
+        target_norm = "on" if bool(loss_cfg.get("normalize_targets", False)) else "off"
+        manifest_status = "ok" if (run_dir / "run_manifest.json").exists() else "-"
+
+        return {
+            "name": interpreted["name"],
+            "model": model_text,
+            "data": data_text,
+            "target_norm": target_norm,
+            "potential_scale": self._format_metric(target_scales.get("potential_scale", loss_cfg.get("resolved_potential_scale"))),
+            "acceleration_scale": self._format_metric(target_scales.get("acceleration_scale", loss_cfg.get("resolved_acceleration_scale"))),
+            "acceleration_rmse": self._format_metric(metrics.get("acceleration_rmse")),
+            "relative_acceleration_rmse": self._format_metric(metrics.get("relative_acceleration_rmse")),
+            "angle_deg_p95": self._format_metric(metrics.get("angle_deg_p95")),
+            "top_5pct_source_contribution": self._format_metric(diagnostics.get("top_5pct_source_contribution")),
+            "manifest": manifest_status,
+            "path": str(path),
+        }
+
+    def _format_metric(self, value) -> str:
+        if value is None:
+            return "-"
+        try:
+            return f"{float(value):.3e}"
+        except (TypeError, ValueError):
+            return str(value)
 
 
 def main() -> None:

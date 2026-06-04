@@ -39,8 +39,9 @@ solver:
 loss:
   use_potential: true
   use_acceleration: true
-  potential_weight: 0.2
-  acceleration_weight: 1.0
+  normalize_targets: false
+  potential_scale: auto
+  acceleration_scale: auto
   lambda_potential: 0.2
   lambda_acceleration: 1.0
   lambda_l2: 1.0e-7

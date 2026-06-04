@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Iterable
 
 import torch
-import yaml
 from torch.utils.data import DataLoader
 
 from .config import get_device, get_dtype, load_config as load_standard_config, merge_defaults, validate_config
@@ -16,9 +15,16 @@ from .evaluate import evaluate_model, print_metrics, write_evaluation_artifacts
 from .kernels import build_dense_operator, stack_observations
 from .losses import composite_loss
 from .models import DiscreteVESP, save_checkpoint
-from .solvers import build_regularization_rows, solve_ridge as solve_ridge_system
+from .solvers import RidgeSolveConfig, solve_discrete_ridge
 from .splits import DataSplits, make_splits
 from .synthetic import make_synthetic_dataset
+from .target_scaling import (
+    TargetScales,
+    apply_target_scales_to_config,
+    compute_target_scales,
+    observation_row_weights,
+    write_target_scales,
+)
 from .units import UnitConfig
 from .sources import make_shell_sources
 
@@ -30,7 +36,7 @@ def load_config(path: str | Path) -> dict:
 def make_data_splits(config: dict, *, dtype: torch.dtype) -> DataSplits:
     data_cfg = config.get("data", {})
     if data_cfg.get("path"):
-        data = load_csv_dataset(data_cfg["path"], dtype=dtype)
+        data = load_csv_dataset(data_cfg["path"], dtype=dtype, unit_config=UnitConfig.from_config(config))
     else:
         truth_shell_radii = data_cfg.get("synthetic_truth_shell_radii")
         data = make_synthetic_dataset(
@@ -90,103 +96,16 @@ def make_model(config: dict, *, dtype: torch.dtype, model_cls=DiscreteVESP) -> D
     return model_cls(source_set, init_scale=float(src_cfg.get("init_scale", 0.0)), dtype=dtype)
 
 
-def _regularization_rows(
-    *,
+def solve_ridge(
     model: DiscreteVESP,
+    train_data,
     config: dict,
-    dtype: torch.dtype,
+    *,
     device: torch.device,
-) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-    loss_cfg = config.get("loss", {})
-    shell_weights = torch.as_tensor(loss_cfg.get("shell_energy_weights", []), dtype=dtype, device=device)
-    return build_regularization_rows(
-        source_positions=model.source_positions.to(device=device, dtype=dtype),
-        source_weights=model.source_weights.to(device=device, dtype=dtype),
-        shell_ids=model.shell_ids.to(device),
-        lambda_l2=float(loss_cfg.get("lambda_l2", 0.0)),
-        lambda_moment=float(loss_cfg.get("lambda_moment", 0.0)),
-        lambda_dipole=float(loss_cfg.get("lambda_dipole", 1.0)),
-        shell_energy_weights=shell_weights,
-    )
-
-
-def _normal_equation_solve(
-    *,
-    operator: torch.Tensor,
-    target: torch.Tensor,
-    model: DiscreteVESP,
-    config: dict,
-) -> torch.Tensor:
-    loss_cfg = config.get("loss", {})
-    dtype = operator.dtype
-    device = operator.device
-    n_sources = operator.shape[1]
-
-    lhs = operator.T @ operator
-    rhs = operator.T @ target
-
-    lambda_l2 = float(loss_cfg.get("lambda_l2", 0.0))
-    if lambda_l2:
-        lhs = lhs + lambda_l2 * torch.eye(n_sources, dtype=dtype, device=device)
-
-    lambda_moment = float(loss_cfg.get("lambda_moment", 0.0))
-    if lambda_moment:
-        weights = model.source_weights.to(device=device, dtype=dtype)
-        positions = model.source_positions.to(device=device, dtype=dtype)
-        dipole_weight = float(loss_cfg.get("lambda_dipole", 1.0))
-        vectors = [weights]
-        vectors.extend([torch.sqrt(torch.tensor(dipole_weight, dtype=dtype, device=device)) * weights * positions[:, axis] for axis in range(3)])
-        for vec in vectors:
-            lhs = lhs + lambda_moment * torch.outer(vec, vec)
-
-    shell_weights = torch.as_tensor(loss_cfg.get("shell_energy_weights", []), dtype=dtype, device=device)
-    if shell_weights.numel():
-        shell_diag = torch.zeros(n_sources, dtype=dtype, device=device)
-        for shell_id, weight in enumerate(shell_weights):
-            shell_diag = shell_diag + torch.where(model.shell_ids.to(device) == shell_id, weight, torch.zeros_like(shell_diag))
-        lhs = lhs + torch.diag(shell_diag * model.source_weights.to(device=device, dtype=dtype))
-
-    return torch.linalg.solve(lhs, rhs)
-
-
-def _augmented_lstsq_solve(
-    *,
-    operator: torch.Tensor,
-    target: torch.Tensor,
-    model: DiscreteVESP,
-    config: dict,
-) -> torch.Tensor:
-    """Solve the regularized problem without squaring the condition number."""
-
-    train_cfg = config.get("training", {})
-    dtype = operator.dtype
-    device = operator.device
-    rows, targets = _regularization_rows(model=model, config=config, dtype=dtype, device=device)
-    if bool(train_cfg.get("column_normalize", True)):
-        op_for_scale = torch.cat([operator, *rows], dim=0) if rows else operator
-        col_norm = torch.linalg.norm(op_for_scale, dim=0)
-        col_scale = torch.clamp(col_norm, min=torch.finfo(dtype).eps)
-        scaled_operator = operator / col_scale.unsqueeze(0)
-        scaled_rows = [row / col_scale.unsqueeze(0) for row in rows]
-        solution_scaled = solve_ridge_system(
-            scaled_operator,
-            target,
-            method="augmented_lstsq",
-            lambda_l2=0.0,
-            extra_rows=scaled_rows,
-            extra_targets=targets,
-        )
-        return solution_scaled / col_scale
-
-    return solve_ridge_system(operator, target, method="augmented_lstsq", lambda_l2=0.0, extra_rows=rows, extra_targets=targets)
-
-
-def solve_ridge(model: DiscreteVESP, train_data, config: dict, *, device: torch.device) -> None:
+    target_scales: TargetScales | None = None,
+) -> None:
     kernel_cfg = config.get("kernel", {})
     loss_cfg = config.get("loss", {})
-    solver_cfg = config.get("solver", {})
-    if not isinstance(solver_cfg, dict):
-        solver_cfg = {"type": solver_cfg}
     include_potential = bool(loss_cfg.get("use_potential", True)) and float(loss_cfg.get("lambda_potential", loss_cfg.get("potential_weight", 1.0))) > 0.0
     include_acceleration = bool(loss_cfg.get("use_acceleration", True)) and float(loss_cfg.get("lambda_acceleration", loss_cfg.get("acceleration_weight", 1.0))) > 0.0
 
@@ -209,38 +128,46 @@ def solve_ridge(model: DiscreteVESP, train_data, config: dict, *, device: torch.
         include_acceleration=include_acceleration,
     )
 
-    row_weights = []
-    if include_potential:
-        row_weights.append(torch.full((train_data.positions.shape[0],), float(loss_cfg.get("lambda_potential", loss_cfg.get("potential_weight", 1.0))), dtype=operator.dtype, device=device))
-    if include_acceleration:
-        row_weights.extend(
-            [
-                torch.full((train_data.positions.shape[0],), float(loss_cfg.get("lambda_acceleration", loss_cfg.get("acceleration_weight", 1.0))), dtype=operator.dtype, device=device)
-                for _ in range(3)
-            ]
-        )
-    if row_weights:
-        weights = torch.sqrt(torch.cat(row_weights, dim=0))
-        operator = operator * weights.unsqueeze(-1)
-        target = target * weights
+    target_scales = target_scales or compute_target_scales(train_data, config)
+    weights = observation_row_weights(
+        n_query=train_data.positions.shape[0],
+        include_potential=include_potential,
+        include_acceleration=include_acceleration,
+        lambda_potential=float(loss_cfg.get("lambda_potential", loss_cfg.get("potential_weight", 1.0))),
+        lambda_acceleration=float(loss_cfg.get("lambda_acceleration", loss_cfg.get("acceleration_weight", 1.0))),
+        scales=target_scales,
+        dtype=operator.dtype,
+        device=device,
+    )
+    operator = operator * weights.unsqueeze(-1)
+    target = target * weights
 
-    ridge_method = str(config.get("training", {}).get("ridge_method", solver_cfg.get("ridge_method", "augmented_lstsq"))).lower()
-    if ridge_method == "normal_equation":
-        sigma = _normal_equation_solve(operator=operator, target=target, model=model, config=config)
-    elif ridge_method == "augmented_lstsq":
-        sigma = _augmented_lstsq_solve(operator=operator, target=target, model=model, config=config)
-    else:
-        raise ValueError("training.ridge_method must be 'augmented_lstsq' or 'normal_equation'")
+    sigma = solve_discrete_ridge(
+        operator=operator,
+        target=target,
+        source_positions=model.source_positions,
+        source_weights=model.source_weights,
+        shell_ids=model.shell_ids,
+        config=RidgeSolveConfig.from_config(config),
+    )
     model.set_sigma(sigma)
 
 
-def train_adam(model: DiscreteVESP, train_data, config: dict, *, device: torch.device) -> None:
+def train_adam(
+    model: DiscreteVESP,
+    train_data,
+    config: dict,
+    *,
+    device: torch.device,
+    target_scales: TargetScales | None = None,
+) -> None:
     train_cfg = config.get("training", {})
     kernel_cfg = config.get("kernel", {})
     loss_cfg = config.get("loss", {})
 
     model = model.to(device)
     train_data = train_data.to(device)
+    target_scales = target_scales or compute_target_scales(train_data, config)
     loader = DataLoader(
         ResidualGravityDataset(train_data),
         batch_size=int(train_cfg.get("batch_size", 2048)),
@@ -260,11 +187,13 @@ def train_adam(model: DiscreteVESP, train_data, config: dict, *, device: torch.d
                 source_chunk_size=kernel_cfg.get("source_chunk_size"),
                 softening=float(kernel_cfg.get("softening", 0.0)),
             )
+            potential_scale = target_scales.potential_scale if target_scales.normalize_targets else 1.0
+            acceleration_scale = target_scales.acceleration_scale if target_scales.normalize_targets else 1.0
             loss, values = composite_loss(
-                pred_potential=pred_u,
-                pred_acceleration=pred_a,
-                target_potential=potential,
-                target_acceleration=acceleration,
+                pred_potential=pred_u / potential_scale if pred_u is not None else None,
+                pred_acceleration=pred_a / acceleration_scale if pred_a is not None else None,
+                target_potential=potential / potential_scale,
+                target_acceleration=acceleration / acceleration_scale,
                 sigma=model.sigma,
                 source_positions=model.source_positions,
                 source_weights=model.source_weights,
@@ -294,6 +223,8 @@ def run(config: dict, *, model_cls=DiscreteVESP) -> dict:
     device = get_device(config)
     splits = make_data_splits(config, dtype=dtype)
     train_data, val_data = splits.train, splits.val
+    target_scales = compute_target_scales(train_data, config)
+    apply_target_scales_to_config(config, target_scales)
     model = make_model(config, dtype=dtype, model_cls=model_cls)
 
     solver_cfg = config.get("solver", {})
@@ -301,9 +232,9 @@ def run(config: dict, *, model_cls=DiscreteVESP) -> dict:
         solver_cfg = {"type": solver_cfg}
     solver = str(solver_cfg.get("type", config.get("solver", "ridge"))).lower() if isinstance(solver_cfg, dict) else str(solver_cfg).lower()
     if solver == "ridge":
-        solve_ridge(model, train_data, config, device=device)
+        solve_ridge(model, train_data, config, device=device, target_scales=target_scales)
     elif solver == "adam":
-        train_adam(model, train_data, config, device=device)
+        train_adam(model, train_data, config, device=device, target_scales=target_scales)
     else:
         raise ValueError("solver must be 'ridge' or 'adam'")
 
@@ -348,11 +279,15 @@ def run(config: dict, *, model_cls=DiscreteVESP) -> dict:
     checkpoint_path = output_dir / f"{run_name}.pt"
     save_checkpoint(str(checkpoint_path), model, config, metrics)
     save_checkpoint(str(run_dir / "sigma.pt"), model, config, metrics)
+    extra_artifacts = {"checkpoint": checkpoint_path, "sigma_checkpoint": run_dir / "sigma.pt"}
+    if target_scales.normalize_targets:
+        target_scales_path = write_target_scales(run_dir / "target_scales.json", target_scales)
+        extra_artifacts["target_scales"] = target_scales_path
     write_evaluation_artifacts(
         run_dir,
         metrics,
         config,
-        extra_artifacts={"checkpoint": checkpoint_path, "sigma_checkpoint": run_dir / "sigma.pt"},
+        extra_artifacts=extra_artifacts,
     )
     print(f"saved_checkpoint: {checkpoint_path}")
     print(f"saved_run_dir: {run_dir}")
@@ -362,7 +297,7 @@ def run(config: dict, *, model_cls=DiscreteVESP) -> dict:
 
 def main(argv: Iterable[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="experimental_vesp/configs/discrete_single_shell.yaml")
+    parser.add_argument("--config", default="configs/discrete_single_shell.yaml")
     args = parser.parse_args(argv)
     run(load_config(args.config))
 

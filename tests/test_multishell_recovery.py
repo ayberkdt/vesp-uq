@@ -4,12 +4,12 @@ from experimental_vesp.synthetic import make_multishell_truth_case
 from experimental_vesp.train import run_from_config
 
 
-def _cfg(model):
+def _cfg(model, output_dir="outputs/test_multishell"):
     return {
         "seed": 9,
         "device": "cpu",
         "dtype": "float64",
-        "output": {"output_dir": "outputs/test_multishell", "run_name": f"test_{model['type']}"},
+        "output": {"output_dir": str(output_dir), "run_name": f"test_{model['type']}"},
         "data": {
             "type": "synthetic",
             "seed": 9,
@@ -34,8 +34,9 @@ def _cfg(model):
     }
 
 
-def test_multishell_model_beats_single_on_multishell_truth():
-    single = run_from_config(_cfg({"type": "discrete", "shell_alpha": 0.86, "n_source": 160}))
-    multi = run_from_config(_cfg({"type": "multishell", "shell_alphas": [0.5, 0.78, 0.86], "n_sources_per_shell": [48, 64, 48]}))
+def test_multishell_model_beats_single_on_multishell_truth(tmp_path):
+    single = run_from_config(_cfg({"type": "discrete", "shell_alpha": 0.86, "n_source": 160}, tmp_path))
+    multi = run_from_config(
+        _cfg({"type": "multishell", "shell_alphas": [0.5, 0.78, 0.86], "n_sources_per_shell": [48, 64, 48]}, tmp_path)
+    )
     assert multi["acceleration_rmse"] < single["acceleration_rmse"]
-

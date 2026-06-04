@@ -9,7 +9,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Iterable
 
-from .config import load_config
+import yaml
+
 from .models import MultiShellDiscreteVESP
 from .train_discrete import run
 
@@ -25,6 +26,9 @@ def _base_config() -> dict:
         "loss": {
             "use_potential": True,
             "use_acceleration": True,
+            "normalize_targets": False,
+            "potential_scale": "auto",
+            "acceleration_scale": "auto",
             "lambda_potential": 0.2,
             "lambda_acceleration": 1.0,
             "lambda_l2": 1.0e-8,
@@ -35,6 +39,24 @@ def _base_config() -> dict:
         "split": {"type": "random", "train_fraction": 0.8},
         "evaluation": {"batch_size": 2048, "n_altitude_bins": 6},
     }
+
+
+def _deep_update(base: dict, update: dict) -> dict:
+    out = deepcopy(base)
+    for key, value in (update or {}).items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_update(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def load_suite_config(path: str | Path) -> dict:
+    with Path(path).open("r", encoding="utf-8") as handle:
+        cfg = yaml.safe_load(handle) or {}
+    if not isinstance(cfg, dict):
+        raise ValueError("feasibility config must be a YAML mapping")
+    return cfg
 
 
 def _scenario_configs(base: dict) -> list[dict]:
@@ -211,7 +233,7 @@ def _decision(rows: list[dict], thresholds: dict | None = None) -> tuple[str, li
 def run_feasibility_suite(config: dict | None = None) -> Path:
     base = _base_config()
     if config:
-        base.update(config.get("base", {}))
+        base = _deep_update(base, config.get("base", {}))
     output_dir = Path(base.get("output", {}).get("output_dir", "outputs/feasibility"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -278,7 +300,7 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=None)
     args = parser.parse_args(argv)
-    cfg = load_config(args.config) if args.config else None
+    cfg = load_suite_config(args.config) if args.config else None
     path = run_feasibility_suite(cfg)
     print(f"feasibility_results: {path}")
 

@@ -2,9 +2,36 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Callable
 
 import torch
+
+
+@dataclass(frozen=True)
+class RidgeSolveConfig:
+    method: str = "augmented_lstsq"
+    lambda_l2: float = 0.0
+    column_normalize: bool = True
+    lambda_moment: float = 0.0
+    lambda_dipole: float = 1.0
+    shell_energy_weights: list[float] = field(default_factory=list)
+
+    @classmethod
+    def from_config(cls, config: dict) -> "RidgeSolveConfig":
+        solver_cfg = config.get("solver", {})
+        if not isinstance(solver_cfg, dict):
+            solver_cfg = {"type": solver_cfg}
+        loss_cfg = config.get("loss", {})
+        train_cfg = config.get("training", {})
+        return cls(
+            method=str(train_cfg.get("ridge_method", solver_cfg.get("ridge_method", "augmented_lstsq"))).lower(),
+            lambda_l2=float(loss_cfg.get("lambda_l2", solver_cfg.get("lambda_l2", 0.0))),
+            column_normalize=bool(solver_cfg.get("column_normalize", train_cfg.get("column_normalize", True))),
+            lambda_moment=float(loss_cfg.get("lambda_moment", 0.0)),
+            lambda_dipole=float(loss_cfg.get("lambda_dipole", 1.0)),
+            shell_energy_weights=list(loss_cfg.get("shell_energy_weights", [])),
+        )
 
 
 def build_regularization_rows(
@@ -46,6 +73,57 @@ def build_regularization_rows(
             rows.append(row)
             targets.append(torch.zeros(row.shape[0], dtype=dtype, device=device))
     return rows, targets
+
+
+def solve_discrete_ridge(
+    operator: torch.Tensor,
+    target: torch.Tensor,
+    source_positions: torch.Tensor,
+    source_weights: torch.Tensor,
+    shell_ids: torch.Tensor,
+    config: RidgeSolveConfig,
+) -> torch.Tensor:
+    """Solve the discrete equivalent-source ridge system.
+
+    Observation row weighting belongs upstream. This function owns source-side
+    regularization, column normalization, and the concrete linear solver.
+    """
+
+    shell_weights = torch.as_tensor(config.shell_energy_weights, dtype=operator.dtype, device=operator.device)
+    rows, targets = build_regularization_rows(
+        source_positions=source_positions.to(device=operator.device, dtype=operator.dtype),
+        source_weights=source_weights.to(device=operator.device, dtype=operator.dtype),
+        shell_ids=shell_ids.to(operator.device),
+        lambda_l2=config.lambda_l2,
+        lambda_moment=config.lambda_moment,
+        lambda_dipole=config.lambda_dipole,
+        shell_energy_weights=shell_weights,
+    )
+
+    if config.column_normalize:
+        op_for_scale = torch.cat([operator, *rows], dim=0) if rows else operator
+        col_norm = torch.linalg.norm(op_for_scale, dim=0)
+        col_scale = torch.clamp(col_norm, min=torch.finfo(operator.dtype).eps)
+        scaled_operator = operator / col_scale.unsqueeze(0)
+        scaled_rows = [row / col_scale.unsqueeze(0) for row in rows]
+        sigma_scaled = solve_ridge(
+            scaled_operator,
+            target,
+            method=config.method,
+            lambda_l2=0.0,
+            extra_rows=scaled_rows,
+            extra_targets=targets,
+        )
+        return sigma_scaled / col_scale
+
+    return solve_ridge(
+        operator,
+        target,
+        method=config.method,
+        lambda_l2=0.0,
+        extra_rows=rows,
+        extra_targets=targets,
+    )
 
 
 def solve_ridge_normal_equation(K: torch.Tensor, y: torch.Tensor, lambda_l2: float = 0.0) -> torch.Tensor:

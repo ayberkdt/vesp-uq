@@ -1,0 +1,21 @@
+{
+  "metadata_schema": "vesp_lunar_residual_csv_v1",
+  "central_body": "moon",
+  "target_name": "MOON",
+  "position_units": "normalized",
+  "potential_units": "km^2/s^2",
+  "acceleration_units": "km/s^2",
+  "acceleration_output": "physical",
+  "R_body": 1738.0,
+  "R_body_units": "km",
+  "r_ref_m": 1738000.0,
+  "gm_km3_s2": 4902.80012616,
+  "mu_si": 4902800126160.0,
+  "coordinate_system": "body-fixed normalized Cartesian",
+  "gravity_model": "gl0420a",
+  "gravity_model_path": "data/gravity_models/jggrx_0420a_sha.tab",
+  "normalization_state": 1,
+  "column_order": "degree_order",
+  "degree_min": 2,
+  "degree_max": 60
+}

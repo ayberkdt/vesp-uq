@@ -28,53 +28,6 @@ from .metrics import (
 from .models import DiscreteVESP, load_checkpoint
 
 
-def rmse(pred: torch.Tensor, target: torch.Tensor) -> float:
-    return float(torch.sqrt(torch.mean((pred - target) ** 2)).detach().cpu())
-
-
-def radial_cross_errors(
-    positions: torch.Tensor,
-    pred_acceleration: torch.Tensor,
-    target_acceleration: torch.Tensor,
-) -> dict[str, float]:
-    radial = positions / torch.clamp(torch.linalg.norm(positions, dim=-1, keepdim=True), min=torch.finfo(positions.dtype).eps)
-    error = pred_acceleration - target_acceleration
-    radial_error = torch.sum(error * radial, dim=-1, keepdim=True) * radial
-    cross_error = error - radial_error
-    return {
-        "radial_acceleration_rmse": float(torch.sqrt(torch.mean(radial_error * radial_error)).detach().cpu()),
-        "cross_radial_acceleration_rmse": float(torch.sqrt(torch.mean(cross_error * cross_error)).detach().cpu()),
-    }
-
-
-def altitude_binned_error(
-    positions: torch.Tensor,
-    pred_acceleration: torch.Tensor,
-    target_acceleration: torch.Tensor,
-    *,
-    n_bins: int = 6,
-) -> list[dict[str, float]]:
-    radii = torch.linalg.norm(positions, dim=-1)
-    bins = torch.linspace(float(radii.min()), float(radii.max()), n_bins + 1, device=positions.device)
-    rows = []
-    for i in range(n_bins):
-        if i == n_bins - 1:
-            mask = (radii >= bins[i]) & (radii <= bins[i + 1])
-        else:
-            mask = (radii >= bins[i]) & (radii < bins[i + 1])
-        if not torch.any(mask):
-            continue
-        rows.append(
-            {
-                "r_min": float(bins[i].detach().cpu()),
-                "r_max": float(bins[i + 1].detach().cpu()),
-                "count": int(mask.sum().detach().cpu()),
-                "acceleration_rmse": rmse(pred_acceleration[mask], target_acceleration[mask]),
-            }
-        )
-    return rows
-
-
 def evaluate_model(
     model: DiscreteVESP,
     data: ResidualGravityData,

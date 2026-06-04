@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 from pathlib import Path
+import textwrap
 from typing import Iterable
 
 import matplotlib
 
 matplotlib.use("Agg")
 
+import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
@@ -19,6 +23,9 @@ from .analysis import load_checkpoint_summary, make_markdown_report
 from .data import ResidualGravityDataset
 from .models import load_checkpoint
 from .train_discrete import make_data
+
+
+PDF_SCHEMA_VERSION = "vesp_analysis_pdf_v1"
 
 
 def _dtype_from_config(config: dict) -> torch.dtype:
@@ -281,6 +288,170 @@ def plot_comparison(reports: list[dict], *, output_dir: str | Path) -> Path | No
     return path
 
 
+def _metric(metrics: dict, key: str) -> str:
+    value = metrics.get(key)
+    if value is None:
+        return "-"
+    try:
+        return f"{float(value):.3e}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _summary_rows(checkpoint_paths: Iterable[str | Path]) -> list[list[str]]:
+    rows = []
+    for path in checkpoint_paths:
+        summary = load_checkpoint_summary(path)
+        config = summary.get("config", {})
+        metrics = summary.get("metrics", {})
+        diagnostics = metrics.get("diagnostics") or {}
+        model = config.get("model", {}) if isinstance(config, dict) else {}
+        data = config.get("data", {}) if isinstance(config, dict) else {}
+        loss = config.get("loss", {}) if isinstance(config, dict) else {}
+        shell_text = ", ".join(f"{v:.2f}" for v in summary.get("shell_radii", ())) or "-"
+        data_path = data.get("path")
+        rows.append(
+            [
+                summary["name"],
+                f"{model.get('type', '-')} [{shell_text}]",
+                Path(str(data_path)).name if data_path else str(data.get("type", "synthetic")),
+                "on" if bool(loss.get("normalize_targets", False)) else "off",
+                _metric(metrics, "acceleration_rmse"),
+                _metric(metrics, "relative_acceleration_rmse"),
+                _metric(metrics, "angle_deg_p95"),
+                _metric(diagnostics, "top_5pct_source_contribution"),
+            ]
+        )
+    return rows
+
+
+def _add_text_page(pdf: PdfPages, title: str, lines: list[str]) -> None:
+    fig = plt.figure(figsize=(11.0, 8.5))
+    fig.patch.set_facecolor("#f7fafb")
+    ax = fig.add_axes([0.06, 0.06, 0.88, 0.88])
+    ax.axis("off")
+    ax.text(0.0, 0.98, title, fontsize=22, fontweight="bold", color="#14212b", va="top")
+    y = 0.88
+    for line in lines:
+        wrapped = textwrap.wrap(str(line), width=105) or [""]
+        for chunk in wrapped:
+            ax.text(0.0, y, chunk, fontsize=10.5, color="#26333d", va="top")
+            y -= 0.04
+            if y < 0.08:
+                pdf.savefig(fig)
+                plt.close(fig)
+                fig = plt.figure(figsize=(11.0, 8.5))
+                fig.patch.set_facecolor("#f7fafb")
+                ax = fig.add_axes([0.06, 0.06, 0.88, 0.88])
+                ax.axis("off")
+                y = 0.95
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _add_table_page(pdf: PdfPages, title: str, columns: list[str], rows: list[list[str]]) -> None:
+    fig = plt.figure(figsize=(11.0, 8.5))
+    fig.patch.set_facecolor("#f7fafb")
+    ax = fig.add_axes([0.04, 0.06, 0.92, 0.86])
+    ax.axis("off")
+    ax.text(0.0, 1.04, title, fontsize=18, fontweight="bold", color="#14212b", transform=ax.transAxes)
+    table = ax.table(
+        cellText=rows or [["-", "-", "-", "-", "-", "-", "-", "-"]],
+        colLabels=columns,
+        loc="upper left",
+        cellLoc="left",
+        colLoc="left",
+        bbox=[0.0, 0.0, 1.0, 0.95],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(7.5)
+    table.scale(1.0, 1.25)
+    for (row_idx, _col_idx), cell in table.get_celld().items():
+        if row_idx == 0:
+            cell.set_facecolor("#dfe8ec")
+            cell.set_text_props(weight="bold", color="#1b2a34")
+        else:
+            cell.set_facecolor("#ffffff" if row_idx % 2 else "#f1f5f7")
+        cell.set_edgecolor("#cfd9df")
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _add_image_page(pdf: PdfPages, image_path: Path) -> None:
+    fig = plt.figure(figsize=(11.0, 8.5))
+    fig.patch.set_facecolor("#f7fafb")
+    ax_title = fig.add_axes([0.06, 0.92, 0.88, 0.06])
+    ax_title.axis("off")
+    ax_title.text(0.0, 0.55, image_path.stem.replace("_", " "), fontsize=16, fontweight="bold", color="#14212b")
+    ax = fig.add_axes([0.06, 0.08, 0.88, 0.82])
+    ax.axis("off")
+    image = mpimg.imread(image_path)
+    ax.imshow(image)
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def write_analysis_pdf(
+    checkpoint_paths: Iterable[str | Path],
+    output_path: str | Path,
+    *,
+    output_dir: str | Path | None = None,
+    markdown: str | None = None,
+    device: str | torch.device = "cpu",
+    max_points: int | None = None,
+    include_deep: bool = False,
+) -> Path:
+    """Write a compact PDF review bundle for selected checkpoints.
+
+    When ``include_deep`` is true, prediction-level plots and CSVs are generated
+    before the PDF is assembled. Otherwise any existing PNG files in
+    ``output_dir`` are included.
+    """
+
+    paths = [Path(path) for path in checkpoint_paths]
+    output = Path(output_path)
+    assets_dir = Path(output_dir) if output_dir is not None else output.with_suffix("").parent / (output.stem + "_assets")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    assets_dir.mkdir(parents=True, exist_ok=True)
+
+    report_text = markdown
+    if include_deep:
+        report_text = make_advanced_report(paths, output_dir=assets_dir, device=device, max_points=max_points)
+    elif report_text is None:
+        report_text = make_markdown_report(paths)
+
+    figure_paths = sorted(assets_dir.glob("*.png"))
+    created = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    with PdfPages(output) as pdf:
+        _add_text_page(
+            pdf,
+            "VESP Analysis Review",
+            [
+                f"Schema: {PDF_SCHEMA_VERSION}",
+                f"Created: {created}",
+                f"Checkpoints: {len(paths)}",
+                "Scope: deterministic Stage 1-2 equivalent-source feasibility review.",
+                "This PDF summarizes run metrics, target scaling state, source concentration diagnostics, and generated plots.",
+            ],
+        )
+        _add_table_page(
+            pdf,
+            "Run Summary",
+            ["Run", "Model", "Data", "Target Norm", "Acc RMSE", "Rel Acc", "Angle p95", "Top 5%"],
+            _summary_rows(paths),
+        )
+        notes = [line.strip() for line in (report_text or "").splitlines() if line.strip()]
+        _add_text_page(pdf, "Interpretation Notes", notes[:80])
+        for figure_path in figure_paths:
+            _add_image_page(pdf, figure_path)
+        metadata = pdf.infodict()
+        metadata["Title"] = "VESP Analysis Review"
+        metadata["Author"] = "MaxEnt-VESP Workbench"
+        metadata["Subject"] = "Stage 1-2 feasibility diagnostics"
+        metadata["Keywords"] = "VESP, equivalent source, target scaling, residual gravity"
+    return output
+
+
 def make_advanced_report(
     checkpoint_paths: Iterable[str | Path],
     *,
@@ -369,6 +540,7 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("checkpoints", nargs="+")
     parser.add_argument("--output", default="outputs/advanced_analysis_report.md")
     parser.add_argument("--assets-dir", default=None)
+    parser.add_argument("--pdf-output", default=None)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--max-points", type=int, default=None)
     args = parser.parse_args(argv)
@@ -380,8 +552,17 @@ def main(argv: Iterable[str] | None = None) -> None:
         max_points=args.max_points,
     )
     print(f"advanced_analysis_report: {output}")
+    if args.pdf_output:
+        pdf = write_analysis_pdf(
+            args.checkpoints,
+            args.pdf_output,
+            output_dir=args.assets_dir,
+            markdown=output.read_text(encoding="utf-8"),
+            device=args.device,
+            max_points=args.max_points,
+        )
+        print(f"analysis_pdf: {pdf}")
 
 
 if __name__ == "__main__":
     main()
-

@@ -15,6 +15,9 @@ base:
   loss:
     use_potential: true
     use_acceleration: true
+    normalize_targets: false
+    potential_scale: auto
+    acceleration_scale: auto
     lambda_potential: 0.2
     lambda_acceleration: 1.0
     lambda_l2: 1.0e-8
@@ -29,4 +32,3 @@ feasibility:
   high_ood_factor: 5.0
   low_ood_factor: 25.0
   max_top5_source_contribution: 0.45
-

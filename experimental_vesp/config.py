@@ -20,6 +20,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "position_units": "normalized",
         "potential_units": "model",
         "acceleration_units": "model",
+        "physical_R_body": None,
+        "physical_R_body_units": "km",
     },
     "data": {
         "type": "synthetic",
@@ -47,6 +49,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "loss": {
         "use_potential": True,
         "use_acceleration": True,
+        "normalize_targets": False,
+        "potential_scale": "auto",
+        "acceleration_scale": "auto",
+        "target_scale_eps": 1.0e-12,
         "lambda_potential": 0.2,
         "lambda_acceleration": 1.0,
         "lambda_l2": 1.0e-8,

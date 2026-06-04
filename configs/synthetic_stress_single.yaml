@@ -1,0 +1,52 @@
+seed: 123
+device: cpu
+dtype: float64
+output_dir: outputs/synthetic_stress
+checkpoint_name: synthetic_stress_single.pt
+
+data:
+  type: synthetic
+  path:
+  train_fraction: 0.75
+  seed: 123
+  synthetic_n_query: 768
+  synthetic_n_truth_sources: 96
+  synthetic_query_radius_min: 1.03
+  synthetic_query_radius_max: 1.80
+  synthetic_truth_shell_radius: 0.72
+  synthetic_noise_std: 1.0e-5
+
+model:
+  type: discrete
+  shell_alpha: 0.86
+  n_source: 768
+
+kernel:
+  eps: 0.0
+  acceleration_sign: 1.0
+  source_chunk_size: 768
+
+solver:
+  type: ridge
+  ridge_method: augmented_lstsq
+  lambda_l2: 1.0e-6
+  column_normalize: true
+
+loss:
+  use_potential: true
+  use_acceleration: true
+  lambda_potential: 0.2
+  lambda_acceleration: 1.0
+  lambda_l2: 1.0e-6
+  lambda_moment: 1.0e-4
+  lambda_dipole: 1.0
+  shell_energy_weights: []
+
+split:
+  type: random
+  train_fraction: 0.75
+
+output:
+  run_name: synthetic_stress_single
+  save_plots: false
+

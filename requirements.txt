@@ -1,0 +1,9 @@
+numpy
+scipy
+pandas
+matplotlib
+PyYAML
+torch
+PyQt6
+pytest
+

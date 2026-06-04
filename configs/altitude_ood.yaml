@@ -1,0 +1,56 @@
+seed: 42
+device: cpu
+dtype: float64
+output_dir: outputs
+checkpoint_name: altitude_ood.pt
+
+data:
+  type: synthetic
+  path:
+  train_fraction: 0.8
+  seed: 42
+  synthetic_n_query: 1024
+  synthetic_n_truth_sources: 64
+  synthetic_query_radius_min: 1.01
+  synthetic_query_radius_max: 2.00
+  synthetic_truth_shell_radius: 0.72
+  synthetic_noise_std: 0.0
+
+model:
+  type: discrete
+  shell_alpha: 0.86
+  n_source: 512
+
+kernel:
+  eps: 0.0
+  acceleration_sign: 1.0
+  source_chunk_size: 512
+
+solver:
+  type: ridge
+  ridge_method: augmented_lstsq
+  lambda_l2: 1.0e-6
+  column_normalize: true
+
+loss:
+  use_potential: true
+  use_acceleration: true
+  lambda_potential: 0.2
+  lambda_acceleration: 1.0
+  lambda_l2: 1.0e-6
+  lambda_moment: 1.0e-4
+  lambda_dipole: 1.0
+  shell_energy_weights: []
+
+split:
+  type: altitude_ood
+  train_fraction: 0.8
+  train_r_range: [1.05, 1.50]
+  val_r_range: [1.05, 1.50]
+  test_high_r_range: [1.50, 2.00]
+  test_low_r_range: [1.01, 1.05]
+
+output:
+  run_name: altitude_ood
+  save_plots: false
+

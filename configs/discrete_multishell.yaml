@@ -1,0 +1,60 @@
+seed: 42
+device: cpu
+dtype: float64
+output_dir: outputs
+checkpoint_name: discrete_multishell.pt
+
+body:
+  R_body: 1.0
+  normalize_positions: true
+
+data:
+  type: synthetic
+  path:
+  train_fraction: 0.8
+  seed: 42
+  synthetic_n_query: 512
+  synthetic_n_truth_sources: 64
+  synthetic_query_radius_min: 1.05
+  synthetic_query_radius_max: 1.60
+  synthetic_truth_shell_radius: 0.72
+  synthetic_noise_std: 0.0
+
+model:
+  type: multishell
+  shell_alphas: [0.50, 0.78, 0.86]
+  n_sources_per_shell: [192, 256, 192]
+  weight_mode: surface_area
+
+kernel:
+  eps: 0.0
+  acceleration_sign: 1.0
+  query_chunk_size: 2048
+  source_chunk_size: 512
+
+solver:
+  type: ridge
+  ridge_method: augmented_lstsq
+  lambda_l2: 1.0e-7
+  column_normalize: true
+
+loss:
+  use_potential: true
+  use_acceleration: true
+  potential_weight: 0.2
+  acceleration_weight: 1.0
+  lambda_potential: 0.2
+  lambda_acceleration: 1.0
+  lambda_l2: 1.0e-7
+  lambda_moment: 1.0e-5
+  lambda_dipole: 1.0
+  shell_energy_weights: [1.0e-8, 1.0e-8, 5.0e-8]
+
+split:
+  type: random
+  train_fraction: 0.8
+
+output:
+  run_name: discrete_multishell
+  save_plots: false
+

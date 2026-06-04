@@ -1,0 +1,23 @@
+base:
+  device: cpu
+  dtype: float64
+  output_dir: outputs/feasibility
+  kernel:
+    eps: 0.0
+    acceleration_sign: 1.0
+    source_chunk_size: 512
+  solver:
+    type: ridge
+    ridge_method: augmented_lstsq
+    lambda_l2: 1.0e-8
+    column_normalize: true
+  loss:
+    use_potential: true
+    use_acceleration: true
+    lambda_potential: 0.2
+    lambda_acceleration: 1.0
+    lambda_l2: 1.0e-8
+    lambda_moment: 1.0e-6
+    lambda_dipole: 1.0
+    shell_energy_weights: []
+

@@ -1,0 +1,50 @@
+seed: 123
+device: cpu
+dtype: float64
+ablation_output_dir: outputs/ablation
+output_dir: outputs/ablation
+
+data:
+  type: synthetic
+  path:
+  train_fraction: 0.75
+  seed: 123
+  synthetic_n_query: 384
+  synthetic_n_truth_sources: 64
+  synthetic_query_radius_min: 1.03
+  synthetic_query_radius_max: 1.80
+  synthetic_truth_shell_radius: 0.72
+  synthetic_noise_std: 1.0e-5
+
+kernel:
+  eps: 0.0
+  acceleration_sign: 1.0
+  source_chunk_size: 384
+
+solver:
+  type: ridge
+  ridge_method: augmented_lstsq
+  lambda_l2: 1.0e-7
+  column_normalize: true
+
+loss:
+  use_potential: true
+  use_acceleration: true
+  lambda_potential: 0.2
+  lambda_acceleration: 1.0
+  lambda_l2: 1.0e-7
+  lambda_moment: 1.0e-5
+  lambda_dipole: 1.0
+  shell_energy_weights: [1.0e-8, 1.0e-8, 5.0e-8]
+
+split:
+  type: random
+  train_fraction: 0.75
+
+ablation:
+  single_shell_alphas: [0.80, 0.86]
+  n_sources: [256]
+  multishell_sets:
+    - [0.50, 0.78, 0.86]
+  multi_shell_n_source: 192
+

@@ -1,0 +1,43 @@
+device: cpu
+dtype: float64
+solver: ridge
+output_dir: outputs
+checkpoint_name: real_lunar_multishell.pt
+
+data:
+  path: data/lunar_grail_gl0420a_L60_residual.csv
+  train_fraction: 0.8
+  seed: 42
+
+sources:
+  shell_radii: [0.50, 0.78, 0.86]
+  points_per_shell: [384, 512, 384]
+  body_radius: 1.0
+  weight_mode: surface_area
+  init_scale: 0.0
+
+kernel:
+  source_chunk_size: 1024
+  softening: 0.0
+
+loss:
+  lambda_potential: 0.2
+  lambda_acceleration: 1.0
+  lambda_l2: 1.0e-7
+  lambda_moment: 1.0e-5
+  lambda_dipole: 1.0
+  shell_energy_weights: [1.0e-8, 1.0e-8, 5.0e-8]
+
+training:
+  ridge_method: augmented_lstsq
+  column_normalize: true
+  epochs: 200
+  batch_size: 2048
+  lr: 5.0e-3
+  grad_clip_norm: 1.0
+  log_every: 25
+
+evaluation:
+  batch_size: 4096
+  n_altitude_bins: 6
+

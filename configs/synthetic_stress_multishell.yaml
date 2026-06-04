@@ -1,8 +1,8 @@
 seed: 123
 device: cpu
 dtype: float64
-ablation_output_dir: outputs/ablation
-output_dir: outputs/ablation
+output:
+  output_dir: outputs/ablation
 
 data:
   type: synthetic
@@ -41,10 +41,11 @@ split:
   type: random
   train_fraction: 0.75
 
+ablation_output_dir: outputs/ablation
+
 ablation:
   single_shell_alphas: [0.80, 0.86]
   n_sources: [256]
   multishell_sets:
     - [0.50, 0.78, 0.86]
   multi_shell_n_source: 192
-

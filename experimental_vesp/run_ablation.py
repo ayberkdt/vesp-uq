@@ -90,11 +90,12 @@ def _row_from_metrics(config: dict, metrics: dict, runtime_sec: float) -> dict:
 
 
 def run_ablation(config: dict) -> Path:
-    output_dir = Path(config.get("ablation_output_dir", config.get("output_dir", "outputs/ablation")))
+    output_dir = Path(config.get("ablation_output_dir", config.get("output", {}).get("output_dir", "outputs/ablation")))
     output_dir.mkdir(parents=True, exist_ok=True)
     rows = []
     for trial in _trial_configs(config):
         trial.setdefault("output_dir", str(output_dir))
+        trial.setdefault("output", {})["output_dir"] = str(output_dir)
         model_type = trial.get("model", {}).get("type", "discrete")
         print(f"===== {trial.get('output', {}).get('run_name', trial.get('checkpoint_name'))} =====")
         start = time.perf_counter()

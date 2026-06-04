@@ -1,21 +1,17 @@
-"""Train or solve a multi-shell discrete VESP baseline."""
+"""Legacy wrapper for the unified train entrypoint."""
 
 from __future__ import annotations
 
-import argparse
 from typing import Iterable
 
-from .models import MultiShellDiscreteVESP
-from .train_discrete import load_config, run
+from .train import main as unified_main
 
 
 def main(argv: Iterable[str] | None = None) -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="experimental_vesp/configs/discrete_multishell.yaml")
-    args = parser.parse_args(argv)
-    run(load_config(args.config), model_cls=MultiShellDiscreteVESP)
+    if argv is None:
+        argv = ["--config", "configs/discrete_multishell.yaml"]
+    unified_main(argv)
 
 
 if __name__ == "__main__":
     main()
-

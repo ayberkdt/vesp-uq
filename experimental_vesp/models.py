@@ -5,8 +5,10 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+from .artifacts import atomic_torch_save
 from .kernels import evaluate_kernel
 from .diagnostics import source_diagnostics
+from .losses import shell_energy
 from .sources import SourceSet
 
 
@@ -92,7 +94,36 @@ class DiscreteVESP(nn.Module):
 class MultiShellDiscreteVESP(DiscreteVESP):
     """Semantic alias for a discrete model with multiple source shells."""
 
-    pass
+    def get_shell_sigmas(self) -> dict[int, torch.Tensor]:
+        return {int(shell_id): self.sigma[self.shell_ids == shell_id].detach().clone() for shell_id in torch.unique(self.shell_ids)}
+
+    def get_shell_energy(self) -> torch.Tensor:
+        return shell_energy(self.sigma, self.source_weights, self.shell_ids)
+
+    def predict_shell_contribution(
+        self,
+        query_points: torch.Tensor,
+        shell_id: int,
+        *,
+        source_chunk_size: int | None = None,
+        softening: float = 0.0,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        mask = self.shell_ids == int(shell_id)
+        out = evaluate_kernel(
+            query_points.to(device=self.sigma.device, dtype=self.sigma.dtype),
+            self.source_positions[mask],
+            self.source_weights[mask] * self.sigma[mask],
+            source_chunk_size=source_chunk_size,
+            softening=softening,
+            compute_potential=True,
+            compute_acceleration=True,
+        )
+        if out.potential is None or out.acceleration is None:
+            raise RuntimeError("shell contribution prediction failed")
+        return out.potential, out.acceleration
+
+    def shellwise_diagnostics(self) -> list[dict]:
+        return self.source_diagnostics().get("shell_energy_distribution", [])
 
 
 def save_checkpoint(
@@ -101,7 +132,8 @@ def save_checkpoint(
     config: dict,
     metrics: dict | None = None,
 ) -> None:
-    torch.save(
+    atomic_torch_save(
+        path,
         {
             "source_positions": model.source_positions.detach().cpu(),
             "source_weights": model.source_weights.detach().cpu(),
@@ -111,7 +143,6 @@ def save_checkpoint(
             "config": config,
             "metrics": metrics or {},
         },
-        path,
     )
 
 

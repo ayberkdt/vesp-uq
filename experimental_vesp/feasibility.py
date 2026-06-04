@@ -9,10 +9,9 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Iterable
 
-import yaml
-
+from .config import load_config
 from .models import MultiShellDiscreteVESP
-from .train_discrete import load_config, run
+from .train_discrete import run
 
 
 def _base_config() -> dict:
@@ -20,7 +19,7 @@ def _base_config() -> dict:
         "seed": 42,
         "device": "cpu",
         "dtype": "float64",
-        "output_dir": "outputs/feasibility",
+        "output": {"output_dir": "outputs/feasibility"},
         "kernel": {"eps": 0.0, "acceleration_sign": 1.0, "source_chunk_size": 512},
         "solver": {"type": "ridge", "ridge_method": "augmented_lstsq", "lambda_l2": 1.0e-8, "column_normalize": True},
         "loss": {
@@ -149,20 +148,21 @@ def _float(row: dict, key: str, default: float = float("nan")) -> float:
     return float(value)
 
 
-def _decision(rows: list[dict]) -> tuple[str, list[str], list[str]]:
+def _decision(rows: list[dict], thresholds: dict | None = None) -> tuple[str, list[str], list[str]]:
+    thresholds = thresholds or {}
     by_name = {row["scenario"]: row for row in rows}
     positives: list[str] = []
     risks: list[str] = []
 
     same = _float(by_name.get("same_family_single", {}), "val_acc_rmse")
-    same_family_tol = 2.0e-6
+    same_family_tol = float(thresholds.get("same_family_tol", 2.0e-6))
     if same < same_family_tol:
         positives.append("Same-family recovery is excellent; kernel sign and ridge solver are trustworthy.")
     else:
         risks.append(f"Same-family recovery is not tight enough (`{same:.3e}`).")
 
     mismatch = _float(by_name.get("radius_mismatch_single", {}), "val_acc_rmse")
-    if mismatch < 5.0e-3:
+    if mismatch < float(thresholds.get("radius_mismatch_tol", 5.0e-3)):
         positives.append("Single-shell radius mismatch remains representable at useful error.")
     else:
         risks.append(f"Radius mismatch error is high (`{mismatch:.3e}`).")
@@ -175,7 +175,7 @@ def _decision(rows: list[dict]) -> tuple[str, list[str], list[str]]:
         risks.append("Multi-shell did not clearly beat single-shell on multi-shell truth.")
 
     noisy = _float(by_name.get("noisy_radius_mismatch_single", {}), "val_acc_rmse")
-    if noisy < 2.0e-2:
+    if noisy < float(thresholds.get("noisy_tol", 2.0e-2)):
         positives.append("Noisy observation test remains stable under ridge/moment regularization.")
     else:
         risks.append(f"Noisy test error is high (`{noisy:.3e}`).")
@@ -184,27 +184,27 @@ def _decision(rows: list[dict]) -> tuple[str, list[str], list[str]]:
     high = _float(ood, "test_high_acc_rmse")
     low = _float(ood, "test_low_acc_rmse")
     val = _float(ood, "val_acc_rmse")
-    if high < 5.0 * val:
+    if high < float(thresholds.get("high_ood_factor", 5.0)) * val:
         positives.append("High-altitude OOD error is controlled relative to validation.")
     else:
         risks.append("High-altitude OOD error grows too much relative to validation.")
-    if low < 25.0 * val:
+    if low < float(thresholds.get("low_ood_factor", 25.0)) * val:
         positives.append("Low-altitude OOD error is within the current watch band.")
     else:
         risks.append("Low-altitude OOD error is the dominant instability risk.")
 
     max_top5 = max(_float(row, "top_5pct_source_contribution", 0.0) for row in rows)
-    if max_top5 < 0.45:
+    if max_top5 < float(thresholds.get("max_top5_source_contribution", 0.45)):
         positives.append("Source concentration is not extreme in the feasibility suite.")
     else:
         risks.append("Some runs localize too much source mass in the top 5%; MaxEnt regularization may be useful.")
 
     if len(risks) <= 2 and same < same_family_tol:
-        decision = "GO: begin Stage 3 MaxEnt architecture while continuing Stage 2 ablations."
+        decision = "GO_STAGE3_PREP"
     elif same < same_family_tol:
-        decision = "CONDITIONAL: solver/kernel are sound, but resolve Stage 2 risks before serious MaxEnt claims."
+        decision = "CONDITIONAL"
     else:
-        decision = "REDESIGN: fix Stage 1 recovery before MaxEnt."
+        decision = "REDESIGN"
     return decision, positives, risks
 
 
@@ -212,12 +212,13 @@ def run_feasibility_suite(config: dict | None = None) -> Path:
     base = _base_config()
     if config:
         base.update(config.get("base", {}))
-    output_dir = Path(base.get("output_dir", "outputs/feasibility"))
+    output_dir = Path(base.get("output", {}).get("output_dir", "outputs/feasibility"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rows = []
     for trial in _scenario_configs(base):
         model_type = trial["model"]["type"]
+        trial.setdefault("output", {})["output_dir"] = str(output_dir)
         print(f"===== feasibility: {trial['output']['run_name']} =====")
         start = time.perf_counter()
         if model_type == "multishell":
@@ -232,7 +233,7 @@ def run_feasibility_suite(config: dict | None = None) -> Path:
         writer.writeheader()
         writer.writerows(rows)
 
-    decision, positives, risks = _decision(rows)
+    decision, positives, risks = _decision(rows, (config or {}).get("feasibility", {}))
     report_lines = [
         "# MaxEnt-VESP Feasibility Report",
         "",

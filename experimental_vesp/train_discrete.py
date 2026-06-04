@@ -10,24 +10,21 @@ import torch
 import yaml
 from torch.utils.data import DataLoader
 
-from .data import ResidualGravityDataset, load_csv_dataset, make_synthetic_dataset
+from .config import get_device, get_dtype, load_config as load_standard_config, merge_defaults, validate_config
+from .data import ResidualGravityDataset, load_csv_dataset
 from .evaluate import evaluate_model, print_metrics, write_evaluation_artifacts
 from .kernels import build_dense_operator, stack_observations
 from .losses import composite_loss
 from .models import DiscreteVESP, save_checkpoint
+from .solvers import build_regularization_rows, solve_ridge as solve_ridge_system
 from .splits import DataSplits, make_splits
+from .synthetic import make_synthetic_dataset
+from .units import UnitConfig
 from .sources import make_shell_sources
 
 
 def load_config(path: str | Path) -> dict:
-    path = Path(path)
-    with open(path, "r", encoding="utf-8") as f:
-        loaded = yaml.safe_load(f)
-    if isinstance(loaded, str):
-        ref = (path.parent / loaded).resolve()
-        with open(ref, "r", encoding="utf-8") as f:
-            loaded = yaml.safe_load(f)
-    return loaded
+    return load_standard_config(path)
 
 
 def make_data_splits(config: dict, *, dtype: torch.dtype) -> DataSplits:
@@ -56,6 +53,7 @@ def make_data(config: dict, *, dtype: torch.dtype) -> tuple:
 
 
 def _source_config(config: dict) -> dict:
+    config = merge_defaults(config)
     if "model" in config:
         model_cfg = config.get("model", {})
         if model_cfg.get("type") == "multishell":
@@ -77,13 +75,15 @@ def _source_config(config: dict) -> dict:
 
 
 def make_model(config: dict, *, dtype: torch.dtype, model_cls=DiscreteVESP) -> DiscreteVESP:
+    config = merge_defaults(config)
     src_cfg = _source_config(config)
+    units = UnitConfig.from_config(config)
     shells = src_cfg.get("shell_radii", [0.8])
     points = src_cfg.get("points_per_shell", 512)
     source_set = make_shell_sources(
         shells,
         points,
-        body_radius=float(src_cfg.get("body_radius", 1.0)),
+        body_radius=units.source_body_radius,
         weight_mode=str(src_cfg.get("weight_mode", "surface_area")),
         dtype=dtype,
     )
@@ -97,46 +97,17 @@ def _regularization_rows(
     dtype: torch.dtype,
     device: torch.device,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-    """Build augmented least-squares rows for source regularization."""
-
     loss_cfg = config.get("loss", {})
-    n_sources = model.n_sources
-    rows: list[torch.Tensor] = []
-    targets: list[torch.Tensor] = []
-
-    lambda_l2 = float(loss_cfg.get("lambda_l2", 0.0))
-    if lambda_l2:
-        rows.append(torch.sqrt(torch.tensor(lambda_l2, dtype=dtype, device=device)) * torch.eye(n_sources, dtype=dtype, device=device))
-        targets.append(torch.zeros(n_sources, dtype=dtype, device=device))
-
-    lambda_moment = float(loss_cfg.get("lambda_moment", 0.0))
-    if lambda_moment:
-        weights = model.source_weights.to(device=device, dtype=dtype)
-        positions = model.source_positions.to(device=device, dtype=dtype)
-        moment_scale = torch.sqrt(torch.tensor(lambda_moment, dtype=dtype, device=device))
-        dipole_weight = float(loss_cfg.get("lambda_dipole", 1.0))
-        dipole_scale = torch.sqrt(torch.tensor(dipole_weight, dtype=dtype, device=device))
-        moment_rows = [weights]
-        moment_rows.extend([dipole_scale * weights * positions[:, axis] for axis in range(3)])
-        rows.append(moment_scale * torch.stack(moment_rows, dim=0))
-        targets.append(torch.zeros(4, dtype=dtype, device=device))
-
     shell_weights = torch.as_tensor(loss_cfg.get("shell_energy_weights", []), dtype=dtype, device=device)
-    if shell_weights.numel():
-        diag = torch.zeros(n_sources, dtype=dtype, device=device)
-        shell_ids = model.shell_ids.to(device)
-        source_weights = model.source_weights.to(device=device, dtype=dtype)
-        for shell_id, weight in enumerate(shell_weights):
-            diag = diag + torch.where(shell_ids == shell_id, weight * source_weights, torch.zeros_like(diag))
-        active = diag > 0
-        if torch.any(active):
-            rows.append(torch.diag(torch.sqrt(diag[active])))
-            full_row = torch.zeros((int(active.sum().item()), n_sources), dtype=dtype, device=device)
-            full_row[:, active] = rows.pop()
-            rows.append(full_row)
-            targets.append(torch.zeros(int(active.sum().item()), dtype=dtype, device=device))
-
-    return rows, targets
+    return build_regularization_rows(
+        source_positions=model.source_positions.to(device=device, dtype=dtype),
+        source_weights=model.source_weights.to(device=device, dtype=dtype),
+        shell_ids=model.shell_ids.to(device),
+        lambda_l2=float(loss_cfg.get("lambda_l2", 0.0)),
+        lambda_moment=float(loss_cfg.get("lambda_moment", 0.0)),
+        lambda_dipole=float(loss_cfg.get("lambda_dipole", 1.0)),
+        shell_energy_weights=shell_weights,
+    )
 
 
 def _normal_equation_solve(
@@ -191,18 +162,23 @@ def _augmented_lstsq_solve(
     dtype = operator.dtype
     device = operator.device
     rows, targets = _regularization_rows(model=model, config=config, dtype=dtype, device=device)
-    if rows:
-        operator = torch.cat([operator, *rows], dim=0)
-        target = torch.cat([target, *targets], dim=0)
-
     if bool(train_cfg.get("column_normalize", True)):
-        col_norm = torch.linalg.norm(operator, dim=0)
+        op_for_scale = torch.cat([operator, *rows], dim=0) if rows else operator
+        col_norm = torch.linalg.norm(op_for_scale, dim=0)
         col_scale = torch.clamp(col_norm, min=torch.finfo(dtype).eps)
         scaled_operator = operator / col_scale.unsqueeze(0)
-        solution_scaled = torch.linalg.lstsq(scaled_operator, target.unsqueeze(-1)).solution.squeeze(-1)
+        scaled_rows = [row / col_scale.unsqueeze(0) for row in rows]
+        solution_scaled = solve_ridge_system(
+            scaled_operator,
+            target,
+            method="augmented_lstsq",
+            lambda_l2=0.0,
+            extra_rows=scaled_rows,
+            extra_targets=targets,
+        )
         return solution_scaled / col_scale
 
-    return torch.linalg.lstsq(operator, target.unsqueeze(-1)).solution.squeeze(-1)
+    return solve_ridge_system(operator, target, method="augmented_lstsq", lambda_l2=0.0, extra_rows=rows, extra_targets=targets)
 
 
 def solve_ridge(model: DiscreteVESP, train_data, config: dict, *, device: torch.device) -> None:
@@ -312,8 +288,10 @@ def train_adam(model: DiscreteVESP, train_data, config: dict, *, device: torch.d
 
 
 def run(config: dict, *, model_cls=DiscreteVESP) -> dict:
-    dtype = torch.float64 if str(config.get("dtype", "float32")) == "float64" else torch.float32
-    device = torch.device(config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
+    config = merge_defaults(config)
+    validate_config(config)
+    dtype = get_dtype(config)
+    device = get_device(config)
     splits = make_data_splits(config, dtype=dtype)
     train_data, val_data = splits.train, splits.val
     model = make_model(config, dtype=dtype, model_cls=model_cls)
@@ -361,15 +339,21 @@ def run(config: dict, *, model_cls=DiscreteVESP) -> dict:
         metrics["test_low_acceleration_rmse"] = low_metrics["acceleration_rmse"]
         metrics["test_low_potential_rmse"] = low_metrics["potential_rmse"]
 
-    output_dir = Path(config.get("output_dir", "outputs"))
+    output_cfg = config.get("output", {})
+    output_dir = Path(output_cfg.get("output_dir", config.get("output_dir", "outputs")))
     output_dir.mkdir(parents=True, exist_ok=True)
-    run_name = str(config.get("output", {}).get("run_name", Path(str(config.get("checkpoint_name", "vesp_discrete.pt"))).stem))
+    run_name = str(output_cfg.get("run_name", Path(str(config.get("checkpoint_name", "vesp_discrete.pt"))).stem))
     run_dir = output_dir / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = output_dir / str(config.get("checkpoint_name", f"{run_name}.pt"))
+    checkpoint_path = output_dir / f"{run_name}.pt"
     save_checkpoint(str(checkpoint_path), model, config, metrics)
     save_checkpoint(str(run_dir / "sigma.pt"), model, config, metrics)
-    write_evaluation_artifacts(run_dir, metrics, config)
+    write_evaluation_artifacts(
+        run_dir,
+        metrics,
+        config,
+        extra_artifacts={"checkpoint": checkpoint_path, "sigma_checkpoint": run_dir / "sigma.pt"},
+    )
     print(f"saved_checkpoint: {checkpoint_path}")
     print(f"saved_run_dir: {run_dir}")
     print_metrics(metrics)

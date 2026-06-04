@@ -1,7 +1,8 @@
 base:
   device: cpu
   dtype: float64
-  output_dir: outputs/feasibility
+  output:
+    output_dir: outputs/feasibility
   kernel:
     eps: 0.0
     acceleration_sign: 1.0
@@ -20,4 +21,12 @@ base:
     lambda_moment: 1.0e-6
     lambda_dipole: 1.0
     shell_energy_weights: []
+
+feasibility:
+  same_family_tol: 2.0e-6
+  radius_mismatch_tol: 5.0e-3
+  noisy_tol: 2.0e-2
+  high_ood_factor: 5.0
+  low_ood_factor: 25.0
+  max_top5_source_contribution: 0.45
 

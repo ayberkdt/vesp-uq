@@ -1,8 +1,6 @@
 seed: 123
 device: cpu
 dtype: float64
-output_dir: outputs/synthetic_stress
-checkpoint_name: synthetic_stress_single.pt
 
 data:
   type: synthetic
@@ -47,6 +45,6 @@ split:
   train_fraction: 0.75
 
 output:
+  output_dir: outputs/synthetic_stress
   run_name: synthetic_stress_single
   save_plots: false
-

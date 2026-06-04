@@ -19,6 +19,10 @@ from typing import Iterable
 import numpy as np
 from scipy.special import gammaln, lpmv
 
+from .data import write_dataset_metadata
+from .gravity_io import read_shadr_ascii
+from .lunar import canonical_scales
+
 
 PDS_GRAIL_SHADR_BASE = "https://pds-geosciences.wustl.edu/grail/grail-l-lgrs-5-rdr-v1/grail_1001/shadr"
 
@@ -45,6 +49,9 @@ class SphericalHarmonicGravityModel:
     order: int
     c: np.ndarray
     s: np.ndarray
+    normalization_state: int | None = None
+    source_path: str | None = None
+    column_order: str | None = None
 
 
 def download_file(url: str, output_path: str | Path, *, overwrite: bool = False) -> Path:
@@ -79,56 +86,31 @@ def download_known_model(model_name: str, data_dir: str | Path = "data/gravity_m
     return tab, lbl
 
 
-def _parse_header_values(line: str) -> tuple[float, float, int, int]:
-    values = [part.strip().strip(",") for part in line.replace(",", " ").split()]
-    if len(values) < 4:
-        raise ValueError("SHA header row does not contain radius, GM, degree, and order")
-    reference_radius_km = float(values[0].replace("D", "E"))
-    gm_km3_s2 = float(values[1].replace("D", "E"))
-    degree = int(values[3])
-    order = int(values[4]) if len(values) > 4 else degree
-    return reference_radius_km, gm_km3_s2, degree, order
-
-
-def read_pds_sha(path: str | Path, *, max_degree: int | None = None, name: str | None = None) -> SphericalHarmonicGravityModel:
+def read_pds_sha(
+    path: str | Path,
+    *,
+    max_degree: int | None = None,
+    name: str | None = None,
+    strict: bool = True,
+) -> SphericalHarmonicGravityModel:
     """Read a PDS SHA/TAB spherical harmonic model.
 
-    The parser is intentionally tolerant: it reads the first row as the SHADR
-    header and then accepts coefficient rows whose first two columns are integer
-    degree/order pairs.
+    The parser is intentionally strict by default. It auto-detects degree/order
+    vs order/degree column order and validates coefficient coverage.
     """
 
-    path = Path(path)
-    with path.open("r", encoding="ascii", errors="ignore") as f:
-        first = f.readline()
-        reference_radius_km, gm_km3_s2, file_degree, file_order = _parse_header_values(first)
-        target_degree = min(file_degree, int(max_degree)) if max_degree is not None else file_degree
-        target_order = min(file_order, target_degree)
-        c = np.zeros((target_degree + 1, target_degree + 1), dtype=np.float64)
-        s = np.zeros_like(c)
-
-        for line in f:
-            parts = line.replace(",", " ").split()
-            if len(parts) < 4:
-                continue
-            try:
-                degree = int(parts[0].strip(","))
-                order = int(parts[1].strip(","))
-            except ValueError:
-                continue
-            if degree > target_degree or order > target_order:
-                continue
-            c[degree, order] = float(parts[2].strip(",").replace("D", "E"))
-            s[degree, order] = float(parts[3].strip(",").replace("D", "E"))
-
+    table = read_shadr_ascii(path, max_degree=max_degree, name=name, strict=strict)
     return SphericalHarmonicGravityModel(
-        name=name or path.stem,
-        reference_radius_km=reference_radius_km,
-        gm_km3_s2=gm_km3_s2,
-        degree=target_degree,
-        order=target_order,
-        c=c,
-        s=s,
+        name=table.name,
+        reference_radius_km=table.reference_radius_km,
+        gm_km3_s2=table.gm_km3_s2,
+        degree=table.degree,
+        order=table.order,
+        c=table.c,
+        s=table.s,
+        normalization_state=table.normalization_state,
+        source_path=table.source_path,
+        column_order=table.column_order,
     )
 
 
@@ -270,12 +252,13 @@ def build_real_lunar_dataset(
     radius_min: float = 1.03,
     radius_max: float = 1.60,
     finite_difference_step: float = 1.0e-4,
+    acceleration_output: str = "physical",
     remove_zonal: bool = False,
     seed: int = 42,
 ) -> Path:
     if sha_path is None:
         sha_path, _ = download_known_model(model_name, data_dir=data_dir)
-    model = read_pds_sha(sha_path, max_degree=degree_max, name=model_name)
+    model = read_pds_sha(sha_path, max_degree=degree_max, name=model_name, strict=True)
     points = random_exterior_points(n_query, radius_min=radius_min, radius_max=radius_max, seed=seed)
     potential = residual_potential(
         model,
@@ -284,7 +267,7 @@ def build_real_lunar_dataset(
         degree_max=degree_max,
         remove_zonal=remove_zonal,
     )
-    acceleration = residual_acceleration_finite_difference(
+    grad_normalized = residual_acceleration_finite_difference(
         model,
         points,
         degree_min=degree_min,
@@ -292,7 +275,46 @@ def build_real_lunar_dataset(
         remove_zonal=remove_zonal,
         step=finite_difference_step,
     )
-    return write_residual_dataset_csv(output_path, points, potential, acceleration)
+    if acceleration_output == "physical":
+        acceleration = grad_normalized / model.reference_radius_km
+        acceleration_units = "km/s^2"
+        acceleration_kind = "physical"
+    elif acceleration_output == "normalized_gradient":
+        acceleration = grad_normalized
+        acceleration_units = "km^2/s^2 per normalized radius"
+        acceleration_kind = "normalized_gradient"
+    else:
+        raise ValueError("acceleration_output must be 'physical' or 'normalized_gradient'")
+    output = write_residual_dataset_csv(output_path, points, potential, acceleration)
+    du_m, tu_s, vu_m_s = canonical_scales(mu_si=model.gm_km3_s2 * 1.0e9, du_m=model.reference_radius_km * 1000.0)
+    write_dataset_metadata(
+        output,
+        {
+            "metadata_schema": "vesp_lunar_residual_csv_v1",
+            "central_body": "moon",
+            "target_name": "MOON",
+            "position_units": "normalized",
+            "potential_units": "km^2/s^2",
+            "acceleration_units": acceleration_units,
+            "acceleration_output": acceleration_kind,
+            "R_body": model.reference_radius_km,
+            "R_body_units": "km",
+            "r_ref_m": model.reference_radius_km * 1000.0,
+            "gm_km3_s2": model.gm_km3_s2,
+            "mu_si": model.gm_km3_s2 * 1.0e9,
+            "DU_m": du_m,
+            "TU_s": tu_s,
+            "VU_m_s": vu_m_s,
+            "coordinate_system": "body-fixed normalized Cartesian",
+            "gravity_model": model.name,
+            "gravity_model_path": model.source_path,
+            "normalization_state": model.normalization_state,
+            "column_order": model.column_order,
+            "degree_min": degree_min,
+            "degree_max": degree_max,
+        },
+    )
+    return output
 
 
 def main(argv: Iterable[str] | None = None) -> None:
@@ -307,6 +329,7 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--radius-min", type=float, default=1.03)
     parser.add_argument("--radius-max", type=float, default=1.60)
     parser.add_argument("--finite-difference-step", type=float, default=1.0e-4)
+    parser.add_argument("--acceleration-output", choices=["physical", "normalized_gradient"], default="physical")
     parser.add_argument("--remove-zonal", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args(argv)
@@ -322,6 +345,7 @@ def main(argv: Iterable[str] | None = None) -> None:
         radius_min=args.radius_min,
         radius_max=args.radius_max,
         finite_difference_step=args.finite_difference_step,
+        acceleration_output=args.acceleration_output,
         remove_zonal=args.remove_zonal,
         seed=args.seed,
     )

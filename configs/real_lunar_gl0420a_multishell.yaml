@@ -5,30 +5,26 @@ dtype: float64
 body:
   R_body: 1.0
   normalize_positions: true
+  position_units: normalized
+  potential_units: km^2/s^2
+  acceleration_units: km/s^2
 
 data:
-  type: synthetic
-  path:
+  type: csv
+  path: data/lunar_grail_gl0420a_L60_residual.csv
   train_fraction: 0.8
   seed: 42
-  synthetic_n_query: 512
-  synthetic_n_truth_sources: 64
-  synthetic_query_radius_min: 1.05
-  synthetic_query_radius_max: 1.60
-  synthetic_truth_shell_radius: 0.72
-  synthetic_noise_std: 0.0
 
 model:
   type: multishell
   shell_alphas: [0.50, 0.78, 0.86]
-  n_sources_per_shell: [192, 256, 192]
+  n_sources_per_shell: [384, 512, 384]
   weight_mode: surface_area
 
 kernel:
   eps: 0.0
   acceleration_sign: 1.0
-  query_chunk_size: 2048
-  source_chunk_size: 512
+  source_chunk_size: 1024
 
 solver:
   type: ridge
@@ -39,8 +35,6 @@ solver:
 loss:
   use_potential: true
   use_acceleration: true
-  potential_weight: 0.2
-  acceleration_weight: 1.0
   lambda_potential: 0.2
   lambda_acceleration: 1.0
   lambda_l2: 1.0e-7
@@ -50,9 +44,14 @@ loss:
 
 split:
   type: random
+  radius_units: normalized
   train_fraction: 0.8
+
+evaluation:
+  batch_size: 4096
+  n_altitude_bins: 6
 
 output:
   output_dir: outputs
-  run_name: discrete_multishell
+  run_name: real_lunar_gl0420a_multishell
   save_plots: false

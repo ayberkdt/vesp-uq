@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -10,8 +11,8 @@ from typing import Sequence
 import torch
 from torch.utils.data import Dataset
 
-from .kernels import evaluate_kernel
-from .sources import make_shell_sources
+from .lunar import validate_lunar_metadata_contract
+from .units import PositionScaler, UnitConfig
 
 
 COLUMN_ALIASES = {
@@ -83,7 +84,15 @@ class ResidualGravityData:
 
     @property
     def altitude(self) -> torch.Tensor:
-        return self.r - 1.0
+        metadata = self.metadata or {}
+        units = UnitConfig(
+            R_body=float(metadata.get("R_body", 1.0)),
+            normalize_positions=metadata.get("position_units", "normalized") == "normalized",
+            position_units=str(metadata.get("position_units", "normalized")),
+            potential_units=str(metadata.get("potential_units", "model")),
+            acceleration_units=str(metadata.get("acceleration_units", "model")),
+        )
+        return PositionScaler(units).altitude_from_model_positions(self.positions)
 
 
 class ResidualGravityDataset(Dataset):
@@ -103,6 +112,19 @@ class ResidualGravityDataset(Dataset):
 
 def load_csv_dataset(path: str | Path, *, dtype: torch.dtype = torch.float32) -> ResidualGravityData:
     path = Path(path)
+    metadata_path = path.with_suffix(path.suffix + ".metadata.json")
+    if not metadata_path.exists():
+        metadata_path = path.with_suffix(".metadata.json")
+    metadata = {"path": str(path), "position_units": "normalized"}
+    if metadata_path.exists():
+        metadata.update(json.loads(metadata_path.read_text(encoding="utf-8")))
+    contract = validate_lunar_metadata_contract(metadata, data_path=path, require_lunar=False)
+    if contract.get("has_lunar_signature") or contract.get("central_body") == "moon":
+        metadata.setdefault("central_body", "moon")
+        if contract.get("resolved_mu_si") is not None:
+            metadata.setdefault("resolved_mu_si", contract["resolved_mu_si"])
+        if contract.get("resolved_r_ref_m") is not None:
+            metadata.setdefault("resolved_r_ref_m", contract["resolved_r_ref_m"])
     with open(path, "r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
         if reader.fieldnames is None:
@@ -142,8 +164,17 @@ def load_csv_dataset(path: str | Path, *, dtype: torch.dtype = torch.float32) ->
         positions=torch.tensor(x_rows, dtype=dtype),
         potential=torch.tensor(u_rows, dtype=dtype),
         acceleration=torch.tensor(a_rows, dtype=dtype),
-        metadata={"path": str(path), "position_units": "normalized"},
+        metadata=metadata,
     )
+
+
+def write_dataset_metadata(path: str | Path, metadata: dict) -> Path:
+    output = Path(path)
+    if output.suffix.lower() == ".csv":
+        output = output.with_suffix(output.suffix + ".metadata.json")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    return output
 
 
 def split_data(
@@ -173,39 +204,18 @@ def make_synthetic_dataset(
     seed: int = 7,
     dtype: torch.dtype = torch.float32,
 ) -> ResidualGravityData:
-    """Generate a deterministic synthetic residual field from hidden sources."""
+    """Legacy wrapper; synthetic generation lives in experimental_vesp.synthetic."""
 
-    generator = torch.Generator().manual_seed(seed)
-    directions = torch.randn((n_query, 3), generator=generator, dtype=dtype)
-    directions = directions / torch.linalg.norm(directions, dim=-1, keepdim=True)
-    radii = query_radius_min + (query_radius_max - query_radius_min) * torch.rand((n_query, 1), generator=generator, dtype=dtype)
-    positions = directions * radii
+    from .synthetic import make_synthetic_dataset as _make
 
-    shell_radii = list(truth_shell_radii) if truth_shell_radii is not None else [truth_shell_radius]
-    truth_sources = make_shell_sources(shell_radii, n_truth_sources, dtype=dtype)
-    sigma_truth = torch.randn(truth_sources.n_sources, generator=generator, dtype=dtype)
-    sigma_truth = sigma_truth - sigma_truth.mean()
-    strength = truth_sources.weights * sigma_truth
-
-    out = evaluate_kernel(positions, truth_sources.positions, strength)
-    potential = out.potential
-    acceleration = out.acceleration
-    if potential is None or acceleration is None:
-        raise RuntimeError("synthetic kernel evaluation failed")
-
-    if noise_std:
-        potential = potential + noise_std * torch.randn(potential.shape, generator=generator, dtype=dtype)
-        acceleration = acceleration + noise_std * torch.randn(acceleration.shape, generator=generator, dtype=dtype)
-
-    return ResidualGravityData(
-        positions=positions,
-        potential=potential,
-        acceleration=acceleration,
-        metadata={
-            "type": "synthetic",
-            "position_units": "normalized",
-            "truth_shell_radii": shell_radii,
-            "n_truth_sources": n_truth_sources,
-            "noise_std": noise_std,
-        },
+    return _make(
+        n_query=n_query,
+        n_truth_sources=n_truth_sources,
+        query_radius_min=query_radius_min,
+        query_radius_max=query_radius_max,
+        truth_shell_radius=truth_shell_radius,
+        truth_shell_radii=truth_shell_radii,
+        noise_std=noise_std,
+        seed=seed,
+        dtype=dtype,
     )

@@ -5,18 +5,22 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import io
 from pathlib import Path
 from typing import Iterable
 
 import torch
 from torch.utils.data import DataLoader
 
+from .artifacts import atomic_write_json, atomic_write_text, ensure_run_layout, write_run_manifest
 from .data import ResidualGravityData, ResidualGravityDataset, load_csv_dataset
 from .diagnostics import source_diagnostics, time_inference
 from .metrics import (
     altitude_binned_error,
     radial_cross_radial_error,
     relative_rmse_acceleration,
+    rmse_acceleration_components,
+    rmse_acceleration_norm,
     rmse_acceleration,
     rmse_potential,
     vector_angle_error,
@@ -112,10 +116,14 @@ def evaluate_model(
     metrics = {
         "potential_rmse": rmse_potential(pred_u_t, true_u_t),
         "acceleration_rmse": rmse_acceleration(pred_a_t, true_a_t),
+        "acceleration_norm_rmse": rmse_acceleration_norm(pred_a_t, true_a_t),
+        **rmse_acceleration_components(pred_a_t, true_a_t),
         "relative_acceleration_rmse": relative_rmse_acceleration(pred_a_t, true_a_t),
         **rc,
-        "radial_acceleration_rmse": rc["radial_rmse"],
-        "cross_radial_acceleration_rmse": rc["cross_radial_rmse"],
+        "radial_rmse": rc["radial_scalar_rmse"],
+        "cross_radial_rmse": rc["cross_norm_rmse"],
+        "radial_acceleration_rmse": rc["radial_scalar_rmse"],
+        "cross_radial_acceleration_rmse": rc["cross_norm_rmse"],
         **vector_angle_error(pred_a_t, true_a_t),
         "altitude_binned_error": altitude_binned_error(xs_t, pred_a_t, true_a_t, n_bins=n_altitude_bins),
         "diagnostics": source_diagnostics(
@@ -141,31 +149,41 @@ def _json_default(value):
     return value
 
 
-def write_evaluation_artifacts(output_dir: str | Path, metrics: dict, config: dict | None = None) -> None:
-    output = Path(output_dir)
-    output.mkdir(parents=True, exist_ok=True)
+def _csv_text(fieldnames: list[str], rows: list[dict]) -> str:
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+    return buffer.getvalue()
+
+
+def write_evaluation_artifacts(
+    output_dir: str | Path,
+    metrics: dict,
+    config: dict | None = None,
+    *,
+    extra_artifacts: dict[str, str | Path] | None = None,
+) -> None:
+    layout = ensure_run_layout(output_dir)
     if config is not None:
         import yaml
 
-        (output / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+        atomic_write_text(layout.config_yaml, yaml.safe_dump(config, sort_keys=False))
 
     diagnostics = metrics.get("diagnostics", {})
     metrics_without_nested = {k: v for k, v in metrics.items() if k not in {"diagnostics", "altitude_binned_error"}}
 
-    (output / "metrics.json").write_text(json.dumps(metrics_without_nested, indent=2, default=_json_default), encoding="utf-8")
-    (output / "diagnostics.json").write_text(json.dumps(diagnostics, indent=2, default=_json_default), encoding="utf-8")
+    atomic_write_json(layout.metrics_json, metrics_without_nested)
+    atomic_write_json(layout.diagnostics_json, diagnostics)
 
-    with (output / "altitude_binned_error.csv").open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["r_min", "r_max", "count", "acceleration_rmse"])
-        writer.writeheader()
-        writer.writerows(metrics.get("altitude_binned_error", []))
+    atomic_write_text(
+        layout.altitude_binned_error_csv,
+        _csv_text(["r_min", "r_max", "count", "acceleration_rmse"], metrics.get("altitude_binned_error", [])),
+    )
 
     shell_rows = diagnostics.get("shell_energy_distribution", [])
-    with (output / "shell_energy.csv").open("w", encoding="utf-8", newline="") as f:
-        fieldnames = ["shell_id", "shell_alpha", "n_source", "energy", "energy_fraction", "sigma_norm"]
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(shell_rows)
+    shell_fieldnames = ["shell_id", "shell_alpha", "n_source", "energy", "energy_fraction", "sigma_norm"]
+    atomic_write_text(layout.shell_energy_csv, _csv_text(shell_fieldnames, shell_rows))
 
     summary_lines = [
         "VESP Run Summary",
@@ -181,7 +199,18 @@ def write_evaluation_artifacts(output_dir: str | Path, metrics: dict, config: di
         f"monopole_leakage: {diagnostics.get('monopole_leakage')}",
         f"dipole_leakage: {diagnostics.get('dipole_leakage')}",
     ]
-    (output / "summary.txt").write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
+    atomic_write_text(layout.summary_txt, "\n".join(summary_lines) + "\n")
+
+    artifacts = {
+        "config": layout.config_yaml,
+        "metrics": layout.metrics_json,
+        "diagnostics": layout.diagnostics_json,
+        "altitude_binned_error": layout.altitude_binned_error_csv,
+        "shell_energy": layout.shell_energy_csv,
+        "summary": layout.summary_txt,
+    }
+    artifacts.update(extra_artifacts or {})
+    write_run_manifest(layout.run_dir, config=config, metrics=metrics_without_nested, artifacts=artifacts)
 
 
 def print_metrics(metrics: dict) -> None:

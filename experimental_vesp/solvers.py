@@ -7,6 +7,47 @@ from typing import Callable
 import torch
 
 
+def build_regularization_rows(
+    *,
+    source_positions: torch.Tensor,
+    source_weights: torch.Tensor,
+    shell_ids: torch.Tensor,
+    lambda_l2: float = 0.0,
+    lambda_moment: float = 0.0,
+    lambda_dipole: float = 1.0,
+    shell_energy_weights: torch.Tensor | None = None,
+) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+    dtype = source_positions.dtype
+    device = source_positions.device
+    n_sources = source_positions.shape[0]
+    rows: list[torch.Tensor] = []
+    targets: list[torch.Tensor] = []
+
+    if lambda_l2:
+        rows.append(torch.sqrt(torch.tensor(float(lambda_l2), dtype=dtype, device=device)) * torch.eye(n_sources, dtype=dtype, device=device))
+        targets.append(torch.zeros(n_sources, dtype=dtype, device=device))
+
+    if lambda_moment:
+        moment_scale = torch.sqrt(torch.tensor(float(lambda_moment), dtype=dtype, device=device))
+        dipole_scale = torch.sqrt(torch.tensor(float(lambda_dipole), dtype=dtype, device=device))
+        moment_rows = [source_weights]
+        moment_rows.extend([dipole_scale * source_weights * source_positions[:, axis] for axis in range(3)])
+        rows.append(moment_scale * torch.stack(moment_rows, dim=0))
+        targets.append(torch.zeros(4, dtype=dtype, device=device))
+
+    if shell_energy_weights is not None and shell_energy_weights.numel():
+        diag = torch.zeros(n_sources, dtype=dtype, device=device)
+        for shell_id, weight in enumerate(shell_energy_weights.to(device=device, dtype=dtype)):
+            diag = diag + torch.where(shell_ids.to(device) == shell_id, weight * source_weights, torch.zeros_like(diag))
+        active = diag > 0
+        if torch.any(active):
+            row = torch.zeros((int(active.sum().item()), n_sources), dtype=dtype, device=device)
+            row[:, active] = torch.diag(torch.sqrt(diag[active]))
+            rows.append(row)
+            targets.append(torch.zeros(row.shape[0], dtype=dtype, device=device))
+    return rows, targets
+
+
 def solve_ridge_normal_equation(K: torch.Tensor, y: torch.Tensor, lambda_l2: float = 0.0) -> torch.Tensor:
     n = K.shape[1]
     lhs = K.T @ K
@@ -41,6 +82,34 @@ def solve_ridge_augmented_lstsq(
     return torch.linalg.lstsq(K_aug, y_aug.unsqueeze(-1)).solution.squeeze(-1)
 
 
+def solve_augmented_lstsq(K: torch.Tensor, y: torch.Tensor, **kwargs) -> torch.Tensor:
+    return solve_ridge_augmented_lstsq(K, y, **kwargs)
+
+
+def solve_normal_equation(K: torch.Tensor, y: torch.Tensor, **kwargs) -> torch.Tensor:
+    return solve_ridge_normal_equation(K, y, **kwargs)
+
+
+def solve_ridge(
+    K: torch.Tensor,
+    y: torch.Tensor,
+    *,
+    method: str = "augmented_lstsq",
+    lambda_l2: float = 0.0,
+    extra_rows: list[torch.Tensor] | None = None,
+    extra_targets: list[torch.Tensor] | None = None,
+) -> torch.Tensor:
+    if method == "normal_equation":
+        if extra_rows:
+            rows = [K, *extra_rows]
+            targets = [y, *(extra_targets or [torch.zeros(r.shape[0], dtype=K.dtype, device=K.device) for r in extra_rows])]
+            return solve_ridge_normal_equation(torch.cat(rows, dim=0), torch.cat(targets, dim=0), lambda_l2=0.0)
+        return solve_ridge_normal_equation(K, y, lambda_l2=lambda_l2)
+    if method == "augmented_lstsq":
+        return solve_ridge_augmented_lstsq(K, y, lambda_l2=lambda_l2, extra_rows=extra_rows, extra_targets=extra_targets)
+    raise ValueError(f"unknown ridge method: {method}")
+
+
 def solve_torch_adam(
     parameters: list[torch.nn.Parameter],
     step_fn: Callable[[], torch.Tensor],
@@ -61,3 +130,5 @@ def solve_torch_adam(
         if epoch % log_every == 0 or epoch == epochs - 1:
             print(f"epoch={epoch} loss={float(loss.detach().cpu()):.6e}")
 
+
+solve_adam_matrix_free = solve_torch_adam

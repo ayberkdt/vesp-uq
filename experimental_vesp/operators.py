@@ -9,6 +9,7 @@ larger runs.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import warnings
 
 import torch
 
@@ -28,6 +29,21 @@ class OperatorBundle:
         return sigma / self.column_scale
 
 
+def estimate_dense_operator_memory(n_query: int, n_source: int, *, use_potential: bool = True, use_acceleration: bool = True, dtype_bytes: int = 8) -> int:
+    rows = (n_query if use_potential else 0) + (3 * n_query if use_acceleration else 0)
+    return rows * n_source * dtype_bytes
+
+
+def _warn_if_large(n_query: int, n_source: int, *, use_potential: bool, use_acceleration: bool, threshold_bytes: int = 2_000_000_000) -> None:
+    estimated = estimate_dense_operator_memory(n_query, n_source, use_potential=use_potential, use_acceleration=use_acceleration)
+    if estimated > threshold_bytes:
+        warnings.warn(
+            f"Dense VESP operator is estimated at {estimated / (1024**3):.2f} GiB; use matrix-free/iterative solving for large runs.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+
 def build_potential_operator(
     x: torch.Tensor,
     sources: SourceGeometry,
@@ -35,6 +51,7 @@ def build_potential_operator(
     eps: float = 0.0,
     source_chunk_size: int | None = None,
 ) -> torch.Tensor:
+    _warn_if_large(x.shape[0], sources.n_sources, use_potential=True, use_acceleration=False)
     return build_dense_operator(
         x,
         sources.positions.to(x.device, dtype=x.dtype),
@@ -54,6 +71,7 @@ def build_acceleration_operator(
     sign: float = 1.0,
     source_chunk_size: int | None = None,
 ) -> torch.Tensor:
+    _warn_if_large(x.shape[0], sources.n_sources, use_potential=False, use_acceleration=True)
     return build_dense_operator(
         x,
         sources.positions.to(x.device, dtype=x.dtype),
@@ -102,6 +120,7 @@ def build_joint_operator(
     source_chunk_size: int | None = None,
     column_normalize: bool = False,
 ) -> OperatorBundle:
+    _warn_if_large(x.shape[0], sources.n_sources, use_potential=use_potential, use_acceleration=use_acceleration)
     operator = build_dense_operator(
         x,
         sources.positions.to(x.device, dtype=x.dtype),
@@ -136,4 +155,3 @@ def build_joint_operator(
         operator = operator / column_scale.unsqueeze(0)
 
     return OperatorBundle(operator=operator, target=target, column_scale=column_scale)
-

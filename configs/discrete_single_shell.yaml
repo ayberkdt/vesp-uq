@@ -1,8 +1,6 @@
 seed: 42
-device: cpu
 dtype: float64
-output_dir: outputs
-checkpoint_name: discrete_single_shell.pt
+device: cpu
 
 body:
   R_body: 1.0
@@ -55,6 +53,6 @@ split:
   train_fraction: 0.8
 
 output:
+  output_dir: outputs
   run_name: discrete_single_shell
   save_plots: false
-

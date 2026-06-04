@@ -21,6 +21,13 @@ def _subset(data: ResidualGravityData, mask_or_idx: torch.Tensor) -> ResidualGra
     return data.subset(mask_or_idx)
 
 
+def _nonempty_indices(mask: torch.Tensor, label: str) -> torch.Tensor:
+    idx = torch.nonzero(mask, as_tuple=False).reshape(-1)
+    if idx.numel() == 0:
+        raise ValueError(f"split band '{label}' produced no samples")
+    return idx
+
+
 def random_split(data: ResidualGravityData, *, train_fraction: float = 0.8, seed: int = 0) -> DataSplits:
     generator = torch.Generator().manual_seed(seed)
     n = data.positions.shape[0]
@@ -39,11 +46,11 @@ def altitude_band_split(
 ) -> DataSplits:
     radii = torch.linalg.norm(data.positions, dim=-1)
     train_mask = (radii >= train_r_range[0]) & (radii <= train_r_range[1])
-    band = _subset(data, torch.nonzero(train_mask, as_tuple=False).reshape(-1))
+    band = _subset(data, _nonempty_indices(train_mask, "train"))
     if val_r_range is None or val_r_range == train_r_range:
         return random_split(band, train_fraction=train_fraction, seed=seed)
     val_mask = (radii >= val_r_range[0]) & (radii <= val_r_range[1])
-    return DataSplits(train=band, val=_subset(data, torch.nonzero(val_mask, as_tuple=False).reshape(-1)))
+    return DataSplits(train=band, val=_subset(data, _nonempty_indices(val_mask, "val")))
 
 
 def ood_high_altitude_split(
@@ -57,7 +64,7 @@ def ood_high_altitude_split(
     splits = altitude_band_split(data, train_r_range=train_r_range, train_fraction=train_fraction, seed=seed)
     radii = torch.linalg.norm(data.positions, dim=-1)
     mask = (radii >= test_high_r_range[0]) & (radii <= test_high_r_range[1])
-    splits.test_high = _subset(data, torch.nonzero(mask, as_tuple=False).reshape(-1))
+    splits.test_high = _subset(data, _nonempty_indices(mask, "test_high"))
     return splits
 
 
@@ -72,7 +79,7 @@ def ood_low_altitude_split(
     splits = altitude_band_split(data, train_r_range=train_r_range, train_fraction=train_fraction, seed=seed)
     radii = torch.linalg.norm(data.positions, dim=-1)
     mask = (radii >= test_low_r_range[0]) & (radii <= test_low_r_range[1])
-    splits.test_low = _subset(data, torch.nonzero(mask, as_tuple=False).reshape(-1))
+    splits.test_low = _subset(data, _nonempty_indices(mask, "test_low"))
     return splits
 
 
@@ -104,7 +111,6 @@ def make_splits(data: ResidualGravityData, config: dict) -> DataSplits:
         if low is not None:
             radii = torch.linalg.norm(data.positions, dim=-1)
             mask = (radii >= low[0]) & (radii <= low[1])
-            splits.test_low = _subset(data, torch.nonzero(mask, as_tuple=False).reshape(-1))
+            splits.test_low = _subset(data, _nonempty_indices(mask, "test_low"))
         return splits
     raise ValueError(f"unknown split type: {split_type}")
-

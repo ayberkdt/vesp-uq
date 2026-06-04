@@ -1,6 +1,5 @@
-from experimental_vesp.train_multishell import main
+from experimental_vesp.train import main
 
 
 if __name__ == "__main__":
     main()
-

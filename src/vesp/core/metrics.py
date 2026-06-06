@@ -86,7 +86,9 @@ def altitude_band_errors(
     samples yields ``None`` (and a warning) rather than a misleading number.
     """
 
-    bands = bands or DEFAULT_ALTITUDE_BANDS
+    # ``None`` means "use the default bands"; an explicit empty dict means "no bands"
+    # (used for single-band OOD subsets to avoid spurious empty-band warnings).
+    bands = DEFAULT_ALTITUDE_BANDS if bands is None else bands
     radii = torch.linalg.norm(positions, dim=-1)
     result: dict[str, float | int | None] = {}
     band_rmse: dict[str, float | None] = {}

@@ -17,6 +17,7 @@ from vesp.common.artifacts import atomic_write_json, atomic_write_text, ensure_r
 from vesp.common.config import load_config
 from vesp.data.dataset import ResidualGravityData, ResidualGravityDataset, load_csv_dataset
 from vesp.core.diagnostics import source_diagnostics, time_inference
+from vesp.core.kernels import evaluate_kernel
 from vesp.core.metrics import (
     altitude_band_errors,
     altitude_binned_error,
@@ -111,6 +112,35 @@ def evaluate_model(
             acceleration_sign=acceleration_sign,
         ),
     }
+    # Shell cancellation diagnostic (multi-shell only). The energy-fraction collapse
+    # metric is radius-biased and blind to the real multi-shell pathology: adjacent
+    # near-redundant shells fit the field with large opposing source strengths that
+    # nearly cancel. cancellation_ratio = sum_j RMS(field_j) / RMS(field_total); it is
+    # ~1-n_shells for a healthy fit and >> 1 when shells cancel (a brittle, ill-
+    # conditioned solution), independent of which shell holds the most sigma^2 energy.
+    shell_unique = torch.unique(model.shell_ids)
+    if shell_unique.numel() > 1:
+        eps = torch.finfo(pred_a_t.dtype).eps
+        strength = (model.source_weights * model.sigma).detach()
+        total_rms = float(torch.sqrt(torch.mean(torch.sum(pred_a_t * pred_a_t, dim=-1))))
+        per_shell_rms: list[float] = []
+        with torch.no_grad():
+            for shell_value in shell_unique:
+                mask = model.shell_ids == shell_value
+                shell_out = evaluate_kernel(
+                    xs_t,
+                    model.source_positions[mask],
+                    strength[mask],
+                    source_chunk_size=source_chunk_size,
+                    softening=softening,
+                    acceleration_sign=acceleration_sign,
+                    compute_potential=False,
+                    compute_acceleration=True,
+                )
+                per_shell_rms.append(float(torch.sqrt(torch.mean(torch.sum(shell_out.acceleration ** 2, dim=-1)))))
+        metrics["diagnostics"]["per_shell_field_rms"] = per_shell_rms
+        metrics["diagnostics"]["shell_cancellation_ratio"] = float(sum(per_shell_rms) / max(total_rms, eps))
+
     if torch.cuda.is_available() and torch.device(device).type == "cuda":
         metrics["cuda_max_memory_mb"] = torch.cuda.max_memory_allocated() / (1024 ** 2)
     return metrics
@@ -193,6 +223,7 @@ def write_evaluation_artifacts(
         f"potential_scale_source: {scale_payload.get('potential_source')}",
         f"acceleration_scale_source: {scale_payload.get('acceleration_source')}",
         f"metrics_units: {metrics.get('metrics_units', 'raw target units')}",
+        f"acceleration_metric_units: {metrics.get('acceleration_metric_units')}",
         f"training_loss_units: {metrics.get('training_loss_units')}",
         "",
         f"sigma_l2: {diagnostics.get('sigma_l2')}",
@@ -203,8 +234,12 @@ def write_evaluation_artifacts(
         f"dominant_shell_energy_fraction: {diagnostics.get('dominant_shell_energy_fraction')}",
         f"shell_energy_entropy: {diagnostics.get('shell_energy_entropy')}",
         f"shell_collapse_flag: {diagnostics.get('shell_collapse_flag')}",
-        f"monopole_leakage: {diagnostics.get('monopole_leakage')}",
-        f"dipole_leakage: {diagnostics.get('dipole_leakage')}",
+        f"shell_cancellation_ratio: {diagnostics.get('shell_cancellation_ratio')}",
+        f"per_shell_field_rms: {diagnostics.get('per_shell_field_rms')}",
+        f"relative_monopole_leakage: {diagnostics.get('relative_monopole_leakage')}",
+        f"relative_dipole_leakage: {diagnostics.get('relative_dipole_leakage')}",
+        f"monopole_leakage_abs: {diagnostics.get('monopole_leakage')}",
+        f"dipole_leakage_abs: {diagnostics.get('dipole_leakage')}",
     ]
     reasons = metrics.get("acceptability_reasons") or []
     if reasons:

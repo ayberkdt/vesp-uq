@@ -213,12 +213,47 @@ class ResidualGravityDataset(Dataset):
         }
 
 
+def _canonical_acceleration_kind(metadata: dict) -> str:
+    """Classify the CSV acceleration semantics.
+
+    Returns ``"physical"`` (an acceleration ``dU/d(distance)``), ``"normalized_gradient"``
+    (``dU/d(x / R_body)``), or ``"model"`` when the dataset does not declare an
+    acceleration convention (no reconciliation is then attempted). The model itself
+    always predicts ``dU/d(model coordinate)``.
+    """
+
+    output = str(metadata.get("acceleration_output", "")).strip().lower()
+    if output in {"physical", "normalized_gradient"}:
+        return output
+    units_str = str(metadata.get("acceleration_units", "model")).strip().lower()
+    if "normalized" in units_str:  # e.g. "km^2/s^2 per normalized radius"
+        return "normalized_gradient"
+    if "/s^2" in units_str or "/s2" in units_str or "s^-2" in units_str:
+        return "physical"
+    return "model"
+
+
+def _physical_acceleration_unit_km(metadata: dict) -> float:
+    """Length (in km) of the distance unit a physical acceleration differentiates by."""
+
+    units_str = str(metadata.get("acceleration_units", "")).strip().lower().replace(" ", "")
+    if units_str in {"m/s^2", "m/s2", "ms^-2"}:
+        return 1.0e-3
+    return 1.0  # km/s^2 is the default physical acceleration unit
+
+
 def prepare_data_for_model(data: ResidualGravityData, units: UnitConfig) -> ResidualGravityData:
-    """Convert CSV positions into the coordinate system expected by the model.
+    """Convert CSV positions and acceleration into the model coordinate system.
 
     The input dataset must carry explicit ``position_units`` metadata. Physical
     position data additionally needs a reference body radius whenever model
     positions are normalized.
+
+    The model always predicts ``dU/d(model coordinate)``. When the CSV stored a
+    physical acceleration (``dU/d(distance)``) while the model works in normalized
+    coordinates -- or vice versa -- the acceleration target is rescaled by the body
+    radius. Without this the joint potential+acceleration solve is internally
+    inconsistent by a factor of ``R_body`` and silently abandons the potential fit.
     """
 
     metadata = dict(data.metadata or {})
@@ -255,6 +290,21 @@ def prepare_data_for_model(data: ResidualGravityData, units: UnitConfig) -> Resi
             physical_r_body = _resolve_body_radius(metadata, units, model_units)
             model_r_body = physical_r_body
 
+    # Reconcile acceleration units with the model coordinate system.
+    acceleration = data.acceleration
+    csv_acceleration_kind = _canonical_acceleration_kind(metadata)
+    model_acceleration_kind = "normalized_gradient" if units.normalize_positions else "physical"
+    acceleration_conversion_factor = 1.0
+    if csv_acceleration_kind in ("physical", "normalized_gradient") and csv_acceleration_kind != model_acceleration_kind:
+        r_body_km = _resolve_body_radius(metadata, units, "km")
+        if units.normalize_positions:
+            model_unit_km = r_body_km
+        else:
+            model_unit_km = 1.0 if config_position_units == "km" else 1.0e-3
+        csv_unit_km = r_body_km if csv_acceleration_kind == "normalized_gradient" else _physical_acceleration_unit_km(metadata)
+        acceleration_conversion_factor = model_unit_km / csv_unit_km
+        acceleration = acceleration * acceleration_conversion_factor
+
     prepared_metadata = dict(metadata)
     prepared_metadata["original_position_units"] = original_units
     prepared_metadata["model_position_units"] = model_units
@@ -264,11 +314,16 @@ def prepare_data_for_model(data: ResidualGravityData, units: UnitConfig) -> Resi
     prepared_metadata["config_R_body"] = float(units.R_body)
     if physical_r_body is not None:
         prepared_metadata["physical_R_body_in_model_conversion_units"] = physical_r_body
+    prepared_metadata["original_acceleration_units"] = metadata.get("acceleration_units", "model")
+    prepared_metadata["csv_acceleration_kind"] = csv_acceleration_kind
+    prepared_metadata["model_acceleration_kind"] = model_acceleration_kind
+    prepared_metadata["acceleration_conversion_factor"] = acceleration_conversion_factor
+    prepared_metadata["acceleration_prepared_for_model"] = True
 
     return ResidualGravityData(
         positions=model_positions,
         potential=data.potential,
-        acceleration=data.acceleration,
+        acceleration=acceleration,
         metadata=prepared_metadata,
     )
 

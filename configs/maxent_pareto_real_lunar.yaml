@@ -1,0 +1,80 @@
+# Stage 3A MaxEnt data-error vs entropy Pareto sweep on the real lunar multi-shell
+# case that collapses shell energy under the deterministic ridge baseline.
+#   python -m vesp.training.maxent_pareto --config configs/maxent_pareto_real_lunar.yaml
+base_config:
+  seed: 42
+  device: cpu
+  dtype: float64
+
+  body:
+    R_body: 1.0
+    normalize_positions: true
+    physical_R_body: 1738.0
+    physical_R_body_units: km
+    position_units: normalized
+    potential_units: km^2/s^2
+    acceleration_units: km/s^2
+
+  data:
+    type: csv
+    path: data/lunar_grail_gl0420a_L60_residual.csv
+    train_fraction: 0.8
+    seed: 42
+
+  model:
+    type: multishell
+    shell_alphas: [0.70, 0.86, 0.95]
+    n_sources_per_shell: [384, 512, 384]
+    weight_mode: surface_area
+
+  kernel:
+    eps: 0.0
+    acceleration_sign: 1.0
+    source_chunk_size: 1024
+
+  solver:
+    type: maxent
+    ridge_method: augmented_lstsq
+    lambda_l2: 1.0e-5
+    column_normalize: true
+
+  loss:
+    use_potential: true
+    use_acceleration: true
+    normalize_targets: true
+    potential_scale: auto
+    acceleration_scale: auto
+    lambda_potential: 0.2
+    lambda_acceleration: 1.0
+    lambda_l2: 1.0e-5
+    lambda_moment: 1.0e-4
+    lambda_dipole: 1.0
+    shell_energy_weights: []
+
+  maxent:
+    optimizer: lbfgs
+    max_iter: 500
+    warm_start: true
+
+  split:
+    type: random
+    train_fraction: 0.8
+
+  evaluation:
+    batch_size: 4096
+    n_altitude_bins: 6
+
+  output:
+    output_dir: outputs/maxent_pareto_real_lunar
+
+# shell_balance maximizes the entropy of the per-shell energy distribution, which
+# directly targets the dominant Stage 1-2 failure on this dataset: shell-energy
+# collapse onto a single shell. (positive_negative / abs / relative_uniform are also
+# available but are ill-conditioned on the near-sparse source support here.)
+maxent_pareto:
+  entropy_mode: shell_balance
+  entropy_weights: [0.0, 0.01, 0.03, 0.1, 0.3, 1.0, 3.0]
+  output_dir: outputs/maxent_pareto_real_lunar
+  max_dominant_shell_energy_fraction: 0.90
+  max_top5_source_contribution: 0.40
+  data_tolerance_factor: 1.50

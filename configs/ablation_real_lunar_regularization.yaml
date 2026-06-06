@@ -1,6 +1,10 @@
 # Regularization ablation for the conservative multi-shell real lunar fit.
-# quick: 4 hand-picked (lambda_l2, shell_energy) points for a fast decision.
-# full : cartesian grid over lambda_l2 x shell_energy_weight x lambda_moment (60 runs).
+# The multi-shell collapse is a brittle near-cancellation that lives in the operator's
+# near-null space, so the L2 grid must span several orders of magnitude (the old
+# 1e-7..1e-4 grid was far too small to ever find the fix near lambda_l2 ~ 30).
+# quick: a coarse lambda_l2 sweep that shows shell_cancellation_ratio collapsing from
+#        ~143 to ~4 with the relative acceleration RMSE essentially unchanged.
+# full : cartesian grid over lambda_l2 x shell_energy_weight x lambda_moment.
 # Run quick:  python -m vesp.training.run_ablation --config configs/ablation_real_lunar_regularization.yaml
 # Run full :  python -m vesp.training.run_ablation --config configs/ablation_real_lunar_regularization.yaml --mode full
 ablation:
@@ -61,21 +65,24 @@ base_config:
     output_dir: outputs/ablation_real_lunar_regularization
 
 quick:
-  - name: regA_l2_1em6_sew_1em6
-    loss.lambda_l2: 1.0e-6
-    loss.shell_energy_weights: 1.0e-6
-  - name: regB_l2_1em5_sew_1em5
+  - name: reg_l2_1em5
     loss.lambda_l2: 1.0e-5
-    loss.shell_energy_weights: 1.0e-5
-  - name: regC_l2_1em4_sew_1em5
-    loss.lambda_l2: 1.0e-4
-    loss.shell_energy_weights: 1.0e-5
-  - name: regD_l2_1em5_sew_1em4
-    loss.lambda_l2: 1.0e-5
-    loss.shell_energy_weights: 1.0e-4
+    solver.lambda_l2: 1.0e-5
+  - name: reg_l2_1em1
+    loss.lambda_l2: 1.0e-1
+    solver.lambda_l2: 1.0e-1
+  - name: reg_l2_1e0
+    loss.lambda_l2: 1.0
+    solver.lambda_l2: 1.0
+  - name: reg_l2_3e1
+    loss.lambda_l2: 30.0
+    solver.lambda_l2: 30.0
+  - name: reg_l2_3e2
+    loss.lambda_l2: 300.0
+    solver.lambda_l2: 300.0
 
 full:
   grid:
-    loss.lambda_l2: [1.0e-7, 1.0e-6, 1.0e-5, 1.0e-4]
-    loss.shell_energy_weights: [0, 1.0e-7, 1.0e-6, 1.0e-5, 1.0e-4]
-    loss.lambda_moment: [1.0e-6, 1.0e-5, 1.0e-4]
+    loss.lambda_l2: [1.0e-4, 1.0e-2, 1.0, 10.0, 100.0, 1000.0]
+    loss.shell_energy_weights: [0, 1.0e-4]
+    loss.lambda_moment: [1.0e-4]

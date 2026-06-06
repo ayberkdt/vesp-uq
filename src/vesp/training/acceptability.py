@@ -23,9 +23,17 @@ ACCEPTANCE_DEFAULTS: dict[str, float] = {
     "max_low_altitude_rmse_factor": 5.0,
     "max_top5_source_contribution": 0.40,
     "max_dominant_shell_energy_fraction": 0.90,
-    "max_sigma_l2": 1.0,
-    "max_monopole_leakage": 1.0e-8,
-    "max_dipole_leakage": 1.0e-8,
+    # sum(per-shell field RMS) / total field RMS; >> 1 means shells cancel (brittle).
+    "max_shell_cancellation_ratio": 5.0,
+    # ``sigma_l2`` is an absolute, coordinate-dependent magnitude (healthy ridge fits
+    # routinely reach ~10). It is kept only as a coarse "gross blow-up" gate; the
+    # scale-invariant screening signals below carry the real weight.
+    "max_sigma_l2": 100.0,
+    # Relative (dimensionless) moment leakage = absolute moment / total absolute source
+    # mass (dipole additionally divided by mean source radius). These are invariant to
+    # field magnitude and unit choice, unlike the deprecated absolute leakage gates.
+    "max_relative_monopole_leakage": 0.05,
+    "max_relative_dipole_leakage": 0.5,
 }
 
 
@@ -58,14 +66,14 @@ def classify_run_acceptability(metrics: dict, diagnostics: dict, config: dict | 
 
     rejects: list[str] = []
 
-    monopole = _num(diagnostics.get("monopole_leakage"))
-    dipole = _num(diagnostics.get("dipole_leakage"))
-    if (monopole is not None and monopole > acc["max_monopole_leakage"]) or (
-        dipole is not None and dipole > acc["max_dipole_leakage"]
+    monopole = _num(diagnostics.get("relative_monopole_leakage"))
+    dipole = _num(diagnostics.get("relative_dipole_leakage"))
+    if (monopole is not None and monopole > acc["max_relative_monopole_leakage"]) or (
+        dipole is not None and dipole > acc["max_relative_dipole_leakage"]
     ):
         reasons.append(
-            f"monopole/dipole leakage too high (monopole={monopole}, dipole={dipole}; "
-            f"max={acc['max_monopole_leakage']}/{acc['max_dipole_leakage']})"
+            f"relative monopole/dipole leakage too high (monopole={monopole}, dipole={dipole}; "
+            f"max={acc['max_relative_monopole_leakage']}/{acc['max_relative_dipole_leakage']})"
         )
         rejects.append(STATUS_REJECT_NUMERICAL)
 
@@ -74,9 +82,21 @@ def classify_run_acceptability(metrics: dict, diagnostics: dict, config: dict | 
         reasons.append(f"sigma_l2={sigma_l2:.3e} exceeds max_sigma_l2={acc['max_sigma_l2']} (under-regularized)")
         rejects.append(STATUS_REJECT_REGULARIZATION)
 
+    # Real multi-shell brittleness is near-redundant shells fitting the field with large
+    # opposing source strengths that nearly cancel. The cancellation ratio captures this
+    # directly and is the primary signal when available; the radius-biased shell-energy
+    # fraction is only a fallback for runs that did not record the field-based metric.
+    cancellation = _num(diagnostics.get("shell_cancellation_ratio"))
     dominant = _num(diagnostics.get("dominant_shell_energy_fraction"))
     collapse_flag = bool(diagnostics.get("shell_collapse_flag", False))
-    if collapse_flag and dominant is not None and dominant > acc["max_dominant_shell_energy_fraction"]:
+    if cancellation is not None:
+        if cancellation > acc["max_shell_cancellation_ratio"]:
+            reasons.append(
+                f"shells cancel: sum(per-shell field RMS)/total field RMS={cancellation:.1f} "
+                f"exceeds max={acc['max_shell_cancellation_ratio']} (brittle near-degenerate multi-shell fit)"
+            )
+            rejects.append(STATUS_REJECT_SOURCE_COLLAPSE)
+    elif collapse_flag and dominant is not None and dominant > acc["max_dominant_shell_energy_fraction"]:
         reasons.append(
             f"dominant shell carries {dominant:.2%} of shell energy "
             f"(max={acc['max_dominant_shell_energy_fraction']:.0%}); shell energy collapsed"

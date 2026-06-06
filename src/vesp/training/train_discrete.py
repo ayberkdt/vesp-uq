@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 from typing import Iterable
 
@@ -17,6 +18,13 @@ from vesp.core.losses import composite_loss
 from vesp.core.models import DiscreteVESP, save_checkpoint
 from vesp.core.operators import build_joint_operator
 from vesp.core.solvers import RidgeSolveConfig, solve_discrete_ridge
+from vesp.training.maxent import MaxEntSolveConfig, solve_discrete_maxent
+from vesp.extensions.entropy import (
+    effective_source_entropy,
+    positive_negative_entropy,
+    relative_entropy_to_uniform,
+    shell_energy_balance_entropy,
+)
 from vesp.data.splits import DataSplits, make_splits
 from vesp.data.synthetic import make_synthetic_dataset
 from vesp.data.target_scaling import (
@@ -98,21 +106,25 @@ def make_model(config: dict, *, dtype: torch.dtype, model_cls=DiscreteVESP) -> D
     return model_cls(source_set, init_scale=float(src_cfg.get("init_scale", 0.0)), dtype=dtype)
 
 
-def solve_ridge(
+def _build_weighted_system(
     model: DiscreteVESP,
     train_data,
     config: dict,
     *,
     device: torch.device,
-    target_scales: TargetScales | None = None,
-) -> None:
+    target_scales: TargetScales,
+) -> tuple[torch.Tensor, torch.Tensor, SourceSet]:
+    """Build the row-weighted, target-normalized (A, b) linear system + sources.
+
+    Shared by the ridge and MaxEnt solvers so the data term is identical and the
+    entropy weight traces out a comparable data-error vs entropy Pareto curve.
+    """
+
     kernel_cfg = config.get("kernel", {})
     loss_cfg = config.get("loss", {})
     include_potential = bool(loss_cfg.get("use_potential", True)) and float(loss_cfg.get("lambda_potential", loss_cfg.get("potential_weight", 1.0))) > 0.0
     include_acceleration = bool(loss_cfg.get("use_acceleration", True)) and float(loss_cfg.get("lambda_acceleration", loss_cfg.get("acceleration_weight", 1.0))) > 0.0
 
-    model = model.to(device)
-    train_data = train_data.to(device)
     sources = SourceSet(
         positions=model.source_positions,
         weights=model.source_weights,
@@ -136,10 +148,8 @@ def solve_ridge(
     operator = bundle.operator
     target = bundle.target
 
-    target_scales = target_scales or compute_target_scales(train_data, config)
     # Altitude weighting (if enabled) is a solve-time row reweighting only; it never
-    # touches evaluation/metrics. The Adam path intentionally does not apply it —
-    # ridge is the real-lunar solver.
+    # touches evaluation/metrics. It applies to both the ridge and MaxEnt solvers.
     altitude_weights = altitude_row_weights(train_data.positions, config, dtype=operator.dtype)
     weights = observation_row_weights(
         n_query=train_data.positions.shape[0],
@@ -154,7 +164,23 @@ def solve_ridge(
     )
     operator = operator * weights.unsqueeze(-1)
     target = target * weights
+    return operator, target, sources
 
+
+def solve_ridge(
+    model: DiscreteVESP,
+    train_data,
+    config: dict,
+    *,
+    device: torch.device,
+    target_scales: TargetScales | None = None,
+) -> None:
+    model = model.to(device)
+    train_data = train_data.to(device)
+    target_scales = target_scales or compute_target_scales(train_data, config)
+    operator, target, _ = _build_weighted_system(
+        model, train_data, config, device=device, target_scales=target_scales
+    )
     sigma = solve_discrete_ridge(
         operator=operator,
         target=target,
@@ -162,6 +188,52 @@ def solve_ridge(
         source_weights=model.source_weights,
         shell_ids=model.shell_ids,
         config=RidgeSolveConfig.from_config(config),
+    )
+    model.set_sigma(sigma)
+
+
+def solve_maxent(
+    model: DiscreteVESP,
+    train_data,
+    config: dict,
+    *,
+    device: torch.device,
+    target_scales: TargetScales | None = None,
+) -> None:
+    """Stage 3A: refine the source strengths with deterministic entropy regularization.
+
+    The ridge solution is used as a warm start (and remains the entropy_weight=0
+    baseline), then the source strengths are optimized against the same data term
+    plus a maximum-entropy regularizer.
+    """
+
+    model = model.to(device)
+    train_data = train_data.to(device)
+    target_scales = target_scales or compute_target_scales(train_data, config)
+    operator, target, _ = _build_weighted_system(
+        model, train_data, config, device=device, target_scales=target_scales
+    )
+    maxent_config = MaxEntSolveConfig.from_config(config)
+
+    warm_start_sigma = None
+    if maxent_config.warm_start:
+        warm_start_sigma = solve_discrete_ridge(
+            operator=operator,
+            target=target,
+            source_positions=model.source_positions,
+            source_weights=model.source_weights,
+            shell_ids=model.shell_ids,
+            config=RidgeSolveConfig.from_config(config),
+        )
+
+    sigma = solve_discrete_maxent(
+        operator,
+        target,
+        model.source_positions,
+        model.source_weights,
+        model.shell_ids,
+        maxent_config,
+        warm_start_sigma=warm_start_sigma,
     )
     model.set_sigma(sigma)
 
@@ -247,10 +319,12 @@ def run(config: dict, *, model_cls=DiscreteVESP) -> dict:
     solver = str(solver_cfg.get("type", config.get("solver", "ridge"))).lower() if isinstance(solver_cfg, dict) else str(solver_cfg).lower()
     if solver == "ridge":
         solve_ridge(model, train_data, config, device=device, target_scales=target_scales)
+    elif solver == "maxent":
+        solve_maxent(model, train_data, config, device=device, target_scales=target_scales)
     elif solver == "adam":
         train_adam(model, train_data, config, device=device, target_scales=target_scales)
     else:
-        raise ValueError("solver must be 'ridge' or 'adam'")
+        raise ValueError("solver must be 'ridge', 'maxent', or 'adam'")
 
     eval_cfg = config.get("evaluation", {})
     kernel_cfg = config.get("kernel", {})
@@ -286,9 +360,33 @@ def run(config: dict, *, model_cls=DiscreteVESP) -> dict:
         low_metrics = _evaluate(splits.test_low, bands={})
         metrics["test_low_acceleration_rmse"] = low_metrics["acceleration_rmse"]
         metrics["test_low_potential_rmse"] = low_metrics["potential_rmse"]
-    metrics["metrics_units"] = "raw target units"
+    metrics["metrics_units"] = "raw target units (model coordinate system)"
+    units = UnitConfig.from_config(config)
+    if units.normalize_positions:
+        metrics["acceleration_metric_units"] = "model normalized-gradient: dU/d(x / R_body)"
+    else:
+        metrics["acceleration_metric_units"] = f"physical: {config.get('body', {}).get('acceleration_units', 'model')}"
     metrics["training_loss_units"] = "target-normalized" if target_scales.normalize_targets else "raw target units"
     metrics["acceleration_sign"] = eval_acceleration_sign
+
+    # Stage 3A entropy diagnostics: reported for every run so the ridge baseline
+    # (entropy_weight=0) and MaxEnt runs are directly comparable on the
+    # data-error vs entropy Pareto curve.
+    with torch.no_grad():
+        sigma_cpu = model.sigma.detach()
+        weights_cpu = model.source_weights.detach()
+        metrics["source_entropy_nats"] = float(effective_source_entropy(sigma_cpu, weights_cpu))
+        metrics["positive_negative_entropy_nats"] = float(positive_negative_entropy(sigma_cpu, weights_cpu))
+        metrics["relative_entropy_to_uniform"] = float(relative_entropy_to_uniform(sigma_cpu, weights_cpu))
+        metrics["shell_energy_balance_entropy_nats"] = float(
+            shell_energy_balance_entropy(sigma_cpu, weights_cpu, model.shell_ids)
+        )
+        metrics["max_possible_source_entropy_nats"] = float(math.log(model.n_sources)) if model.n_sources > 0 else 0.0
+    loss_cfg = config.get("loss", {})
+    maxent_cfg = config.get("maxent", {})
+    metrics["solver"] = solver
+    metrics["entropy_weight"] = float(loss_cfg.get("entropy_weight", maxent_cfg.get("entropy_weight", 0.0)))
+    metrics["entropy_mode"] = str(loss_cfg.get("entropy_mode", maxent_cfg.get("entropy_mode", "positive_negative")))
 
     acceptability = classify_run_acceptability(metrics, metrics.get("diagnostics", {}), config)
     metrics.update(acceptability)

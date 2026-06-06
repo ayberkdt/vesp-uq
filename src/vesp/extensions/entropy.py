@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import torch
 
+from vesp.core.losses import shell_energy
+
 
 def normalized_abs_distribution(sigma: torch.Tensor, weights: torch.Tensor | None = None) -> torch.Tensor:
     mass = torch.abs(sigma if weights is None else weights * sigma)
@@ -66,16 +68,55 @@ def shellwise_entropy(
     return torch.stack(values)
 
 
+def shell_energy_fractions(
+    sigma: torch.Tensor,
+    source_weights: torch.Tensor,
+    shell_ids: torch.Tensor,
+    *,
+    eps: float = 1.0e-30,
+) -> torch.Tensor:
+    """Normalized per-shell energy distribution ``p_j = E_j / sum_j E_j``."""
+
+    energies = shell_energy(sigma, source_weights, shell_ids)
+    if energies.numel() == 0:
+        return energies
+    total = torch.sum(energies)
+    if total <= eps:
+        return torch.full_like(energies, 1.0 / energies.numel())
+    return energies / total
+
+
+def shell_energy_balance_entropy(
+    sigma: torch.Tensor,
+    source_weights: torch.Tensor,
+    shell_ids: torch.Tensor,
+    *,
+    eps: float = 1.0e-30,
+) -> torch.Tensor:
+    """Entropy of the per-shell energy distribution.
+
+    Maximizing this directly resists shell-energy collapse, the multi-shell
+    failure mode where almost all energy concentrates on a single shell.
+    """
+
+    fractions = shell_energy_fractions(sigma, source_weights, shell_ids, eps=eps)
+    if fractions.numel() <= 1:
+        return torch.zeros((), dtype=sigma.dtype, device=sigma.device)
+    return shannon_entropy(fractions, eps=eps)
+
+
 def entropy_regularization_loss(
     sigma: torch.Tensor,
     weights: torch.Tensor | None = None,
     *,
     mode: str = "positive_negative",
+    shell_ids: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Return a loss term to minimize.
 
     Entropy should be maximized, so this returns negative entropy for entropy
-    modes and KL for the relative-entropy mode.
+    modes and KL for the relative-entropy mode. ``shell_balance`` maximizes the
+    entropy of the per-shell energy distribution and requires ``shell_ids``.
     """
 
     if mode == "abs":
@@ -84,5 +125,9 @@ def entropy_regularization_loss(
         return -positive_negative_entropy(sigma, weights)
     if mode == "relative_uniform":
         return relative_entropy_to_uniform(sigma, weights)
+    if mode == "shell_balance":
+        if shell_ids is None:
+            raise ValueError("shell_balance entropy mode requires shell_ids")
+        return -shell_energy_balance_entropy(sigma, weights if weights is not None else torch.ones_like(sigma), shell_ids)
     raise ValueError(f"unknown entropy mode: {mode}")
 

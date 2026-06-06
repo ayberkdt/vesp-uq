@@ -36,7 +36,7 @@ base_config:
   solver:
     type: ridge
     ridge_method: augmented_lstsq
-    lambda_l2: 1.0e-5
+    lambda_l2: 30.0
     column_normalize: true
   loss:
     use_potential: true
@@ -46,10 +46,10 @@ base_config:
     acceleration_scale: auto
     lambda_potential: 0.2
     lambda_acceleration: 1.0
-    lambda_l2: 1.0e-5
+    lambda_l2: 30.0
     lambda_moment: 1.0e-4
     lambda_dipole: 1.0
-    shell_energy_weights: 1.0e-5
+    shell_energy_weights: []
   split:
     type: random
     radius_units: normalized

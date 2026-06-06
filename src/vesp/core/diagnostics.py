@@ -105,6 +105,26 @@ def source_diagnostics(
         )
     sigma_l2 = float(torch.linalg.norm(sigma).detach().cpu())
     collapse = shell_energy_collapse(energies, shell_rows, threshold=shell_collapse_threshold)
+
+    # Absolute moment leakage scales with both the source magnitude and the
+    # coordinate convention, so it is reported for continuity but is unsuitable as a
+    # screening threshold. The relative versions normalize by the total absolute
+    # source mass (and, for the dipole, the mean source radius), giving dimensionless
+    # quantities that are invariant to field magnitude and unit choice.
+    monopole_leakage = float(torch.sqrt(moments["monopole"]).detach().cpu())
+    dipole_leakage = float(torch.sqrt(moments["dipole"]).detach().cpu())
+    total_abs_source_mass = float(torch.sum(torch.abs(weighted_sigma)).detach().cpu())
+    mean_source_radius = (
+        float(torch.mean(torch.linalg.norm(source_positions, dim=-1)).detach().cpu())
+        if source_positions.numel()
+        else 0.0
+    )
+    relative_monopole_leakage = monopole_leakage / total_abs_source_mass if total_abs_source_mass > 0.0 else 0.0
+    relative_dipole_leakage = (
+        dipole_leakage / (total_abs_source_mass * mean_source_radius)
+        if total_abs_source_mass > 0.0 and mean_source_radius > 0.0
+        else 0.0
+    )
     return {
         "sigma_l2": sigma_l2,
         "sigma_linf": float(torch.max(torch.abs(sigma)).detach().cpu()),
@@ -115,8 +135,12 @@ def source_diagnostics(
         "effective_source_count": effective_source_count(weighted_sigma),
         "top_1pct_source_contribution": topk_source_contribution(weighted_sigma, 0.01),
         "top_5pct_source_contribution": topk_source_contribution(weighted_sigma, 0.05),
-        "monopole_leakage": float(torch.sqrt(moments["monopole"]).detach().cpu()),
-        "dipole_leakage": float(torch.sqrt(moments["dipole"]).detach().cpu()),
+        "monopole_leakage": monopole_leakage,
+        "dipole_leakage": dipole_leakage,
+        "total_abs_source_mass": total_abs_source_mass,
+        "mean_source_radius": mean_source_radius,
+        "relative_monopole_leakage": relative_monopole_leakage,
+        "relative_dipole_leakage": relative_dipole_leakage,
         "shell_energy": [float(v.detach().cpu()) for v in energies],
         "shell_energy_distribution": shell_rows,
         **collapse,

@@ -165,6 +165,8 @@ def _metrics_row(config: dict, metrics: dict, runtime_sec: float) -> dict:
         "source_norm": diagnostics.get("sigma_l2"),
         "effective_source_count": diagnostics.get("effective_source_count"),
         "top_5pct_source_contribution": diagnostics.get("top_5pct_source_contribution"),
+        "relative_monopole_leakage": diagnostics.get("relative_monopole_leakage"),
+        "relative_dipole_leakage": diagnostics.get("relative_dipole_leakage"),
         "monopole_leakage": diagnostics.get("monopole_leakage"),
         "dipole_leakage": diagnostics.get("dipole_leakage"),
         "runtime_sec": runtime_sec,

@@ -3,9 +3,13 @@
 #   - shell_alphas [0.70, 0.86, 0.95] include shells nearer the surface for the
 #     dominant low-altitude residual components (drops the deep 0.50 shell that
 #     attracted the collapse).
-#   - lambda_l2 = 1e-5 is a safer starting point against sigma_l2 inflation.
-#   - shell_energy_weights = 1e-5 (all shells) suppresses shell-energy collapse
-#     far more strongly than the legacy 1e-8.
+#   - lambda_l2 = 30 (NOT 1e-5). The multi-shell "collapse" was a brittle near-
+#     cancellation: adjacent near-redundant shells fit the field with huge opposing
+#     source strengths that nearly cancel (shell_cancellation_ratio ~143, sigma_l2
+#     ~9.3). That cancellation lives in the operator's near-null space, so proper
+#     Tikhonov regularization removes it at essentially zero data cost
+#     (rel_acc 0.192 -> 0.195, cancellation 143 -> 4.5, sigma_l2 9.3 -> 0.085).
+#     See the regularization ablation for the full sweep.
 # The legacy setup is preserved in real_lunar_gl0420a_multishell_legacy.yaml.
 seed: 42
 device: cpu
@@ -40,7 +44,7 @@ kernel:
 solver:
   type: ridge
   ridge_method: augmented_lstsq
-  lambda_l2: 1.0e-5
+  lambda_l2: 30.0
   column_normalize: true
 
 loss:
@@ -51,10 +55,10 @@ loss:
   acceleration_scale: auto
   lambda_potential: 0.2
   lambda_acceleration: 1.0
-  lambda_l2: 1.0e-5
+  lambda_l2: 30.0
   lambda_moment: 1.0e-4
   lambda_dipole: 1.0
-  shell_energy_weights: [1.0e-5, 1.0e-5, 1.0e-5]
+  shell_energy_weights: []
 
 split:
   type: random

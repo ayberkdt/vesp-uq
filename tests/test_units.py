@@ -87,3 +87,68 @@ def test_csv_loader_uses_sidecar_and_preserves_acceleration_units(tmp_path):
     assert data.metadata["acceleration_units"] == "km/s^2"
     assert data.metadata["original_position_units"] == "normalized"
     assert data.metadata["model_position_units"] == "normalized"
+
+
+def _write_physical_residual_csv(tmp_path, *, acceleration_units, acceleration_output=None):
+    path = tmp_path / "residual.csv"
+    path.write_text(
+        "x,y,z,Delta U,Delta a_x,Delta a_y,Delta a_z\n1.2,0,0,2,3,4,5\n",
+        encoding="utf-8",
+    )
+    metadata = {
+        "position_units": "normalized",
+        "potential_units": "km^2/s^2",
+        "acceleration_units": acceleration_units,
+        "R_body": 1738.0,
+        "R_body_units": "km",
+    }
+    if acceleration_output is not None:
+        metadata["acceleration_output"] = acceleration_output
+    path.with_suffix(path.suffix + ".metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    return path
+
+
+def test_physical_acceleration_converted_to_normalized_gradient_for_normalized_model(tmp_path):
+    """A physical km/s^2 target must be scaled by R_body for a normalized-coordinate model."""
+
+    path = _write_physical_residual_csv(tmp_path, acceleration_units="km/s^2", acceleration_output="physical")
+    data = load_csv_dataset(
+        path,
+        dtype=torch.float64,
+        unit_config=UnitConfig(R_body=1.0, normalize_positions=True, position_units="normalized"),
+    )
+    expected = torch.tensor([[3.0, 4.0, 5.0]], dtype=torch.float64) * 1738.0
+    assert torch.allclose(data.acceleration, expected)
+    assert data.metadata["acceleration_conversion_factor"] == 1738.0
+    assert data.metadata["csv_acceleration_kind"] == "physical"
+    assert data.metadata["model_acceleration_kind"] == "normalized_gradient"
+
+
+def test_normalized_gradient_acceleration_unchanged_for_normalized_model(tmp_path):
+    path = _write_physical_residual_csv(
+        tmp_path,
+        acceleration_units="km^2/s^2 per normalized radius",
+        acceleration_output="normalized_gradient",
+    )
+    data = load_csv_dataset(
+        path,
+        dtype=torch.float64,
+        unit_config=UnitConfig(R_body=1.0, normalize_positions=True, position_units="normalized"),
+    )
+    assert torch.allclose(data.acceleration, torch.tensor([[3.0, 4.0, 5.0]], dtype=torch.float64))
+    assert data.metadata["acceleration_conversion_factor"] == 1.0
+
+
+def test_normalized_gradient_converted_to_physical_for_physical_model(tmp_path):
+    path = _write_physical_residual_csv(
+        tmp_path,
+        acceleration_units="km^2/s^2 per normalized radius",
+        acceleration_output="normalized_gradient",
+    )
+    data = load_csv_dataset(
+        path,
+        dtype=torch.float64,
+        unit_config=UnitConfig(R_body=1738.0, normalize_positions=False, position_units="km"),
+    )
+    expected = torch.tensor([[3.0, 4.0, 5.0]], dtype=torch.float64) / 1738.0
+    assert torch.allclose(data.acceleration, expected)

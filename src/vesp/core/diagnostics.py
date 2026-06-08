@@ -129,6 +129,7 @@ def source_diagnostics(
         "sigma_l2": sigma_l2,
         "sigma_linf": float(torch.max(torch.abs(sigma)).detach().cpu()),
         "sigma_rms": float(torch.sqrt(torch.mean(sigma * sigma)).detach().cpu()),
+        "sigma_abs_sum": float(torch.sum(torch.abs(sigma)).detach().cpu()),
         "sigma_norm_warning": bool(sigma_l2 > float(sigma_l2_warning_threshold)),
         "weighted_sigma_l2": float(torch.linalg.norm(weighted_sigma).detach().cpu()),
         "sigma_abs_max": float(torch.max(torch.abs(sigma)).detach().cpu()),

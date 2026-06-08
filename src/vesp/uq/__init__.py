@@ -7,10 +7,23 @@ for selective high-fidelity rerun. See ``VESP_UQ_pipeline_and_usefulness_plan`` 
 positioning.
 """
 
-from vesp.uq.plugin import UncertaintyPrediction, VESPUQPlugin
+from vesp.uq.data import (
+    UQSamples,
+    load_uq_samples_from_csv,
+    make_synthetic_uq_samples,
+    split_uq_samples,
+    validate_uq_samples,
+)
+from vesp.uq.metrics import (
+    diagonal_covariances,
+    mahalanobis_squared,
+    vector_calibration_metrics,
+)
+from vesp.uq.plugin import CovariancePrediction, UncertaintyPrediction, VESPUQPlugin
 from vesp.uq.trajectory import (
     RiskScreeningReport,
     TrajectoryScore,
+    run_risk_screening,
     score_sigma_profile,
     select_reruns,
 )
@@ -18,8 +31,18 @@ from vesp.uq.trajectory import (
 __all__ = [
     "VESPUQPlugin",
     "UncertaintyPrediction",
+    "CovariancePrediction",
     "TrajectoryScore",
     "RiskScreeningReport",
     "score_sigma_profile",
     "select_reruns",
+    "run_risk_screening",
+    "UQSamples",
+    "load_uq_samples_from_csv",
+    "split_uq_samples",
+    "validate_uq_samples",
+    "make_synthetic_uq_samples",
+    "vector_calibration_metrics",
+    "mahalanobis_squared",
+    "diagonal_covariances",
 ]

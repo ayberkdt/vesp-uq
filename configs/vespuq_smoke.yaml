@@ -1,0 +1,59 @@
+# VESP-UQ smoke config -- tiny synthetic run for CI / quick checks.
+#   python -m vesp.uq.run --config configs/vespuq_smoke.yaml
+#
+# Generates a small synthetic error field (interior truth sources + noise), fits the layer,
+# runs calibration + a small trajectory ensemble, and writes all artifacts. Finishes in seconds.
+seed: 0
+device: cpu
+dtype: float64
+
+body:
+  R_body: 1.0
+  normalize_positions: true
+  position_units: normalized
+
+data:
+  type: synthetic
+  n: 400
+  n_truth_sources: 20
+  noise_std: 1.0e-4
+  train_fraction: 0.7
+
+model:
+  type: multishell
+  shell_alphas: [0.75, 0.9]
+  n_sources_per_shell: [48, 64]
+  weight_mode: surface_area
+
+kernel:
+  eps: 0.0
+  acceleration_sign: 1.0
+  source_chunk_size: 512
+
+evaluation:
+  altitude_bands:
+    low: [1.03, 1.15]
+    mid: [1.15, 1.35]
+    high: [1.35, 1.60]
+
+uq:
+  regularization:
+    method: lcurve
+  noise_model: heteroscedastic
+  covariance_mode: exact
+  val_fraction: 0.3
+  risk:
+    scoring: max
+    low_altitude_radius: 1.15
+  screening:
+    n_orbits: 40
+    n_points: 36
+    r_peri_range: [1.03, 1.40]
+    r_apo_range: [1.40, 1.60]
+    rerun_fraction: 0.25
+    oracle_source: heldout
+
+output:
+  output_dir: outputs
+  run_name: vespuq_smoke
+  save_plots: false

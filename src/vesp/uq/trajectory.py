@@ -131,6 +131,8 @@ class RiskScreeningReport:
     rerun_fraction: float
     n_flagged: int
     flagged_indices: list[int]
+    mean_risk_flagged: float | None = None
+    mean_risk_accepted: float | None = None
     # Validation against a ground-truth error metric (only when ``true_error`` is supplied):
     capture_rate: float | None = None  # share of truly-high-error trajectories that got flagged
     precision: float | None = None  # share of flagged trajectories that were truly high-error
@@ -199,6 +201,7 @@ def select_reruns(
         thr = float(threshold)
 
     flagged_mask = risk >= thr
+    accepted_mask = ~flagged_mask
     flagged_indices = [int(i) for i in torch.nonzero(flagged_mask, as_tuple=False).reshape(-1).tolist()]
     n_flagged = len(flagged_indices)
 
@@ -208,6 +211,8 @@ def select_reruns(
         rerun_fraction=n_flagged / n,
         n_flagged=n_flagged,
         flagged_indices=flagged_indices,
+        mean_risk_flagged=float(risk[flagged_mask].mean()) if n_flagged > 0 else float("nan"),
+        mean_risk_accepted=float(risk[accepted_mask].mean()) if bool(accepted_mask.any()) else float("nan"),
     )
 
     if true_error is not None:
@@ -228,3 +233,37 @@ def select_reruns(
             report.error_ratio_flagged_to_accepted = report.mean_error_flagged / report.mean_error_accepted
 
     return report
+
+
+def run_risk_screening(
+    plugin,
+    trajectories,
+    *,
+    true_error=None,
+    rerun_fraction: float | None = 0.20,
+    threshold: float | None = None,
+    scoring: str = "max",
+) -> dict:
+    """Score a trajectory ensemble with ``plugin`` and select the high-fidelity rerun subset.
+
+    ``plugin`` is any object exposing ``score_ensemble(trajectories, scoring=...)`` (the
+    :class:`~vesp.uq.plugin.VESPUQPlugin`). Returns a dict with:
+      - ``trajectory_scores``: list of :class:`TrajectoryScore` (one per trajectory),
+      - ``selected_reruns``: indices flagged for high-fidelity rerun,
+      - ``risk_screening_report``: the :class:`RiskScreeningReport` (validated when
+        ``true_error`` -- one scalar per trajectory -- is supplied).
+    """
+
+    scores = plugin.score_ensemble(trajectories, scoring=scoring)
+    risk = torch.tensor([s.risk_score for s in scores], dtype=torch.float64)
+    report = select_reruns(
+        risk,
+        rerun_fraction=None if threshold is not None else rerun_fraction,
+        threshold=threshold,
+        true_error=true_error,
+    )
+    return {
+        "trajectory_scores": scores,
+        "selected_reruns": report.flagged_indices,
+        "risk_screening_report": report,
+    }

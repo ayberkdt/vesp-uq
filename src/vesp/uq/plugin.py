@@ -39,7 +39,10 @@ from vesp.extensions.probabilistic import (
     LinearGaussianPosterior,
     calibration_metrics,
 )
+from vesp.uq.metrics import vector_calibration_metrics
 from vesp.uq.trajectory import TrajectoryScore, score_sigma_profile
+
+COVARIANCE_MODES = ("exact", "diagonal", "lowrank")
 
 
 @dataclass
@@ -58,6 +61,20 @@ class UncertaintyPrediction:
     sigma: torch.Tensor  # (N,) total predictive std
     epistemic_sigma: torch.Tensor  # (N,) epistemic-only (source-posterior) std
     risk_score: torch.Tensor  # (N,)
+
+    def to_numpy(self) -> dict:
+        return {k: v.detach().cpu().numpy() for k, v in asdict(self).items()}
+
+
+@dataclass
+class CovariancePrediction:
+    """Per-position 3x3 predictive covariance output of :meth:`VESPUQPlugin.predict_covariance_3x3`."""
+
+    positions: torch.Tensor  # (N, 3)
+    mean_error: torch.Tensor  # (N, 3)
+    covariance: torch.Tensor  # (N, 3, 3) symmetric PSD predictive covariance
+    std_components: torch.Tensor  # (N, 3)
+    sigma: torch.Tensor  # (N,)
 
     def to_numpy(self) -> dict:
         return {k: v.detach().cpu().numpy() for k, v in asdict(self).items()}
@@ -82,6 +99,8 @@ class VESPUQPlugin:
         reg_method: str = "lcurve",
         lambda_l2: float = 30.0,
         noise_model: str = "heteroscedastic",
+        covariance_mode: str = "exact",
+        lowrank_rank: int = 64,
         val_fraction: float = 0.25,
         low_altitude_radius: float = 1.15,
         risk_scoring: str = "max",
@@ -94,6 +113,11 @@ class VESPUQPlugin:
             raise ValueError("reg_method must be 'lcurve', 'evidence', or 'fixed'")
         if noise_model not in {"homoscedastic", "heteroscedastic"}:
             raise ValueError("noise_model must be 'homoscedastic' or 'heteroscedastic'")
+        if covariance_mode not in COVARIANCE_MODES:
+            raise ValueError(f"covariance_mode must be one of {COVARIANCE_MODES}")
+        self.covariance_mode = covariance_mode
+        self.lowrank_rank = int(lowrank_rank)
+        self._cov_eig: tuple[torch.Tensor, torch.Tensor] | None = None
         self.dtype = dtype
         self.device = torch.device(device)
         self.sources = sources.to(self.device)
@@ -157,6 +181,8 @@ class VESPUQPlugin:
             reg_method=reg_method,
             lambda_l2=lambda_l2,
             noise_model=str(uq.get("noise_model", "heteroscedastic")).lower(),
+            covariance_mode=str(uq.get("covariance_mode", "exact")).lower(),
+            lowrank_rank=int(uq.get("lowrank_rank", 64)),
             val_fraction=float(uq.get("val_fraction", 0.25)),
             low_altitude_radius=float(risk.get("low_altitude_radius", low_band[1])),
             risk_scoring=str(risk.get("scoring", "max")).lower(),
@@ -186,6 +212,52 @@ class VESPUQPlugin:
         if self.posterior is None:
             raise RuntimeError("VESPUQPlugin is not fitted; call fit(...) first")
 
+    def _point_noise(self, radii: torch.Tensor) -> torch.Tensor | float:
+        """Aleatoric noise variance per row/point: global floor + altitude excess if het."""
+
+        if self.altitude_noise is None:
+            return self.posterior.noise_var
+        return self.posterior.noise_var + self.altitude_noise.variance(radii)
+
+    def _cov_eigpairs(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Top-``lowrank_rank`` eigenpairs of the posterior covariance (cached after fit)."""
+
+        if self._cov_eig is None:
+            vals, vecs = torch.linalg.eigh(self.posterior.cov)  # ascending
+            k = min(self.lowrank_rank, int(vals.numel()))
+            self._cov_eig = (vals[-k:].clamp_min(0.0), vecs[:, -k:])
+        return self._cov_eig
+
+    def _epistemic_variance(self, operator: torch.Tensor) -> torch.Tensor:
+        """Per-row epistemic (source-posterior) variance, honoring ``covariance_mode``.
+
+        ``exact`` uses the full covariance; ``diagonal`` keeps only its diagonal (drops source
+        correlations -> O(m*n) instead of O(m*n^2)); ``lowrank`` uses the top-k eigenpairs.
+        """
+
+        if self.covariance_mode == "diagonal":
+            diag = torch.diagonal(self.posterior.cov)
+            return ((operator * operator) @ diag).clamp_min(0.0)
+        if self.covariance_mode == "lowrank":
+            vals, vecs = self._cov_eigpairs()
+            proj = operator @ vecs
+            return ((proj * proj) @ vals).clamp_min(0.0)
+        cov_q = operator @ self.posterior.cov
+        return torch.sum(cov_q * operator, dim=-1).clamp_min(0.0)
+
+    def _predict_rows(self, operator: torch.Tensor, radii: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Row-level (3N) predictive mean/variance honoring noise model + covariance mode."""
+
+        mean = operator @ self.posterior.mean
+        epistemic = self._epistemic_variance(operator)
+        variance = epistemic + self._point_noise(radii)
+        return {
+            "mean": mean,
+            "epistemic_variance": epistemic,
+            "variance": variance,
+            "std": torch.sqrt(variance.clamp_min(torch.finfo(mean.dtype).tiny)),
+        }
+
     # ------------------------------------------------------------------ fitting
     def fit(
         self,
@@ -206,6 +278,11 @@ class VESPUQPlugin:
         error = self._prep_positions(reference_acceleration) - self._prep_positions(surrogate_acceleration)
         val_error = None
         if val_positions is not None:
+            if val_reference_acceleration is None or val_surrogate_acceleration is None:
+                raise ValueError(
+                    "val_positions requires both val_reference_acceleration and "
+                    "val_surrogate_acceleration (or use fit_error with an explicit val_error)"
+                )
             val_positions = self._prep_positions(val_positions)
             val_error = self._prep_positions(val_reference_acceleration) - self._prep_positions(
                 val_surrogate_acceleration
@@ -262,6 +339,7 @@ class VESPUQPlugin:
                 operator, target, lambda_l2=lambda_used, noise_var=noise_var
             )
         self.posterior = posterior
+        self._cov_eig = None  # invalidate the cached low-rank eigendecomposition
 
         # --- Step 5: altitude-dependent heteroscedastic recalibration on held-out residuals ---
         self.altitude_noise = None
@@ -282,6 +360,7 @@ class VESPUQPlugin:
             "noise_var": posterior.noise_var,
             "noise_std": float(posterior.noise_var ** 0.5),
             "noise_model": self.noise_model,
+            "covariance_mode": self.covariance_mode,
             "n_sources": int(self.sources.n_sources),
         }
         if self.altitude_noise is not None:
@@ -300,12 +379,7 @@ class VESPUQPlugin:
         n = positions.shape[0]
         op = self._operator(positions)
         radius = torch.linalg.norm(positions, dim=-1)
-        if self.altitude_noise is not None:
-            row_radii = radius.repeat(3)
-            noise = self.posterior.noise_var + self.altitude_noise.variance(row_radii)
-            pred = self.posterior.predict(op, noise_variance=noise)
-        else:
-            pred = self.posterior.predict(op, include_noise=True)
+        pred = self._predict_rows(op, radius.repeat(3))
 
         # operator rows are [x-block, y-block, z-block]; reshape(3, N).T -> (N, 3)
         mean3 = pred["mean"].reshape(3, n).transpose(0, 1)
@@ -322,6 +396,79 @@ class VESPUQPlugin:
             sigma=sigma,
             epistemic_sigma=epistemic_sigma,
             risk_score=sigma,
+        )
+
+    def predict_covariance_3x3(self, positions) -> CovariancePrediction:
+        """Full ``3x3`` predictive covariance of the acceleration-error vector at each position.
+
+        For a query point with operator rows ``Q_i`` (3, n_sources),
+        ``Cov_a(x_i) = Q_i Sigma_sigma Q_i^T + noise_i I_3`` -- a symmetric PSD matrix combining
+        the source-posterior (epistemic) covariance and the aleatoric noise floor. ``diagonal``
+        mode returns diagonal covariances (off-diagonal source correlations dropped); ``exact``
+        and ``lowrank`` return the full (or low-rank-approximated) ``3x3``.
+        """
+
+        self._require_fitted()
+        positions = self._prep_positions(positions)
+        n = positions.shape[0]
+        op = self._operator(positions)
+        opx, opy, opz = op[:n], op[n : 2 * n], op[2 * n :]
+        radius = torch.linalg.norm(positions, dim=-1)
+
+        zeros = torch.zeros(n, dtype=self.dtype, device=self.device)
+        if self.covariance_mode == "diagonal":
+            diag = torch.diagonal(self.posterior.cov)
+            cxx = ((opx * opx) @ diag).clamp_min(0.0)
+            cyy = ((opy * opy) @ diag).clamp_min(0.0)
+            czz = ((opz * opz) @ diag).clamp_min(0.0)
+            cxy = cxz = cyz = zeros
+        else:
+            if self.covariance_mode == "lowrank":
+                vals, vecs = self._cov_eigpairs()
+                tx, ty, tz = opx @ vecs, opy @ vecs, opz @ vecs  # transformed blocks (N, k)
+
+                def _dot(a, b):
+                    return (a * b) @ vals
+
+            else:  # exact
+                tx, ty, tz = opx @ self.posterior.cov, opy @ self.posterior.cov, opz @ self.posterior.cov
+
+                def _dot(a, b):
+                    # a is (N,n) already multiplied by cov; b is the raw operator block (N,n)
+                    return torch.sum(a * b, dim=-1)
+
+            if self.covariance_mode == "lowrank":
+                cxx = _dot(tx, tx).clamp_min(0.0)
+                cyy = _dot(ty, ty).clamp_min(0.0)
+                czz = _dot(tz, tz).clamp_min(0.0)
+                cxy, cxz, cyz = _dot(tx, ty), _dot(tx, tz), _dot(ty, tz)
+            else:
+                cxx = _dot(tx, opx).clamp_min(0.0)
+                cyy = _dot(ty, opy).clamp_min(0.0)
+                czz = _dot(tz, opz).clamp_min(0.0)
+                cxy, cxz, cyz = _dot(tx, opy), _dot(tx, opz), _dot(ty, opz)
+
+        noise = self._point_noise(radius)
+        if not torch.is_tensor(noise):
+            noise = torch.full((n,), float(noise), dtype=self.dtype, device=self.device)
+        cov = torch.zeros(n, 3, 3, dtype=self.dtype, device=self.device)
+        cov[:, 0, 0] = cxx + noise
+        cov[:, 1, 1] = cyy + noise
+        cov[:, 2, 2] = czz + noise
+        cov[:, 0, 1] = cov[:, 1, 0] = cxy
+        cov[:, 0, 2] = cov[:, 2, 0] = cxz
+        cov[:, 1, 2] = cov[:, 2, 1] = cyz
+
+        mean3 = (op @ self.posterior.mean).reshape(3, n).transpose(0, 1)
+        diag = torch.diagonal(cov, dim1=-2, dim2=-1)  # (N, 3)
+        std_components = torch.sqrt(diag.clamp_min(0.0))
+        sigma = torch.sqrt(diag.sum(dim=1).clamp_min(0.0))
+        return CovariancePrediction(
+            positions=positions,
+            mean_error=mean3,
+            covariance=cov,
+            std_components=std_components,
+            sigma=sigma,
         )
 
     # ------------------------------------------------------------------ trajectory scoring
@@ -357,35 +504,49 @@ class VESPUQPlugin:
         op = self._operator(positions)
         radius = torch.linalg.norm(positions, dim=-1)
         row_radii = radius.repeat(3)
-        if self.altitude_noise is not None:
-            noise = self.posterior.noise_var + self.altitude_noise.variance(row_radii)
-            pred = self.posterior.predict(op, noise_variance=noise)
-        else:
-            pred = self.posterior.predict(op, include_noise=True)
+        pred = self._predict_rows(op, row_radii)
         mean, std = pred["mean"], pred["std"]
         epistemic_std = torch.sqrt(pred["epistemic_variance"].clamp_min(0.0))
         target = _flatten_acc(error)
 
+        # vector (ellipsoid) calibration uses the full 3x3 predictive covariance per point and
+        # the predictive RESIDUAL (observed error minus the posterior-mean error prediction).
+        cov_pred = self.predict_covariance_3x3(positions)
+        residual_vec = error - cov_pred.mean_error
+        point_radius = radius
+        point_mask_all = torch.ones_like(point_radius, dtype=torch.bool)
+
         bands = altitude_bands or {"low": [1.03, 1.15], "mid": [1.15, 1.35], "high": [1.35, 1.60]}
 
-        def _band(mask: torch.Tensor) -> dict:
-            m = calibration_metrics(mean[mask], std[mask], target[mask])
-            m["mean_epistemic_std"] = float(torch.mean(epistemic_std[mask]).detach().cpu())
-            m["mean_radius"] = float(torch.mean(row_radii[mask]).detach().cpu())
+        def _band(row_mask: torch.Tensor, point_mask: torch.Tensor) -> dict:
+            m = calibration_metrics(mean[row_mask], std[row_mask], target[row_mask])
+            m["mean_epistemic_std"] = float(torch.mean(epistemic_std[row_mask]).detach().cpu())
+            m["mean_pred_sigma"] = float(
+                torch.mean(std[row_mask]).detach().cpu()
+            )
+            m["mean_radius"] = float(torch.mean(row_radii[row_mask]).detach().cpu())
+            if int(point_mask.sum()) >= 10:
+                m.update(
+                    vector_calibration_metrics(residual_vec[point_mask], cov_pred.covariance[point_mask])
+                )
             return m
 
-        report: dict = {"all": _band(torch.ones_like(row_radii, dtype=torch.bool))}
+        report: dict = {"all": _band(torch.ones_like(row_radii, dtype=torch.bool), point_mask_all)}
         for name, rng in bands.items():
             if rng is None:
                 continue
             lo, hi = float(rng[0]), float(rng[1])
-            mask = (row_radii >= lo) & (row_radii <= hi)
-            if int(mask.sum()) >= 30:
-                report[name] = _band(mask)
+            row_mask = (row_radii >= lo) & (row_radii <= hi)
+            point_mask = (point_radius >= lo) & (point_radius <= hi)
+            if int(row_mask.sum()) >= 30:
+                report[name] = _band(row_mask, point_mask)
         low, high = report.get("low"), report.get("high")
         if low and high and high.get("mean_epistemic_std"):
             report["low_high_epistemic_std_ratio"] = low["mean_epistemic_std"] / max(
                 high["mean_epistemic_std"], 1.0e-30
+            )
+            report["low_high_pred_sigma_ratio"] = low["mean_pred_sigma"] / max(
+                high["mean_pred_sigma"], 1.0e-30
             )
         return report
 

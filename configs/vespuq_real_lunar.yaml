@@ -20,8 +20,9 @@ body:
 
 data:
   type: csv
+  format: residual          # acceleration column IS the degree-60 surrogate's error
   path: data/lunar_grail_gl0420a_L60_residual.csv
-  train_fraction: 0.7
+  train_fraction: 0.6
 
 model:
   type: multishell
@@ -46,6 +47,7 @@ uq:
     method: lcurve
     lambda_l2: 30.0          # used only by method: fixed (and as a seed otherwise)
   noise_model: heteroscedastic
+  covariance_mode: exact      # exact | diagonal | lowrank
   val_fraction: 0.25
   risk:
     scoring: max             # max | mean | low_alt_integral | time_above | combined
@@ -56,6 +58,7 @@ uq:
     r_peri_range: [1.03, 1.40]
     r_apo_range: [1.40, 1.60]
     rerun_fraction: 0.20
+    oracle_source: heldout    # heldout (no leakage, default) | all (denser oracle)
 
 output:
   output_dir: outputs

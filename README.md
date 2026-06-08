@@ -61,18 +61,27 @@ from vesp.uq import VESPUQPlugin
 plugin = VESPUQPlugin.from_config(config)
 plugin.fit(positions, surrogate_acc, reference_acc)   # e_a = reference - surrogate
 pred  = plugin.predict_uncertainty(query_positions)   # mean error, std, per-point risk
+cov   = plugin.predict_covariance_3x3(query_positions)  # full 3x3 predictive covariance
 score = plugin.score_trajectory(orbit_positions)      # aggregate risk along a trajectory
 ```
 
-Run the two minimal IAC experiments (standalone calibration + trajectory risk screening) on
-the real lunar residual:
+Run the two minimal IAC experiments (standalone calibration + trajectory risk screening):
 
 ```text
-python -m vesp.uq.run --config configs/vespuq_real_lunar.yaml
+python -m vesp.uq.run --config configs/vespuq_smoke.yaml        # tiny synthetic, finishes in seconds
+python -m vesp.uq.run --config configs/vespuq_real_lunar.yaml   # GRAIL gl0420a residual
 ```
 
-The posterior **mean equals the ridge point estimate** (accuracy is unchanged); the
-contribution is calibrated, altitude-aware error bars and the trajectory screen they enable.
+Each run writes a JSON + Markdown report (with an IAC claim summary) plus CSV tables:
+`calibration_by_band.csv`, `trajectory_scores.csv`, `flagged_trajectories.csv`, `fit_summary.json`.
+The calibration report includes component-wise PICP/z_std/NLL/CRPS **and** 3D ellipsoid
+(Mahalanobis chi-square) coverage. Covariance prediction has `exact | diagonal | lowrank` speed
+modes (`uq.covariance_mode`).
+
+The posterior **mean equals the ridge point estimate** (accuracy is unchanged); the contribution
+is calibrated, altitude-aware error bars and the trajectory screen they enable. See
+[`docs/VESP_UQ_IAC_PLAN.md`](docs/VESP_UQ_IAC_PLAN.md) and
+[`docs/VESP_UQ_LIMITATIONS.md`](docs/VESP_UQ_LIMITATIONS.md) for the full scope and claim boundaries.
 
 ## Experimental Questions
 

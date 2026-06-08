@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import csv as _csv
 import io
+import math
 import time
 from pathlib import Path
 from typing import Iterable
@@ -36,7 +37,7 @@ from vesp.data.dataset import load_csv_dataset
 from vesp.uq.data import UQSamples, load_uq_samples_from_csv, make_synthetic_uq_samples, split_uq_samples
 from vesp.uq.ensemble import generate_orbit_ensemble, nearest_neighbor_error_magnitude
 from vesp.uq.plugin import VESPUQPlugin
-from vesp.uq.trajectory import select_reruns
+from vesp.uq.trajectory import aggregate_trajectory_error, select_reruns
 
 
 def _load_samples(config: dict, dtype: torch.dtype) -> UQSamples:
@@ -75,6 +76,42 @@ def _csv_text(header: list[str], rows: list[list]) -> str:
     return buf.getvalue()
 
 
+def _time_weights(traj: torch.Tensor) -> torch.Tensor:
+    """Approximate per-point time weights for a true-anomaly-uniform Keplerian sample (~r^2)."""
+
+    r = torch.linalg.norm(traj, dim=-1).to(torch.float64)
+    return r * r
+
+
+def _stat(values) -> dict:
+    """mean / max / p95 of a list of scalars, dropping NaNs (empty -> {})."""
+
+    t = torch.tensor([float(v) for v in values], dtype=torch.float64)
+    t = t[~torch.isnan(t)]
+    if t.numel() == 0:
+        return {}
+    return {
+        "mean": float(t.mean()),
+        "max": float(t.max()),
+        "p95": float(torch.quantile(t, 0.95)),
+    }
+
+
+def _expected_error_summary(scores, domain_support: bool) -> dict:
+    """Ensemble-level rollup of the supervisor per-trajectory metrics for the report body."""
+
+    out = {
+        "mean_expected_error": _stat([s.mean_expected_error for s in scores]),
+        "max_expected_error": _stat([s.max_expected_error for s in scores]),
+        "p95_expected_error": _stat([s.p95_expected_error for s in scores]),
+        "mean_point_risk": _stat([s.mean_point_risk for s in scores]),
+    }
+    if domain_support:
+        out["max_domain_risk"] = _stat([s.max_domain_risk for s in scores])
+        out["time_outside_support"] = _stat([s.time_outside_support for s in scores])
+    return out
+
+
 def run_vespuq(config: dict) -> dict:
     dtype = get_dtype(config)
     samples = _load_samples(config, dtype)
@@ -102,12 +139,22 @@ def run_vespuq(config: dict) -> dict:
         dtype=dtype,
     )
     scoring = plugin.risk_scoring
-    aggregate = torch.amax if scoring in {"max", "low_alt_integral", "time_above"} else torch.mean
+
+    # Optional time-weighting: orbits are sampled uniformly in true anomaly, which oversamples
+    # periapsis for eccentric orbits. Weighting each point by ~dt (proportional to r^2 for a
+    # Keplerian orbit) recovers an approximately time-uniform aggregation.
+    time_weighted = bool(screen_cfg.get("time_weighted", False))
+    weights = [_time_weights(traj) for traj in ensemble.trajectories] if time_weighted else None
 
     t0 = time.perf_counter()
-    scores = plugin.score_ensemble(ensemble.trajectories)
+    scores = plugin.score_ensemble(ensemble.trajectories, weights=weights)
     score_seconds = time.perf_counter() - t0
     risk_scores = torch.tensor([s.risk_score for s in scores], dtype=torch.float64)
+
+    # True-error aggregation is DECOUPLED from the risk scoring mode (see plan item 6): the
+    # oracle profile is collapsed by an explicit aggregator (default p95, robust to single-NN
+    # spikes) rather than implicitly mirroring whichever risk mode is active.
+    true_error_aggregator = str(screen_cfg.get("true_error_aggregator", "p95")).lower()
 
     # nearest-neighbour ground-truth error magnitude along each orbit. The oracle uses held-out
     # samples by default (no leakage); 'all' uses the full sample set (denser, less NN noise).
@@ -118,10 +165,23 @@ def run_vespuq(config: dict) -> dict:
     true_error = torch.empty(len(ensemble.trajectories), dtype=torch.float64)
     for i, traj in enumerate(ensemble.trajectories):
         nn = nearest_neighbor_error_magnitude(traj.to(dtype), oracle.positions, oracle.error)
-        true_error[i] = aggregate(nn.to(torch.float64))
+        true_error[i] = aggregate_trajectory_error(nn.to(torch.float64), true_error_aggregator)
 
+    # Selection policy: an absolute threshold (optionally capped by max_rerun_fraction) takes
+    # precedence over the fixed top-fraction budget. With a threshold, a safe in-distribution
+    # benchmark is allowed to flag *zero* trajectories.
+    threshold = screen_cfg.get("threshold")
+    max_rerun_fraction = screen_cfg.get("max_rerun_fraction")
     rerun_fraction = float(screen_cfg.get("rerun_fraction", 0.20))
-    screening = select_reruns(risk_scores, rerun_fraction=rerun_fraction, true_error=true_error)
+    if threshold is not None:
+        screening = select_reruns(
+            risk_scores,
+            threshold=float(threshold),
+            max_rerun_fraction=float(max_rerun_fraction) if max_rerun_fraction is not None else None,
+            true_error=true_error,
+        )
+    else:
+        screening = select_reruns(risk_scores, rerun_fraction=rerun_fraction, true_error=true_error)
 
     n_traj = len(ensemble.trajectories)
     n_points_total = sum(int(t.shape[0]) for t in ensemble.trajectories)
@@ -135,7 +195,10 @@ def run_vespuq(config: dict) -> dict:
             "oracle_source": oracle_source,
             "n_trajectories": n_traj,
             "n_output_points_total": n_points_total,
-            "true_error_aggregator": "max" if aggregate is torch.amax else "mean",
+            "true_error_aggregator": true_error_aggregator,
+            "time_weighted": time_weighted,
+            "domain_support": plugin.domain_support,
+            "expected_error": _expected_error_summary(scores, plugin.domain_support),
             "screen": screening.to_dict(),
         },
         "runtime": {
@@ -168,29 +231,51 @@ def _summary(report: dict) -> dict:
         out["low_band_calibrated_90"] = abs(low["picp_90"] - 0.90) <= 0.1
     if "ellipsoid_picp_90" in low:
         out["low_band_ellipsoid_picp_90"] = low["ellipsoid_picp_90"]
+    out["selection_mode"] = screen.get("selection_mode")
     out["rerun_fraction"] = screen["rerun_fraction"]
+    out["n_flagged"] = screen.get("n_flagged")
+    out["zero_alarms"] = screen.get("n_flagged") == 0
     out["capture_rate"] = screen.get("capture_rate")
     out["spearman_risk_vs_error"] = screen.get("spearman_risk_vs_error")
     out["error_ratio_flagged_to_accepted"] = screen.get("error_ratio_flagged_to_accepted")
     if screen.get("error_ratio_flagged_to_accepted"):
         out["screen_concentrates_error"] = screen["error_ratio_flagged_to_accepted"] > 1.0
+    # Lift over a random screen: a random top-fraction selection captures ~rerun_fraction of the
+    # high-error set, so lift = capture_rate / rerun_fraction (>1 means better than chance).
+    cap = screen.get("capture_rate")
+    rf = screen.get("rerun_fraction")
+    if cap is not None and rf and float(rf) > 0.0 and not math.isnan(float(cap)):
+        out["lift_over_random"] = float(cap) / float(rf)
     return out
 
 
 def _build_tables(scores, screening, true_error, flagged_set) -> dict:
+    # Legacy sigma columns are kept verbatim and in order; the supervisor / domain columns are
+    # appended before the two trailing bookkeeping columns so old readers stay valid.
     traj_header = [
         "trajectory_id", "risk_score", "max_sigma", "mean_sigma", "low_altitude_sigma_integral",
         "time_above_threshold", "combined_altitude_risk", "min_radius", "mean_radius",
-        "mean_epistemic_sigma", "flagged_for_rerun", "true_error",
+        "mean_epistemic_sigma",
+        "max_expected_error", "mean_expected_error", "p95_expected_error",
+        "low_altitude_expected_error_integral", "max_mean_error_magnitude",
+        "mean_mean_error_magnitude", "mean_point_risk", "p95_point_risk",
+        "max_domain_risk", "time_outside_support",
+        "flagged_for_rerun", "true_error",
     ]
     traj_rows = []
     for i, s in enumerate(scores):
         traj_rows.append([
             i, s.risk_score, s.max_sigma, s.mean_sigma, s.low_altitude_sigma_integral,
             s.time_above_threshold, s.combined_altitude_risk, s.min_radius, s.mean_radius,
-            s.mean_epistemic_sigma, int(i in flagged_set), float(true_error[i]),
+            s.mean_epistemic_sigma,
+            s.max_expected_error, s.mean_expected_error, s.p95_expected_error,
+            s.low_altitude_expected_error_integral, s.max_mean_error_magnitude,
+            s.mean_mean_error_magnitude, s.mean_point_risk, s.p95_point_risk,
+            s.max_domain_risk, s.time_outside_support,
+            int(i in flagged_set), float(true_error[i]),
         ])
-    flagged_rows = [r for r in traj_rows if r[-2] == 1]
+    flag_col = traj_header.index("flagged_for_rerun")
+    flagged_rows = [r for r in traj_rows if r[flag_col] == 1]
     return {"trajectory_header": traj_header, "trajectory_rows": traj_rows, "flagged_rows": flagged_rows}
 
 
@@ -266,16 +351,28 @@ def build_report_md(report: dict) -> str:
             f"(low/high epistemic std ratio = {_fmt(cal['low_high_epistemic_std_ratio'], '.2f')}, "
             f"predictive sigma ratio = {_fmt(cal.get('low_high_pred_sigma_ratio'), '.2f')}).",
         ]
+    ee = screen.get("expected_error", {})
+    sel_mode = sc.get("selection_mode", "fraction")
+    zero_alarms = sc.get("n_flagged") == 0
     lines += [
         "",
         "## Experiment 3 - Trajectory risk screening",
         "",
         f"- ensemble: {screen['n_trajectories']} orbits, {screen['n_output_points_total']} output points "
-        f"(scoring = `{screen['scoring']}`, oracle = `{screen['oracle_source']}`)",
-        f"- rerun threshold (risk score): {_fmt(sc['threshold'], '.3e')}  ->  "
-        f"flagged {sc['n_flagged']}/{sc['n_trajectories']} ({_fmt(100 * sc['rerun_fraction'], '.1f')}%)",
+        f"(scoring = `{screen['scoring']}`, oracle = `{screen['oracle_source']}`, "
+        f"true-error aggregator = `{screen.get('true_error_aggregator', 'p95')}`"
+        f"{', time-weighted' if screen.get('time_weighted') else ''}"
+        f"{', domain-support on' if screen.get('domain_support') else ''})",
+        f"- selection: `{sel_mode}` -> threshold (risk score) {_fmt(sc['threshold'], '.3e')}"
+        + (f", max rerun fraction {_fmt(sc.get('max_rerun_fraction'), '.2f')}" if sc.get("max_rerun_fraction") is not None else "")
+        + (f", {sc.get('n_above_threshold')} above threshold" if sc.get("n_above_threshold") is not None else ""),
+        f"- flagged {sc['n_flagged']}/{sc['n_trajectories']} ({_fmt(100 * sc['rerun_fraction'], '.1f')}%)"
+        + ("  -- **no trajectory exceeded the absolute risk threshold (zero alarms)**" if zero_alarms and sel_mode != "fraction" else ""),
+        f"- expected-error per orbit (ensemble mean | max): mean "
+        f"{_fmt((ee.get('mean_expected_error') or {}).get('mean'), '.3e')} | "
+        f"max {_fmt((ee.get('max_expected_error') or {}).get('max'), '.3e')}",
         f"- capture rate (top-decile true-error orbits flagged): **{_fmt(sc.get('capture_rate'), '.2f')}**  "
-        f"| precision: {_fmt(sc.get('precision'), '.2f')}",
+        f"| precision: {_fmt(sc.get('precision'), '.2f')}  | lift over random: {_fmt(s.get('lift_over_random'), '.2f')}x",
         f"- Spearman(risk, true error): {_fmt(sc.get('spearman_risk_vs_error'), '.2f')}",
         f"- mean true error  flagged: {_fmt(sc.get('mean_error_flagged'), '.3e')}  vs  "
         f"accepted: {_fmt(sc.get('mean_error_accepted'), '.3e')}  "
@@ -299,6 +396,27 @@ def _iac_summary_md(report: dict) -> list[str]:
     s = report["summary"]
     rt = report["runtime"]
     low, mid, high = cal.get("low", {}), cal.get("mid", {}), cal.get("high", {})
+    sel_mode = sc.get("selection_mode", "fraction")
+    zero_alarms = sc.get("n_flagged") == 0
+    if zero_alarms and sel_mode != "fraction":
+        flagged_line = (
+            f"- **Fraction of trajectories flagged:** 0.0% -- no trajectory exceeded the absolute "
+            f"risk threshold, so this safe in-distribution regime correctly raised zero alarms."
+        )
+        concentrate_line = (
+            "- **Did flagged trajectories carry larger true error?** N/A -- nothing was flagged."
+        )
+    else:
+        flagged_line = (
+            f"- **Fraction of trajectories flagged:** {_fmt(100 * sc['rerun_fraction'], '.1f')}% "
+            f"(selection `{sel_mode}`, capture rate {_fmt(sc.get('capture_rate'), '.2f')}, "
+            f"lift over random {_fmt(s.get('lift_over_random'), '.2f')}x)."
+        )
+        concentrate_line = (
+            f"- **Did flagged trajectories carry larger true error?** "
+            f"{'Yes' if s.get('screen_concentrates_error') else 'No'} "
+            f"({_fmt(sc.get('error_ratio_flagged_to_accepted'), '.2f')}x the accepted-set error)."
+        )
     return [
         "",
         "## IAC claim summary",
@@ -313,11 +431,8 @@ def _iac_summary_md(report: dict) -> list[str]:
         f"(low/high epistemic std ratio = {_fmt(cal.get('low_high_epistemic_std_ratio'), '.2f')}).",
         f"- **PICP90 by band (low/mid/high):** {_fmt(low.get('picp_90'), '.2f')} / "
         f"{_fmt(mid.get('picp_90'), '.2f')} / {_fmt(high.get('picp_90'), '.2f')}.",
-        f"- **Fraction of trajectories flagged:** {_fmt(100 * sc['rerun_fraction'], '.1f')}% "
-        f"(capture rate {_fmt(sc.get('capture_rate'), '.2f')}).",
-        f"- **Did flagged trajectories carry larger true error?** "
-        f"{'Yes' if s.get('screen_concentrates_error') else 'No'} "
-        f"({_fmt(sc.get('error_ratio_flagged_to_accepted'), '.2f')}x the accepted-set error).",
+        flagged_line,
+        concentrate_line,
         f"- **Runtime overhead:** {_fmt(rt['score_ms_per_trajectory'], '.3f')} ms/trajectory, "
         f"{_fmt(rt['score_us_per_output_point'], '.2f')} us/output point (post-processing only).",
         "- **What should NOT be claimed:** not a better deterministic surrogate; not true lunar "

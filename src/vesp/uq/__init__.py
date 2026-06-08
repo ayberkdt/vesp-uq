@@ -23,6 +23,7 @@ from vesp.uq.plugin import CovariancePrediction, UncertaintyPrediction, VESPUQPl
 from vesp.uq.trajectory import (
     RiskScreeningReport,
     TrajectoryScore,
+    aggregate_trajectory_error,
     run_risk_screening,
     score_sigma_profile,
     select_reruns,
@@ -37,6 +38,7 @@ __all__ = [
     "score_sigma_profile",
     "select_reruns",
     "run_risk_screening",
+    "aggregate_trajectory_error",
     "UQSamples",
     "load_uq_samples_from_csv",
     "split_uq_samples",

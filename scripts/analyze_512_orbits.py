@@ -104,19 +104,55 @@ def main():
         traj_tensors.append(pos_tensor)
         true_errors.append(st_lrps_metrics.loc[i, 'rms_pos_err_km'])
         
-    print("Scoring the 512 accurate trajectories...")
-    results = run_risk_screening(plugin, traj_tensors, rerun_fraction=0.10, scoring="combined", true_error=true_errors)
+    # Use the supervisor scoring configured in the YAML (expected error * altitude * domain).
+    scoring = str(cfg.get("uq", {}).get("risk", {}).get("scoring", "supervisor")).lower()
+    print(f"Scoring the 512 accurate trajectories (scoring={scoring})...")
+
+    # (a) Relative ranking: flag the top decile and measure how well risk ranks the true error.
+    results = run_risk_screening(plugin, traj_tensors, rerun_fraction=0.10, scoring=scoring, true_error=true_errors)
     report = results["risk_screening_report"]
-    
+    scores = results["trajectory_scores"]
+    risk_scores = torch.tensor([s.risk_score for s in scores], dtype=torch.float64)
+
     print("\n--- 512 LUNAR SCENARIOS RISK SCREENING REPORT ---")
     print(f"Total Trajectories: {len(scenarios)}")
     print(f"Spearman Rank Correlation (Risk vs True Error): {report.spearman_risk_vs_error:.4f}")
     print(f"Capture Rate (Top 10% Risk catching Top 10% Error): {report.capture_rate*100:.1f}%")
     print(f"Precision: {report.precision*100:.1f}%")
-    
+    if report.rerun_fraction > 0:
+        print(f"Lift over random (capture / rerun fraction): {report.capture_rate / report.rerun_fraction:.2f}x")
+
     print(f"\nMean True Error of Flagged (Top 10% Riskiest): {report.mean_error_flagged:.3f} km")
     print(f"Mean True Error of Accepted (Remaining 90%):   {report.mean_error_accepted:.3f} km")
     print(f"Ratio (Flagged Error / Accepted Error): {report.error_ratio_flagged_to_accepted:.2f}x")
+
+    ee_mean = float(np.mean([s.mean_expected_error for s in scores]))
+    ee_max = float(np.max([s.max_expected_error for s in scores]))
+    print(f"\nExpected error per orbit (ensemble): mean={ee_mean:.3e}  max={ee_max:.3e} (normalized accel units)")
+    if abs(report.spearman_risk_vs_error) < 0.1 or report.capture_rate <= report.rerun_fraction:
+        print("NOTE: on this set, VESP-UQ force-error risk does NOT rank the ST-LRPS position error")
+        print("      (|Spearman| < 0.1 / lift <= 1). VESP-UQ scores expected FORCE error, which is")
+        print("      not the dominant driver of this surrogate's position error here.")
+
+    # (b) Absolute-threshold mode -- the supervisor is NOT forced to flag a fixed fraction. We
+    # use the cross-trajectory-comparable `expected` risk (mean expected FORCE error per orbit,
+    # in normalized accel units, no per-trajectory altitude normalization) so a single physical
+    # error budget means the same thing for every orbit. The operator picks the budget; here we
+    # just show how the flagged count moves with it -- including ZERO when the budget exceeds the
+    # worst orbit. We do NOT claim these 512 orbits are all benign (their expected force error
+    # spans ~100x; eccentric orbits do dip to genuinely low, high-error periapsis).
+    expected_scores = plugin.score_ensemble(traj_tensors, scoring="expected")
+    expected_risk = torch.tensor([s.risk_score for s in expected_scores], dtype=torch.float64)
+    pct = {q: float(torch.quantile(expected_risk, q)) for q in (0.50, 0.90, 0.99)}
+    rmax = float(expected_risk.max())
+    print("\n--- ABSOLUTE-THRESHOLD (PHYSICAL BUDGET) SCREENING ---")
+    print("Per-orbit expected force-error risk (normalized accel units):")
+    print(f"  p50={pct[0.50]:.3e}  p90={pct[0.90]:.3e}  p99={pct[0.99]:.3e}  max={rmax:.3e}")
+    for label, budget in (("above worst orbit", rmax * 1.01), ("p99 budget", pct[0.99]), ("p90 budget", pct[0.90])):
+        rep_b = select_reruns(expected_risk, threshold=budget)
+        tag = "ZERO ALARMS" if rep_b.n_flagged == 0 else f"{rep_b.n_flagged} flagged"
+        print(f"  budget={budget:.3e} ({label:>17}) -> {rep_b.n_above_threshold}/{len(scenarios)} above -> {tag}")
+    print("=> An absolute physical budget can yield zero alarms (unlike a fixed top-fraction).")
 
 if __name__ == '__main__':
     main()

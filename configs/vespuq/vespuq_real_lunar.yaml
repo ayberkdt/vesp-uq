@@ -50,15 +50,24 @@ uq:
   covariance_mode: exact      # exact | diagonal | lowrank
   val_fraction: 0.25
   risk:
-    scoring: max             # max | mean | low_alt_integral | time_above | combined
+    # max | mean | low_alt_integral | time_above | combined  (legacy, sigma-only)
+    # expected | expected_p95 | expected_low_alt | supervisor | supervisor_p95  (expected-error)
+    scoring: supervisor
     low_altitude_radius: 1.15
+    domain_support: true       # k-NN + radius out-of-support penalty on the point risk
+    domain_k: 8
+    domain_weight: 1.0
   screening:
     n_orbits: 10000
     n_points: 120
     r_peri_range: [1.03, 1.40]
     r_apo_range: [1.40, 1.60]
     rerun_fraction: 0.20
-    oracle_source: heldout    # heldout (no leakage, default) | all (denser oracle)
+    true_error_aggregator: p95   # max | mean | p95  (decoupled from the risk scoring mode)
+    time_weighted: false         # weight points by ~dt (r^2) for true-anomaly-uniform orbits
+    oracle_source: heldout       # heldout (no leakage, default) | all (denser oracle)
+    # threshold: 0.0             # absolute risk threshold; a safe regime may then flag zero
+    # max_rerun_fraction: 0.20   # cap the flagged count when an absolute threshold is supplied
 
 output:
   output_dir: outputs

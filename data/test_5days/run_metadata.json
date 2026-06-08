@@ -1,0 +1,104 @@
+{
+    "models": [
+        "sh20",
+        "sh80",
+        "sh120",
+        "sh160",
+        "st_lrps"
+    ],
+    "truth": "sh200",
+    "random_scenarios": 100,
+    "scenario_count": 100,
+    "scenario_seed": 42,
+    "scenario_mode": "near_circular_altitude",
+    "sampling_method": "random",
+    "inclination_sampling": "uniform_deg",
+    "altitude_min_km": 100.0,
+    "altitude_max_km": 1000.0,
+    "ecc_min": 0.0,
+    "ecc_max": 0.0,
+    "inc_min_deg": 0.0,
+    "inc_max_deg": 180.0,
+    "raan_min_deg": 0.0,
+    "raan_max_deg": 360.0,
+    "argp_min_deg": 0.0,
+    "argp_max_deg": 360.0,
+    "ta_min_deg": 0.0,
+    "ta_max_deg": 360.0,
+    "duration_days": 1.0,
+    "dt_out_s": 60.0,
+    "integrator": "DOP853",
+    "workers": 4,
+    "rtol": 1e-10,
+    "atol": 1e-12,
+    "max_step_s": 30.0,
+    "st_lrps_model_dir": null,
+    "st_lrps_weight_file": null,
+    "st_lrps_mode": "cpu_dop853",
+    "batch_rk4": false,
+    "batch_rk4_reference": "sh200_dop853_interpolated",
+    "rk4_dt_s": 30.0,
+    "gpu_rk4_dt_s_list": [],
+    "gpu_fallback": "error",
+    "torch_dtype": "float32",
+    "force_batch_size": 8192,
+    "cache_trajectories": false,
+    "reuse_cache": true,
+    "cache_dir": "C:\\Users\\ayber\\Desktop\\LUNAR_SIMULATION\\outputs\\gravity_benchmark\\test_512_5days",
+    "append_scenarios": 0,
+    "rebuild_metrics": true,
+    "strict_complete": false,
+    "allow_lhs_append": false,
+    "sampling": {
+        "scenario_count": 100,
+        "requested_random_scenarios": 100,
+        "scenario_limit": null,
+        "sampling_method": "random",
+        "scenario_seed": 42,
+        "scenario_mode": "near_circular_altitude",
+        "inclination_sampling": "uniform_deg",
+        "altitude_min_km": 100.0,
+        "altitude_max_km": 1000.0,
+        "ecc_min": 0.0,
+        "ecc_max": 0.0,
+        "inc_min_deg": 0.0,
+        "inc_max_deg": 180.0,
+        "raan_min_deg": 0.0,
+        "raan_max_deg": 360.0,
+        "argp_min_deg": 0.0,
+        "argp_max_deg": 360.0,
+        "ta_min_deg": 0.0,
+        "ta_max_deg": 360.0,
+        "altitude_bounds_km": {
+            "min": 100.0,
+            "max": 1000.0
+        },
+        "eccentricity_bounds": {
+            "min": 0.0,
+            "max": 0.0
+        },
+        "inclination_bounds_deg": {
+            "min": 0.0,
+            "max": 180.0
+        },
+        "angular_bounds_deg": {
+            "raan": {
+                "min": 0.0,
+                "max": 360.0
+            },
+            "argp": {
+                "min": 0.0,
+                "max": 360.0
+            },
+            "ta": {
+                "min": 0.0,
+                "max": 360.0
+            }
+        },
+        "module_name": "__main__",
+        "code_path": "C:\\Users\\ayber\\Desktop\\LUNAR_SIMULATION\\src\\lunaris\\surrogate\\st_lrps\\evaluation\\compare_gravity_models.py",
+        "sampling_note": "",
+        "lhs_append_mode": null,
+        "warning": ""
+    }
+}

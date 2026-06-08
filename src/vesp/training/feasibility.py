@@ -401,6 +401,13 @@ def run_feasibility_suite(config: dict | None = None) -> Path:
 
 
 def main(argv: Iterable[str] | None = None) -> None:
+    from vesp.common.deprecation import warn_superseded
+
+    warn_superseded(
+        "vesp.training.feasibility",
+        "python scripts/run_experiment_suite.py --suite synthetic  (E0-E4) "
+        "or --experiment E0",
+    )
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=None)
     args = parser.parse_args(argv)

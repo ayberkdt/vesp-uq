@@ -365,6 +365,13 @@ def run_ablation(config: dict, *, mode: str | None = None) -> Path:
 
 
 def main(argv: Iterable[str] | None = None) -> None:
+    from vesp.common.deprecation import warn_superseded
+
+    warn_superseded(
+        "vesp.training.run_ablation",
+        "python scripts/run_experiment_suite.py --experiment E3  (L2 sweep) "
+        "or --config configs/experiments/<name>.yaml",
+    )
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/synthetic_stress_multishell.yaml")
     parser.add_argument("--mode", choices=["quick", "full"], default=None, help="override ablation.mode")

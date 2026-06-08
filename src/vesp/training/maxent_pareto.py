@@ -203,6 +203,13 @@ def run_maxent_pareto(config: dict) -> Path:
 
 
 def main(argv: Iterable[str] | None = None) -> None:
+    from vesp.common.deprecation import warn_superseded
+
+    warn_superseded(
+        "vesp.training.maxent_pareto",
+        "python scripts/run_experiment_suite.py --experiment E4  (synthetic entropy Pareto) "
+        "or --config configs/experiments/real_lunar_entropy_pareto.yaml",
+    )
     parser = argparse.ArgumentParser(description="Run a Stage 3A MaxEnt data-error vs entropy Pareto sweep.")
     parser.add_argument("--config", required=True)
     args = parser.parse_args(argv)

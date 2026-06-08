@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 from pathlib import Path
 
 import yaml
 
-from PyQt6.QtCore import QSize, QProcess, Qt
-from PyQt6.QtGui import QAction, QFont, QPixmap, QTextCursor
+from PyQt6.QtCore import QSize, QProcess, Qt, QUrl
+from PyQt6.QtGui import QAction, QDesktopServices, QFont, QPixmap, QTextCursor
 from PyQt6.QtWidgets import (
     QApplication,
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -43,6 +45,7 @@ from PyQt6.QtWidgets import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CONFIG_ROOT = PROJECT_ROOT / "configs"
+EXPERIMENTS_CONFIG_ROOT = CONFIG_ROOT / "experiments"
 DEFAULT_SINGLE_CONFIG = CONFIG_ROOT / "discrete_single_shell.yaml"
 DEFAULT_MULTI_CONFIG = CONFIG_ROOT / "discrete_multishell.yaml"
 DEFAULT_ALTITUDE_CONFIG = CONFIG_ROOT / "altitude_ood.yaml"
@@ -50,6 +53,22 @@ DEFAULT_REAL_CONFIG = CONFIG_ROOT / "real_lunar_gl0420a.yaml"
 DEFAULT_REAL_MULTI_CONFIG = CONFIG_ROOT / "real_lunar_gl0420a_multishell.yaml"
 DEFAULT_FEASIBILITY_CONFIG = CONFIG_ROOT / "feasibility_suite.yaml"
 DEFAULT_OUTPUTS = PROJECT_ROOT / "outputs"
+SUITES_OUTPUT_ROOT = DEFAULT_OUTPUTS / "suites"
+
+# The experiment-first config family (E0-E5). Routed through the experiment runner.
+EXPERIMENT_PRESETS = {
+    "Exp E0: synthetic exact recovery": EXPERIMENTS_CONFIG_ROOT / "synthetic_exact_recovery.yaml",
+    "Exp E1: shell radius mismatch": EXPERIMENTS_CONFIG_ROOT / "synthetic_shell_radius_mismatch.yaml",
+    "Exp E2: multishell truth": EXPERIMENTS_CONFIG_ROOT / "synthetic_multishell_truth.yaml",
+    "Exp E3: L2 sweep": EXPERIMENTS_CONFIG_ROOT / "synthetic_l2_sweep.yaml",
+    "Exp E4: entropy Pareto": EXPERIMENTS_CONFIG_ROOT / "synthetic_entropy_pareto.yaml",
+    "Exp E5: real lunar ridge baseline": EXPERIMENTS_CONFIG_ROOT / "real_lunar_ridge_baseline.yaml",
+    "Exp E5: real lunar L2 sweep": EXPERIMENTS_CONFIG_ROOT / "real_lunar_l2_sweep.yaml",
+    "Exp E5: real lunar entropy Pareto": EXPERIMENTS_CONFIG_ROOT / "real_lunar_entropy_pareto.yaml",
+}
+
+# Named suites understood by scripts/run_experiment_suite.py --suite.
+SUITE_NAMES = ["synthetic", "real_lunar", "ci", "all"]
 
 CONFIG_PRESETS = {
     "Single Shell": DEFAULT_SINGLE_CONFIG,
@@ -57,7 +76,8 @@ CONFIG_PRESETS = {
     "Altitude OOD": DEFAULT_ALTITUDE_CONFIG,
     "Real Lunar": DEFAULT_REAL_CONFIG,
     "Real Lunar Multi": DEFAULT_REAL_MULTI_CONFIG,
-    "Feasibility Suite": DEFAULT_FEASIBILITY_CONFIG,
+    "Feasibility Suite (deprecated)": DEFAULT_FEASIBILITY_CONFIG,
+    **EXPERIMENT_PRESETS,
 }
 
 try:
@@ -81,6 +101,8 @@ class VespWorkbench(QMainWindow):
         self.current_assets_dir: Path | None = None
         self.summary_labels: dict[str, QLabel] = {}
         self.active_config: dict = {}
+        self._pending_suite_dir: Path | None = None
+        self._last_suite_dir: Path | None = None
 
         self._build_menu()
         self._build_ui()
@@ -118,8 +140,10 @@ class VespWorkbench(QMainWindow):
 
         tabs = QTabWidget()
         tabs.addTab(self._build_run_tab(), "Run")
+        tabs.addTab(self._build_experiments_tab(), "Experiments")
         tabs.addTab(self._build_analysis_tab(), "Analysis")
         tabs.addTab(self._build_results_tab(), "Results")
+        self.tabs = tabs
         root_layout.addWidget(tabs, stretch=1)
         self.setCentralWidget(root)
 
@@ -134,7 +158,7 @@ class VespWorkbench(QMainWindow):
         title_block.setSpacing(4)
         title = QLabel("MaxEnt-VESP Workbench")
         title.setObjectName("HeaderTitle")
-        subtitle = QLabel("Stage 1-2 deterministic feasibility")
+        subtitle = QLabel("Experiment-first deterministic feasibility (Stage 1-2 + Stage 3A entropy)")
         subtitle.setObjectName("HeaderSubtitle")
         title_block.addWidget(title)
         title_block.addWidget(subtitle)
@@ -203,6 +227,28 @@ class VespWorkbench(QMainWindow):
             self.summary_labels["scaling"].setText("per scenario")
             self.summary_labels["output"].setText(str(base.get("output", {}).get("output_dir", "outputs/feasibility")))
             self.summary_labels["output"].setToolTip(", ".join(sorted(feasibility.keys())))
+            return
+
+        if self._is_experiment_config(cfg):
+            experiment = cfg.get("experiment", {})
+            base = cfg.get("base_config", {})
+            model = base.get("model", {})
+            data = base.get("data", {})
+            model_type = str(model.get("type", "-"))
+            if model_type == "multishell":
+                shells = model.get("shell_alphas", [])
+                model_text = f"experiment / multishell / {len(shells)} shells"
+            else:
+                model_text = f"experiment / {model_type} / alpha {model.get('shell_alpha', '-')}"
+            data_path = data.get("path")
+            data_text = str(data.get("type", "synthetic")) if not data_path else Path(str(data_path)).name
+            kind = str(experiment.get("kind", "single"))
+            self.summary_labels["model"].setText(model_text)
+            self.summary_labels["data"].setText(data_text)
+            self.summary_labels["units"].setText(str(base.get("dtype", "float64")))
+            self.summary_labels["scaling"].setText("sweep" if "sweep" in cfg else kind)
+            self.summary_labels["output"].setText(f"outputs/suites/{experiment.get('name', 'experiment')}")
+            self.summary_labels["output"].setToolTip(str(experiment.get("question", "")))
             return
 
         model = cfg.get("model", {})
@@ -325,6 +371,107 @@ class VespWorkbench(QMainWindow):
         layout.addWidget(summary)
         layout.addWidget(splitter, stretch=1)
         return root
+
+    SUITE_TABLE_COLUMNS = [
+        "run_name",
+        "solver",
+        "lambda_l2",
+        "entropy_weight",
+        "entropy_mode",
+        "relative_acceleration_rmse",
+        "low_to_high_error_ratio",
+        "shell_cancellation_ratio",
+        "top_5pct_source_contribution",
+        "source_entropy_nats",
+        "sigma_l2",
+        "acceptability_status",
+    ]
+
+    def _build_experiments_tab(self) -> QWidget:
+        root = QWidget()
+        layout = QVBoxLayout(root)
+        layout.setContentsMargins(18, 16, 18, 18)
+        layout.setSpacing(14)
+
+        controls = QGroupBox("Experiments & Suites")
+        grid = QGridLayout(controls)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(10)
+
+        run_current = self._button("Run Loaded Config as Experiment", QStyle.StandardPixmap.SP_MediaPlay)
+        run_current.setObjectName("PrimaryButton")
+        run_current.clicked.connect(self._run_selected_config)
+        run_current.setToolTip("Runs the config loaded in the Run tab through scripts/run_experiment_suite.py")
+
+        self.suite_combo = QComboBox()
+        for name in SUITE_NAMES:
+            self.suite_combo.addItem(name)
+        self.quick_checkbox = QCheckBox("Quick (subsample sweeps)")
+        self.quick_checkbox.setChecked(True)
+        run_suite = self._button("Run Suite", QStyle.StandardPixmap.SP_MediaPlay)
+        run_suite.clicked.connect(self._run_suite)
+        load_summary = self._button("Load Latest Summary", QStyle.StandardPixmap.SP_BrowserReload)
+        load_summary.clicked.connect(self._load_latest_suite)
+        open_folder = self._button("Open Suite Folder", QStyle.StandardPixmap.SP_DirOpenIcon)
+        open_folder.clicked.connect(self._open_suite_folder)
+        stop = self._button("Stop", QStyle.StandardPixmap.SP_MediaStop)
+        stop.setObjectName("DangerButton")
+        stop.clicked.connect(self._stop_process)
+
+        suite_label = QLabel("Suite")
+        suite_label.setObjectName("FieldLabel")
+        grid.addWidget(run_current, 0, 0, 1, 2)
+        grid.addWidget(stop, 0, 5)
+        grid.addWidget(suite_label, 1, 0)
+        grid.addWidget(self.suite_combo, 1, 1)
+        grid.addWidget(self.quick_checkbox, 1, 2)
+        grid.addWidget(run_suite, 1, 3)
+        grid.addWidget(load_summary, 1, 4)
+        grid.addWidget(open_folder, 1, 5)
+
+        self.suite_dir_label = QLabel("Suite output: -")
+        self.suite_dir_label.setObjectName("PdfStatus")
+
+        self.suite_tabs = QTabWidget()
+        self.suite_table = self._make_suite_table()
+
+        plot_root = QWidget()
+        plot_layout = QHBoxLayout(plot_root)
+        plot_layout.setContentsMargins(0, 0, 0, 0)
+        plot_layout.setSpacing(10)
+        self.suite_plot_list = QListWidget()
+        self.suite_plot_list.setObjectName("PlotList")
+        self.suite_plot_list.itemSelectionChanged.connect(self._preview_selected_suite_plot)
+        self.suite_plot_preview = QLabel("Run an experiment/suite to see plots (L2 / entropy Pareto).")
+        self.suite_plot_preview.setObjectName("PlotPreview")
+        self.suite_plot_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.suite_plot_preview.setMinimumSize(520, 360)
+        self.suite_plot_preview.setWordWrap(True)
+        suite_plot_scroll = QScrollArea()
+        suite_plot_scroll.setWidgetResizable(True)
+        suite_plot_scroll.setWidget(self.suite_plot_preview)
+        plot_layout.addWidget(self.suite_plot_list, stretch=1)
+        plot_layout.addWidget(suite_plot_scroll, stretch=3)
+
+        self.suite_tabs.addTab(self.suite_table, "Summary")
+        self.suite_tabs.addTab(plot_root, "Plots")
+
+        layout.addWidget(controls)
+        layout.addWidget(self.suite_tabs, stretch=1)
+        layout.addWidget(self.suite_dir_label)
+        return root
+
+    def _make_suite_table(self) -> QTableWidget:
+        table = QTableWidget(0, len(self.SUITE_TABLE_COLUMNS))
+        table.setHorizontalHeaderLabels(self.SUITE_TABLE_COLUMNS)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setAlternatingRowColors(True)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        table.verticalHeader().setVisible(False)
+        return table
 
     def _build_analysis_tab(self) -> QWidget:
         root = QWidget()
@@ -766,27 +913,66 @@ class VespWorkbench(QMainWindow):
             return
         self._append_log(f"Saved config: {path}\n")
 
+    def _is_experiment_config(self, cfg: dict | None = None) -> bool:
+        cfg = cfg if cfg is not None else self.active_config
+        return isinstance(cfg, dict) and "base_config" in cfg and "experiment" in cfg
+
     def _run_selected_config(self) -> None:
         cfg = self._read_editor_config()
+        if self._is_experiment_config(cfg):
+            self._run_experiment_config()
+            return
         module = "vesp.training.feasibility" if self._is_feasibility_config(cfg) else "vesp.training.train"
         self._run_training(module)
 
-    def _run_training(self, module: str) -> None:
+    def _start_process(self, arguments: list[str], *, banner: str, save_config: bool = True) -> bool:
         if self.process is not None and self.process.state() != QProcess.ProcessState.NotRunning:
             QMessageBox.warning(self, "Process Running", "An experiment is already running.")
-            return
-
-        self._save_config()
+            return False
+        if save_config:
+            self._save_config()
         self.run_log.clear()
         self.process = QProcess(self)
         self.process.setWorkingDirectory(str(PROJECT_ROOT))
         self.process.setProgram(sys.executable)
-        self.process.setArguments(["-m", module, "--config", self.config_path.text()])
+        self.process.setArguments(arguments)
         self.process.readyReadStandardOutput.connect(self._read_stdout)
         self.process.readyReadStandardError.connect(self._read_stderr)
         self.process.finished.connect(self._process_finished)
-        self._append_log(f"Running: {sys.executable} -m {module} --config {self.config_path.text()}\n\n")
+        self._append_log(banner)
         self.process.start()
+        return True
+
+    def _run_training(self, module: str) -> None:
+        self._start_process(
+            ["-m", module, "--config", self.config_path.text()],
+            banner=f"Running: {sys.executable} -m {module} --config {self.config_path.text()}\n\n",
+        )
+
+    def _run_experiment_config(self) -> None:
+        config_path = self.config_path.text()
+        stem = Path(config_path).stem
+        self._pending_suite_dir = SUITES_OUTPUT_ROOT / stem
+        started = self._start_process(
+            ["scripts/run_experiment_suite.py", "--config", config_path],
+            banner=f"Running experiment: {config_path}\n  -> outputs/suites/{stem}/\n\n",
+        )
+        if started and hasattr(self, "tabs"):
+            self.tabs.setCurrentIndex(0)  # show the live run log
+
+    def _run_suite(self) -> None:
+        name = self.suite_combo.currentText()
+        self._pending_suite_dir = SUITES_OUTPUT_ROOT / name
+        arguments = ["scripts/run_experiment_suite.py", "--suite", name]
+        if self.quick_checkbox.isChecked():
+            arguments.append("--quick")
+        started = self._start_process(
+            arguments,
+            banner=f"Running suite: {name} (quick={self.quick_checkbox.isChecked()})\n  -> outputs/suites/{name}/\n\n",
+            save_config=False,
+        )
+        if started and hasattr(self, "tabs"):
+            self.tabs.setCurrentIndex(0)  # show the live run log
 
     def _read_stdout(self) -> None:
         if self.process is None:
@@ -803,6 +989,99 @@ class VespWorkbench(QMainWindow):
     def _process_finished(self, exit_code: int, _exit_status=None) -> None:
         self._append_log(f"\nProcess finished with exit code {exit_code}.\n")
         self._refresh_output_checkpoints()
+        if self._pending_suite_dir is not None:
+            suite_dir = self._pending_suite_dir
+            self._pending_suite_dir = None
+            self._load_suite_outputs(suite_dir)
+
+    def _load_suite_outputs(self, suite_dir: Path) -> None:
+        suite_dir = Path(suite_dir)
+        self._last_suite_dir = suite_dir
+        self.suite_dir_label.setText(f"Suite output: {suite_dir}")
+        self._load_suite_summary(suite_dir)
+        self._refresh_suite_plots(suite_dir)
+        if hasattr(self, "tabs"):
+            self.tabs.setCurrentIndex(1)  # Experiments tab
+
+    def _format_cell(self, value) -> str:
+        if value in ("", None):
+            return "-"
+        try:
+            return f"{float(value):.4g}"
+        except (TypeError, ValueError):
+            return str(value)
+
+    def _load_suite_summary(self, suite_dir: Path) -> None:
+        csv_path = Path(suite_dir) / "suite_summary.csv"
+        rows: list[dict] = []
+        if csv_path.exists():
+            try:
+                with csv_path.open("r", encoding="utf-8", newline="") as handle:
+                    rows = list(csv.DictReader(handle))
+            except OSError:
+                rows = []
+        self.suite_table.setRowCount(len(rows))
+        for r_idx, row in enumerate(rows):
+            for c_idx, col in enumerate(self.SUITE_TABLE_COLUMNS):
+                item = QTableWidgetItem(self._format_cell(row.get(col, "")))
+                if col not in {"run_name", "solver", "entropy_mode", "acceptability_status"}:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.suite_table.setItem(r_idx, c_idx, item)
+        self.suite_table.resizeRowsToContents()
+        self.suite_tabs.setTabText(0, f"Summary ({len(rows)})")
+
+    def _refresh_suite_plots(self, suite_dir: Path) -> None:
+        self.suite_plot_list.clear()
+        paths = sorted(Path(suite_dir).glob("*.png")) if Path(suite_dir).exists() else []
+        for path in paths:
+            item = QListWidgetItem(path.name)
+            item.setToolTip(str(path))
+            item.setData(Qt.ItemDataRole.UserRole, str(path))
+            self.suite_plot_list.addItem(item)
+        if paths:
+            self.suite_plot_list.item(0).setSelected(True)
+            self.suite_tabs.setTabText(1, f"Plots ({len(paths)})")
+        else:
+            self.suite_plot_preview.setPixmap(QPixmap())
+            self.suite_plot_preview.setText(
+                "No plots in this suite dir. Sweeps over lambda_l2 / entropy_weight generate plots."
+            )
+            self.suite_tabs.setTabText(1, "Plots")
+
+    def _preview_selected_suite_plot(self) -> None:
+        items = self.suite_plot_list.selectedItems()
+        if not items:
+            return
+        path = Path(items[0].data(Qt.ItemDataRole.UserRole))
+        pixmap = QPixmap(str(path))
+        if pixmap.isNull():
+            self.suite_plot_preview.setText(f"Could not load plot:\n{path}")
+            return
+        scaled = pixmap.scaled(
+            self.suite_plot_preview.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.suite_plot_preview.setText("")
+        self.suite_plot_preview.setPixmap(scaled)
+
+    def _load_latest_suite(self) -> None:
+        root = SUITES_OUTPUT_ROOT
+        dirs = (
+            [p for p in root.iterdir() if p.is_dir() and (p / "suite_summary.csv").exists()]
+            if root.exists()
+            else []
+        )
+        if not dirs:
+            QMessageBox.information(self, "No Suites", "No suite_summary.csv found under outputs/suites yet.")
+            return
+        latest = max(dirs, key=lambda p: (p / "suite_summary.csv").stat().st_mtime)
+        self._load_suite_outputs(latest)
+
+    def _open_suite_folder(self) -> None:
+        target = self._last_suite_dir or SUITES_OUTPUT_ROOT
+        Path(target).mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(target).resolve())))
 
     def _stop_process(self) -> None:
         if self.process is not None and self.process.state() != QProcess.ProcessState.NotRunning:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import math
+from dataclasses import replace
 from pathlib import Path
 from typing import Iterable
 
@@ -17,8 +18,9 @@ from vesp.training.evaluate import evaluate_model, print_metrics, write_evaluati
 from vesp.core.losses import composite_loss
 from vesp.core.models import DiscreteVESP, save_checkpoint
 from vesp.core.operators import build_joint_operator
+from vesp.core.regularization import lambda_is_auto, select_lambda_l2
 from vesp.core.solvers import RidgeSolveConfig, solve_discrete_ridge
-from vesp.training.maxent import MaxEntSolveConfig, solve_discrete_maxent
+from vesp.training.maxent import MaxEntSolveConfig, solve_discrete_maxent, solve_discrete_maxent_constrained
 from vesp.extensions.entropy import (
     effective_source_entropy,
     positive_negative_entropy,
@@ -174,22 +176,57 @@ def solve_ridge(
     *,
     device: torch.device,
     target_scales: TargetScales | None = None,
-) -> None:
+) -> dict | None:
+    """Solve the ridge system. If ``lambda_l2: auto``, pick it at the L-curve corner.
+
+    Returns an info dict (``selected_lambda_l2`` + the L-curve) when auto-selection ran,
+    else ``None``.
+    """
+
     model = model.to(device)
     train_data = train_data.to(device)
     target_scales = target_scales or compute_target_scales(train_data, config)
     operator, target, _ = _build_weighted_system(
         model, train_data, config, device=device, target_scales=target_scales
     )
+
+    info: dict | None = None
+    if lambda_is_auto(config):
+        loss_cfg = config.setdefault("loss", {})
+        solver_cfg = config.get("solver", {})
+        # placeholder so RidgeSolveConfig.from_config does not choke on the "auto" sentinel
+        loss_cfg["lambda_l2"] = 1.0
+        if isinstance(solver_cfg, dict):
+            solver_cfg["lambda_l2"] = 1.0
+        base_ridge = RidgeSolveConfig.from_config(config)
+        lambda_star, curve = select_lambda_l2(
+            operator,
+            target,
+            source_positions=model.source_positions,
+            source_weights=model.source_weights,
+            shell_ids=model.shell_ids,
+            base_config=base_ridge,
+        )
+        ridge_cfg = replace(base_ridge, lambda_l2=lambda_star)
+        # write the resolved value back so artifacts / metrics / summary report a number
+        loss_cfg["lambda_l2"] = lambda_star
+        if isinstance(solver_cfg, dict):
+            solver_cfg["lambda_l2"] = lambda_star
+        info = {"selected_lambda_l2": lambda_star, "selection": "L-curve", "curve": curve}
+        print(f"auto lambda_l2 (L-curve corner) = {lambda_star:g}")
+    else:
+        ridge_cfg = RidgeSolveConfig.from_config(config)
+
     sigma = solve_discrete_ridge(
         operator=operator,
         target=target,
         source_positions=model.source_positions,
         source_weights=model.source_weights,
         shell_ids=model.shell_ids,
-        config=RidgeSolveConfig.from_config(config),
+        config=ridge_cfg,
     )
     model.set_sigma(sigma)
+    return info
 
 
 def solve_maxent(
@@ -199,12 +236,21 @@ def solve_maxent(
     *,
     device: torch.device,
     target_scales: TargetScales | None = None,
-) -> None:
+) -> dict | None:
     """Stage 3A: refine the source strengths with deterministic entropy regularization.
 
     The ridge solution is used as a warm start (and remains the entropy_weight=0
     baseline), then the source strengths are optimized against the same data term
     plus a maximum-entropy regularizer.
+
+    Two modes (``maxent.mode``):
+
+    - ``penalty`` (default): fixed entropy weight, minimize data + l2 + moment - weight*H.
+    - ``constrained``: the principled MaxEnt — maximize entropy subject to keeping the data
+      misfit within ``maxent.misfit_factor`` of the ridge misfit, auto-selecting the weight.
+
+    Returns an optional info dict (constrained mode reports the misfit target and the
+    auto-selected entropy weight); ``None`` for the plain penalty mode.
     """
 
     model = model.to(device)
@@ -214,9 +260,10 @@ def solve_maxent(
         model, train_data, config, device=device, target_scales=target_scales
     )
     maxent_config = MaxEntSolveConfig.from_config(config)
+    constrained = maxent_config.mode == "constrained"
 
     warm_start_sigma = None
-    if maxent_config.warm_start:
+    if maxent_config.warm_start or constrained:
         warm_start_sigma = solve_discrete_ridge(
             operator=operator,
             target=target,
@@ -225,6 +272,19 @@ def solve_maxent(
             shell_ids=model.shell_ids,
             config=RidgeSolveConfig.from_config(config),
         )
+
+    if constrained:
+        sigma, info = solve_discrete_maxent_constrained(
+            operator,
+            target,
+            model.source_positions,
+            model.source_weights,
+            model.shell_ids,
+            maxent_config,
+            warm_start_sigma=warm_start_sigma,
+        )
+        model.set_sigma(sigma)
+        return info
 
     sigma = solve_discrete_maxent(
         operator,
@@ -236,6 +296,7 @@ def solve_maxent(
         warm_start_sigma=warm_start_sigma,
     )
     model.set_sigma(sigma)
+    return None
 
 
 def train_adam(
@@ -317,10 +378,12 @@ def run(config: dict, *, model_cls=DiscreteVESP) -> dict:
     if not isinstance(solver_cfg, dict):
         solver_cfg = {"type": solver_cfg}
     solver = str(solver_cfg.get("type", config.get("solver", "ridge"))).lower() if isinstance(solver_cfg, dict) else str(solver_cfg).lower()
+    maxent_info: dict | None = None
+    ridge_info: dict | None = None
     if solver == "ridge":
-        solve_ridge(model, train_data, config, device=device, target_scales=target_scales)
+        ridge_info = solve_ridge(model, train_data, config, device=device, target_scales=target_scales)
     elif solver == "maxent":
-        solve_maxent(model, train_data, config, device=device, target_scales=target_scales)
+        maxent_info = solve_maxent(model, train_data, config, device=device, target_scales=target_scales)
     elif solver == "adam":
         train_adam(model, train_data, config, device=device, target_scales=target_scales)
     else:
@@ -387,6 +450,18 @@ def run(config: dict, *, model_cls=DiscreteVESP) -> dict:
     metrics["solver"] = solver
     metrics["entropy_weight"] = float(loss_cfg.get("entropy_weight", maxent_cfg.get("entropy_weight", 0.0)))
     metrics["entropy_mode"] = str(loss_cfg.get("entropy_mode", maxent_cfg.get("entropy_mode", "positive_negative")))
+    if maxent_info:
+        # Constrained MaxEnt auto-selects the entropy weight; report the chosen value and
+        # the misfit target so the equal-data-fit comparison against ridge is auditable.
+        metrics["maxent_mode"] = "constrained"
+        metrics["maxent_ridge_misfit"] = maxent_info.get("ridge_misfit")
+        metrics["maxent_target_misfit"] = maxent_info.get("target_misfit")
+        metrics["maxent_misfit"] = maxent_info.get("maxent_misfit")
+        metrics["entropy_weight"] = float(maxent_info.get("chosen_entropy_weight", metrics["entropy_weight"]))
+    if ridge_info:
+        # lambda_l2 was auto-selected at the L-curve corner; report the chosen value.
+        metrics["selected_lambda_l2"] = ridge_info.get("selected_lambda_l2")
+        metrics["lambda_l2_selection"] = ridge_info.get("selection")
 
     acceptability = classify_run_acceptability(metrics, metrics.get("diagnostics", {}), config)
     metrics.update(acceptability)

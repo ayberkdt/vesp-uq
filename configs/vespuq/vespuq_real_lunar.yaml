@@ -53,8 +53,8 @@ uq:
     scoring: max             # max | mean | low_alt_integral | time_above | combined
     low_altitude_radius: 1.15
   screening:
-    n_orbits: 300
-    n_points: 60
+    n_orbits: 10000
+    n_points: 120
     r_peri_range: [1.03, 1.40]
     r_apo_range: [1.40, 1.60]
     rerun_fraction: 0.20

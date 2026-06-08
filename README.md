@@ -145,6 +145,13 @@ src/vesp/
                    summarize.py  standardized summary row + suite CSV/MD/Pareto + plots
                    suites.py     named suites (synthetic, real_lunar, ci, all)
     app/         ui.py (PyQt6 workbench)
+    uq/          uncertainty quantification and trajectory risk scoring (Phase 2)
+                   plugin.py     VESPUQPlugin (the core calibration layer)
+                   trajectory.py risk screening for orbit trajectories
+                   run.py        standalone UQ evaluation pipeline
+                   data.py       UQ-specific data loaders and caching
+                   metrics.py    UQ-specific metrics (PICP, NLL, z_std)
+                   ensemble.py   ensemble utilities for UQ
 
 configs/         experiment YAML configs (single source of truth)
   experiments/   the falsifiable experiment configs (E0-E5 families)
@@ -186,20 +193,19 @@ Delta a(x) = sum_j sum_i w_ji sigma_ji (s_ji - x) / ||x - s_ji||^3
   strengths (entropy-regularized point estimate, warm-started from the ridge
   baseline) plus a data-error vs entropy Pareto sweep. See
   [Stage 3A](#stage-3a-discrete-maxent-regularization).
+- **Phase 2 (VESP-UQ):** Surrogate-agnostic equivalent-source uncertainty calibration. 
+  Provides calibrated altitude-aware predictive uncertainty (Stage 3C/3C+) and trajectory risk screening via the `vesp.uq` package.
 
 ## What Is Not Implemented Yet?
 
-- Full Maximum Entropy **posterior** (Stage 3A is a deterministic point estimate, not a
-  calibrated distribution over sources)
-- Probabilistic source distributions
+- Probabilistic source distributions (variational)
 - Neural source-density networks (Stage 3B)
 - Angular SIREN source-density
-- Uncertainty-aware orbit propagation
 - Partition-function based inference
 
 The remaining extension placeholders are reserved under `src/vesp/extensions/`
-(`neural_density.py`, `probabilistic.py`, and `force_model.py`). `entropy.py` is now an
-active Stage 3A component, not a scaffold.
+(`neural_density.py` and `force_model.py`). `entropy.py` is now an
+active Stage 3A component, not a scaffold, and `probabilistic.py` capabilities are now integrated into the `vesp.uq` module.
 
 ## Mathematical Formulation
 
@@ -915,11 +921,11 @@ via `vesp.training.maxent`):
 - Angular SIREN
 - SH encoding + MLP
 
-`extensions/probabilistic.py`:
+`extensions/probabilistic.py` (Core ideas migrated to the `vesp.uq` package):
 
-- posterior over sigma
-- variational source distribution
-- acceleration covariance
+- posterior over sigma (Implemented in `vesp.uq`)
+- acceleration covariance (Implemented in `vesp.uq`)
+- variational source distribution (Future)
 
 `extensions/force_model.py`:
 

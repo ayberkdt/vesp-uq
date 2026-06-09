@@ -86,3 +86,34 @@ def test_external_positions_only_csv_uses_nn_oracle(tmp_path):
     cfg["uq"]["screening"]["trajectory_path"] = str(csv)
     report = run_vespuq(cfg)
     assert report["experiment_3_screening"]["true_error_mode"].startswith("nn_oracle")
+
+
+def test_run_vespuq_csv_physical_acceleration_units_converted(tmp_path):
+    # External CSV accelerations declared in m/s^2 are converted into model units via the
+    # explicit body.acceleration_scale_m_s2 before scoring/fitting; the report records it.
+    csv = _write_accel_csv(tmp_path / "traj.csv", n_traj=5, n_pts=8)
+    cfg = _base_config(tmp_path)
+    cfg["body"] = {"acceleration_units": "model_normalized_accel", "acceleration_scale_m_s2": 1.0e-6}
+    cfg["uq"]["screening"]["trajectory_source"] = "csv"
+    cfg["uq"]["screening"]["trajectory_path"] = str(csv)
+    cfg["uq"]["screening"]["trajectory_acceleration_units"] = "m/s^2"
+
+    report = run_vespuq(cfg)
+    sc = report["experiment_3_screening"]
+    units = sc["trajectory_units"]
+    assert units["acceleration_converted_to_model"] is True
+    assert abs(units["acceleration_scale_m_s2"] - 1.0e-6) < 1.0e-18
+    assert sc["true_error_mode"] == "residual_csv"  # accel pairs still used for the true force error
+
+
+def test_run_vespuq_csv_physical_units_without_scale_raises(tmp_path):
+    csv = _write_accel_csv(tmp_path / "traj.csv", n_traj=4, n_pts=8)
+    cfg = _base_config(tmp_path)  # no body.acceleration_scale_m_s2 -> not physical
+    cfg["uq"]["screening"]["trajectory_source"] = "csv"
+    cfg["uq"]["screening"]["trajectory_path"] = str(csv)
+    cfg["uq"]["screening"]["trajectory_acceleration_units"] = "m/s^2"
+
+    import pytest
+
+    with pytest.raises(ValueError):
+        run_vespuq(cfg)

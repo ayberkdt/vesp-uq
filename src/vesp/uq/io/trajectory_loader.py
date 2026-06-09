@@ -6,8 +6,12 @@ CSV carries surrogate/reference acceleration pairs (Format B) it also exposes th
 error ``reference - surrogate`` per trajectory and via :func:`flatten_acceleration_pairs` for
 ``VESPUQPlugin.fit``.
 
-Units are taken verbatim (no conversion); see the module docstring of
-:mod:`vesp.uq.io.trajectory_schema`.
+Units default to verbatim (the historical behavior). When explicit metadata is supplied, the loader
+can convert into the model's working units before scoring/fitting -- positions via a
+:class:`~vesp.common.units.PositionScaler`, and accelerations from a physical unit
+(``m/s^2`` ...) into model-normalized units via an
+:class:`~vesp.uq.physical_units.AccelerationScale`. Physical acceleration units without an available
+scale raise a clear error (never a silent normalized fallback); see :mod:`vesp.uq.physical_units`.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ from pathlib import Path
 
 import torch
 
+from vesp.common.units import PositionScaler
 from vesp.uq.io.trajectory_schema import (
     _ID_ALIASES,
     _POS_ALIASES,
@@ -27,6 +32,13 @@ from vesp.uq.io.trajectory_schema import (
     REFERENCE_COLUMNS,
     SURROGATE_COLUMNS,
     TrajectoryDataset,
+)
+from vesp.uq.physical_units import (
+    MODEL_UNITS,
+    AccelerationScale,
+    acceleration_to_model_units,
+    is_physical_units,
+    normalize_units,
 )
 
 
@@ -61,6 +73,9 @@ def load_trajectory_csv(
     *,
     dtype: torch.dtype = torch.float64,
     device: torch.device | str = "cpu",
+    position_scaler: PositionScaler | None = None,
+    acceleration_scale: AccelerationScale | None = None,
+    acceleration_units: str = MODEL_UNITS,
 ) -> TrajectoryDataset:
     """Load a trajectory ensemble CSV into a :class:`TrajectoryDataset`.
 
@@ -73,7 +88,17 @@ def load_trajectory_csv(
       - non-contiguous / string trajectory ids are supported;
       - variable point counts per trajectory are supported;
       - rows are grouped by ``trajectory_id`` and sorted by ``t`` (stable when ``t`` is absent).
+
+    Units (default: verbatim, the historical behavior):
+      - ``position_scaler`` (optional) maps CSV positions into model-normalized coordinates;
+      - ``acceleration_units`` declares the CSV acceleration units. If physical (``m/s^2`` ...) it is
+        converted into model-normalized units via ``acceleration_scale`` (required and physical in
+        that case, else ``ValueError``). ``model_normalized_accel`` (default) leaves accelerations
+        verbatim.
     """
+
+    accel_units = normalize_units(acceleration_units)
+    convert_accel = accel_units != MODEL_UNITS
 
     path = Path(path)
     with open(path, "r", encoding="utf-8-sig", newline="") as f:
@@ -102,6 +127,13 @@ def load_trajectory_csv(
                 f"trajectory CSV {path} has only one of the surrogate / reference acceleration "
                 f"blocks; both {SURROGATE_COLUMNS} and {REFERENCE_COLUMNS} are required for "
                 f"acceleration-pair (Format B) mode"
+            )
+        if convert_accel and has_accel and (acceleration_scale is None or not acceleration_scale.physical):
+            raise ValueError(
+                f"trajectory CSV {path} declares physical acceleration units "
+                f"{acceleration_units!r} but no physical acceleration_scale was supplied; pass an "
+                "AccelerationScale (e.g. from body.acceleration_scale_m_s2) or use "
+                "model_normalized_accel"
             )
 
         # Group rows by id, preserving first-appearance order; keep an enumeration index so a
@@ -134,28 +166,52 @@ def load_trajectory_csv(
     ref_list: list[torch.Tensor] = []
     res_list: list[torch.Tensor] = []
 
+    def _accel_to_model(values: torch.Tensor) -> torch.Tensor:
+        if not convert_accel:
+            return values
+        return acceleration_to_model_units(values, acceleration_scale, source_units=accel_units).to(
+            dtype=dtype, device=device
+        )
+
     for tid in sorted_ids:
         recs = groups[tid]
         recs.sort(key=lambda r: (r.get("t", 0.0), r["row"]))  # by time, stable on row index
         pos = torch.tensor([r["pos"] for r in recs], dtype=dtype, device=device)
+        if position_scaler is not None:
+            pos = position_scaler.to_model_positions(pos)
         trajectories.append(pos)
         if time_col is not None:
             times.append(torch.tensor([r["t"] for r in recs], dtype=dtype, device=device))
         if has_accel:
-            sur = torch.tensor([r["sur"] for r in recs], dtype=dtype, device=device)
-            ref = torch.tensor([r["ref"] for r in recs], dtype=dtype, device=device)
+            sur = _accel_to_model(torch.tensor([r["sur"] for r in recs], dtype=dtype, device=device))
+            ref = _accel_to_model(torch.tensor([r["ref"] for r in recs], dtype=dtype, device=device))
             sur_list.append(sur)
             ref_list.append(ref)
             res_list.append(ref - sur)
 
+    positions_converted = (
+        position_scaler is not None
+        and position_scaler.units.normalize_positions
+        and position_scaler.units.position_units != "normalized"
+    )
     metadata = {
         "path": str(path),
         "format": "B_acceleration_pairs" if has_accel else "A_positions_only",
         "has_time": time_col is not None,
         "n_trajectories": len(trajectories),
-        # TODO(units): no unit conversion is applied; positions/accelerations are taken verbatim.
-        # When per-file unit metadata is supplied, convert here via vesp.common.units.UnitConfig.
-        "units": "as_supplied",
+        # Explicit per-file unit handling. Defaults reproduce the historical verbatim behavior; a
+        # supplied PositionScaler / physical AccelerationScale converts into the model's units.
+        "units": {
+            "csv_acceleration_units": accel_units,
+            "acceleration_converted_to_model": bool(convert_accel and has_accel),
+            "acceleration_scale_m_s2": (
+                acceleration_scale.scale_m_s2 if (convert_accel and has_accel) else None
+            ),
+            "positions_converted_to_model": bool(positions_converted),
+            "position_units": (
+                position_scaler.units.position_units if position_scaler is not None else "as_supplied"
+            ),
+        },
     }
     return TrajectoryDataset(
         trajectories=trajectories,

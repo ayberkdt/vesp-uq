@@ -57,6 +57,18 @@ def _normalize_units(units: str) -> str:
     )
 
 
+def normalize_units(units: str) -> str:
+    """Public alias: canonicalize an acceleration-units string (raises on unsupported units)."""
+
+    return _normalize_units(units)
+
+
+def is_physical_units(units: str) -> bool:
+    """True iff ``units`` is a supported *physical* unit (i.e. not model-normalized)."""
+
+    return _normalize_units(units) in _UNIT_TO_M_S2
+
+
 def _validate_scale_m_s2(value) -> float:
     s = float(value)
     if not math.isfinite(s):

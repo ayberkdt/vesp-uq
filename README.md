@@ -70,7 +70,11 @@ VESP-UQ is a **force-risk / out-of-distribution (OOD) uncertainty-calibration la
 acceleration interface. It scores a surrogate's expected *force-model* error and OOD risk and
 prioritizes trajectories for selective high-fidelity rerun. It is **not** a position-error
 predictor: it does not predict or improve long-horizon trajectory position error (that is only
-ever used as an external *diagnostic*, see `benchmarks/position_error_diagnostic.md`).
+ever used as an external *diagnostic*, see `benchmarks/position_error_diagnostic.md`). *Exploratory*
+orbit-dispersion tools (a Monte Carlo sampler `vesp.uq.propagation` and a deterministic linearized
+STM variant `vesp.uq.linear_propagation`) and an ST-LRPS adapter wiring exist but are **not**
+validated operational orbit-covariance products; see
+[`docs/VESP_UQ_LIMITATIONS.md`](docs/VESP_UQ_LIMITATIONS.md).
 
 The deterministic entropy/point-estimate experiments showed that maximizing entropy over the
 sources does **not** beat well-regularized ridge on accuracy. The defensible value of the

@@ -67,8 +67,10 @@ Not implemented yet (do not claim):
   the **exact conjugate Gaussian** posterior for the linear model, not MCMC/VI),
 - a **learned / full / generative / nonlinear** heteroscedastic noise model (only the simple
   2-parameter post-hoc recalibration above is implemented — do not call it learned/generative),
-- **orbit/state covariance propagation**: the *local* force-error covariance `Sigma_a(x)` is
-  implemented, but propagating it into a state/orbit covariance through an integrator is not,
+- **validated orbit/state covariance propagation**: the *local* force-error covariance `Sigma_a(x)`
+  is implemented, and an *exploratory* Monte Carlo orbit-dispersion sampler exists
+  (`vesp.uq.propagation`), but a *validated* operational state/orbit covariance (realistic process
+  noise, measurement processing, covariance-realism result) is not — do not claim it,
 - neural source-density network,
 - irregular-body source placement.
 
@@ -103,8 +105,10 @@ Not implemented yet (do not claim):
   on held-out residuals — do **not** call it a learned/full/generative noise model. Do **not**
   claim calibration on **altitude-OOD extrapolation** (calibrating an altitude band with no
   calibration data is fundamentally limited; report it as such).
-- Do **not** claim operational orbit uncertainty propagation unless orbit experiments
-  exist.
+- Do **not** claim operational/validated orbit uncertainty propagation. An exploratory Monte Carlo
+  orbit-dispersion sampler exists (`vesp.uq.propagation`), but it samples the local force-error
+  posterior only; it is not a validated operational covariance product and force-risk does not rank
+  long-horizon position error.
 - Do **not** claim "neural VESP-Net" unless a neural source-density model is
   implemented.
 - Do **not** claim the real lunar run is an operational lunar gravity model.

@@ -188,3 +188,67 @@ def test_no_position_error_references_in_modules():
         src = inspect.getsource(mod).lower()
         assert "position error" not in src
         assert "position-error" not in src
+
+
+# ----------------------------------------------- P5.2: conformally-corrected physical budget
+
+def _physical_config_with_conformal(mode="norm"):
+    cfg = _physical_config()
+    cfg["uq"]["physical_budget"]["conformal"] = {"enabled": True, "alpha": 0.10, "mode": mode}
+    cfg["uq"]["screening"] = {"threshold_source": "physical_budget"}
+    return cfg
+
+
+def test_conformal_correction_tightens_threshold_and_reports_coverage():
+    plugin, held = _fitted_plugin_and_held()
+    cfg = _physical_config_with_conformal()
+    thr, meta = resolve_threshold(
+        cfg["uq"]["screening"], plugin, held, "expected_abs_p95",
+        dtype=torch.float64, seed=0, config=cfg,
+    )
+    assert meta["conformal_enabled"] is True
+    assert meta["conformal_scale"] is not None and meta["conformal_scale"] > 0.0
+    # raw threshold preserved; corrected = raw / scale
+    assert meta["threshold_model_units_raw"] == pytest.approx(1.0e-2)
+    assert thr == pytest.approx(meta["threshold_model_units_raw"] / meta["conformal_scale"])
+    assert thr == pytest.approx(meta["threshold_model_units"])
+    assert meta["conformal_coverage_before"] is not None
+    assert meta["conformal_coverage_after"] is not None
+
+
+def test_conformal_disabled_leaves_threshold_unchanged():
+    plugin, held = _fitted_plugin_and_held()
+    cfg = _physical_config()
+    cfg["uq"]["screening"] = {"threshold_source": "physical_budget"}
+    thr, meta = resolve_threshold(
+        cfg["uq"]["screening"], plugin, held, "expected_abs_p95",
+        dtype=torch.float64, seed=0, config=cfg,
+    )
+    assert meta["conformal_enabled"] is False
+    assert meta["threshold_model_units_raw"] is None
+    assert thr == pytest.approx(1.0e-2)
+
+
+def test_conformal_invalid_mode_raises():
+    plugin, held = _fitted_plugin_and_held()
+    cfg = _physical_config_with_conformal(mode="banana")
+    with pytest.raises(ValueError):
+        resolve_threshold(
+            cfg["uq"]["screening"], plugin, held, "expected_abs_p95",
+            dtype=torch.float64, seed=0, config=cfg,
+        )
+
+
+def test_script_conformal_flag_runs_and_reports(tmp_path):
+    cfg = _tiny_screening_config()
+    cfg["_config_path"] = "tiny.yaml"
+    args = pbs.argparse.Namespace(
+        budget=1.0e-8, units="m/s^2", scoring="expected_abs_p95", max_rerun_fraction=None,
+        conformal=True,
+    )
+    pbs._configure_physical_budget(cfg, args)
+    result = pbs.run_and_write(cfg, out_dir=tmp_path / "pb")
+    data = json.loads((tmp_path / "pb" / "physical_budget_screening.json").read_text())
+    assert data["conformal"]["enabled"] is True
+    assert data["conformal"]["scale"] is not None
+    assert data["conformal"]["threshold_model_units_raw"] == pytest.approx(1.0e-2)

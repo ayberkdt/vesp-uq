@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Editable install without deps, then CPU-only runtime deps. PyQt6 is intentionally
+          # omitted -- the UI test importorskips it, so it is skipped rather than failing CI.
+          pip install -e . --no-deps
+          pip install numpy scipy pandas matplotlib pyyaml pytest
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Run test suite
+        run: pytest -q
+
+      - name: Smoke (existing + new VESP-UQ commands must keep working)
+        run: |
+          python -m vesp.uq.run --config configs/vespuq/vespuq_smoke.yaml
+          python scripts/run_force_error_benchmark.py --config configs/vespuq/vespuq_smoke.yaml
+          python scripts/compare_risk_baselines.py --config configs/vespuq/vespuq_smoke.yaml
+          python scripts/run_calibration_audit.py --config configs/vespuq/vespuq_smoke.yaml
+          python scripts/run_physical_budget_screening.py --config configs/vespuq/vespuq_smoke.yaml --budget 1e-8 --units m/s^2 --scoring expected_abs_p95

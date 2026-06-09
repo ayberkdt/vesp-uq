@@ -58,6 +58,11 @@ def _configure_physical_budget(config: dict, args) -> dict:
             f"got --scoring/{scoring!r} (relative supervisor scores cannot be compared to a budget)."
         )
 
+    # Preserve any conformal sub-block from the config; --conformal forces it on.
+    conformal_cfg = dict(physical_cfg.get("conformal", {}) or {})
+    if getattr(args, "conformal", False):
+        conformal_cfg["enabled"] = True
+
     # Wire the resolved budget into the config so run_vespuq screens with the physical threshold.
     config.setdefault("uq", {}).setdefault("risk", {})["scoring"] = scoring
     config["uq"].setdefault("screening", {})["threshold_source"] = "physical_budget"
@@ -67,6 +72,7 @@ def _configure_physical_budget(config: dict, args) -> dict:
         "units": str(units),
         "scoring": scoring,
         "max_rerun_fraction": (float(max_rerun_fraction) if max_rerun_fraction is not None else None),
+        "conformal": conformal_cfg,
     }
     return config["uq"]["physical_budget"]
 
@@ -130,6 +136,14 @@ def run_physical_budget_screening(config: dict) -> dict:
             "physical_units": units,
             "acceleration_scale_m_s2": screen.get("acceleration_scale_m_s2"),
         },
+        "conformal": {
+            "enabled": bool(screen.get("conformal_enabled")),
+            "scale": screen.get("conformal_scale"),
+            "alpha": screen.get("conformal_alpha"),
+            "coverage_before": screen.get("conformal_coverage_before"),
+            "coverage_after": screen.get("conformal_coverage_after"),
+            "threshold_model_units_raw": screen.get("threshold_model_units_raw"),
+        },
         "physical_conversion_available": scale.physical,
         "n_trajectories": sc["n_trajectories"],
         "n_above_budget": n_above,
@@ -169,7 +183,14 @@ def _screening_md(result: dict) -> str:
         f"- physical budget: **{f(pb['value'])} {pb['units']}**  |  scoring: `{result['scoring']}` "
         f"(`{result['scoring_scale']}`)",
         f"- acceleration scale: 1 model unit = {f(thr['acceleration_scale_m_s2'])} m/s^2",
-        f"- converted model-unit threshold: {f(thr['model_units'])}",
+        f"- converted model-unit threshold: {f(thr['model_units'])}"
+        + (
+            f"  (conformal scale {f(result['conformal']['scale'], '.3f')} applied: raw "
+            f"{f(result['conformal']['threshold_model_units_raw'])}, held-out coverage "
+            f"{f(result['conformal']['coverage_before'], '.3f')} -> "
+            f"{f(result['conformal']['coverage_after'], '.3f')})"
+            if result["conformal"]["enabled"] else ""
+        ),
         f"- trajectories: {result['n_trajectories']}  |  above budget: {result['n_above_budget']}  |  "
         f"flagged: {result['n_flagged']} ({result['flagged_fraction']:.1%})",
         f"- max_rerun_fraction capped the result: {result['max_rerun_fraction_capped']}"
@@ -219,6 +240,10 @@ def main(argv=None) -> None:
     parser.add_argument("--units", default=None, help="m/s^2 | km/s^2 | mm/s^2 | um/s^2")
     parser.add_argument("--scoring", default=None, help="absolute scoring mode (default expected_abs_p95)")
     parser.add_argument("--max-rerun-fraction", type=float, default=None)
+    parser.add_argument(
+        "--conformal", action="store_true",
+        help="conformally correct the budget threshold using held-out force-error coverage",
+    )
     parser.add_argument("--out-dir", default="outputs/physical_budget")
     args = parser.parse_args(argv)
 

@@ -73,6 +73,12 @@ uq:
     units: m/s^2                 # m/s^2 | km/s^2 | mm/s^2 | um/s^2
     scoring: expected_abs_p95    # absolute scoring mode used for the budget screen
     max_rerun_fraction: null     # optional cap on the flagged count
+    # Optional post-hoc conformal correction of the budget threshold. When the held-out force-error
+    # uncertainty under-covers (scale > 1), the threshold is divided by the scale -> more conservative.
+    conformal:
+      enabled: false
+      alpha: 0.10                # 1 - alpha is the target held-out force-error coverage
+      mode: norm                 # norm | component_max
   # --- Optional post-hoc reliability layer (scripts/run_calibration_audit.py) ---
   # Ignored by the main run (python -m vesp.uq.run); read only by the calibration-audit script.
   conformal:

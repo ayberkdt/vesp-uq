@@ -1,9 +1,24 @@
-"""
-Phase 4: Operational Orbit Uncertainty Propagation
+"""Phase 4 (EXPLORATORY): Monte Carlo orbit-dispersion sampling from the VESP-UQ posterior.
 
-Propagates trajectories in a batch using a central gravity field and MC samples
-drawn from the VESP-UQ error posterior.
-Adapted from the LUNAR_SIMULATION torch_batch_propagator.
+Propagates a batch of trajectories under a central gravity field (or a supplied base
+acceleration) plus Monte Carlo samples drawn from the VESP-UQ force-error posterior. Each sample
+draws a source-strength vector ``sigma ~ N(mean, cov)`` and adds the resulting equivalent-source
+acceleration-error field to the base field, so the spread across samples reflects the *force-error
+posterior* uncertainty.
+
+**Scope / honesty caveat.** This is an exploratory diagnostic, NOT a validated operational
+orbit-determination or state-covariance product:
+
+- It samples the local *force-model* error posterior; it does not model measurement processing,
+  dynamic mismodelling beyond the fitted residual, or realistic process noise.
+- The empirical force-risk finding is that the VESP-UQ score does **not** rank a surrogate's
+  long-horizon *position* error on the in-distribution lunar set; do not read this dispersion as a
+  calibrated position-error or covariance-realism claim. See ``docs/VESP_UQ_LIMITATIONS.md``.
+
+The sampled error field is kept exactly consistent with the fitted posterior: it honors the
+plugin's ``acceleration_sign`` and softening ``eps`` and the source quadrature weights, so the
+per-point sample mean/covariance match :meth:`VESPUQPlugin.predict_uncertainty` /
+:meth:`predict_covariance_3x3`.
 """
 
 from __future__ import annotations
@@ -16,6 +31,28 @@ import torch
 
 from vesp.core.kernels import acceleration_kernel
 from vesp.uq.plugin import VESPUQPlugin
+
+
+def _stable_cholesky(cov: torch.Tensor, *, base_rel_jitter: float = 1.0e-12, max_tries: int = 7) -> torch.Tensor:
+    """Cholesky factor of ``cov`` with a *scale-relative* jitter, grown only if not PD.
+
+    The jitter starts at ``base_rel_jitter * mean|diag(cov)|`` so it is negligible relative to the
+    posterior covariance (unlike a fixed absolute floor, which can inflate the sampled covariance
+    when the diagonal is itself tiny).
+    """
+
+    n = cov.shape[0]
+    eye = torch.eye(n, dtype=cov.dtype, device=cov.device)
+    scale = torch.diagonal(cov).abs().mean().clamp_min(torch.finfo(cov.dtype).tiny)
+    jitter = float(base_rel_jitter) * float(scale)
+    last_err: RuntimeError | None = None
+    for _ in range(max_tries):
+        try:
+            return torch.linalg.cholesky(cov + jitter * eye)
+        except RuntimeError as err:  # not positive-definite -> grow the jitter and retry
+            last_err = err
+            jitter = jitter * 10.0 if jitter > 0.0 else float(scale) * 1.0e-12
+    raise RuntimeError(f"posterior covariance is not positive-definite even with jitter: {last_err}")
 
 
 def draw_posterior_samples(
@@ -31,14 +68,14 @@ def draw_posterior_samples(
         
     mean = plugin.posterior.mean
     cov = plugin.posterior.cov
-    
+
     generator = torch.Generator(device=mean.device).manual_seed(seed)
-    
-    # Simple Cholesky sampling
-    # cov is positive semi-definite. Add small eps for stability.
-    eps = 1e-8
-    L = torch.linalg.cholesky(cov + torch.eye(cov.shape[0], device=cov.device) * eps)
-    
+
+    # Cholesky sampling. The jitter is scaled to the covariance magnitude (a fixed absolute floor
+    # like 1e-8 can be the same order as this posterior's diagonal and would materially inflate the
+    # sampled covariance); it is grown only if the factorization is not PD.
+    L = _stable_cholesky(cov)
+
     # Z ~ N(0, I)
     Z = torch.randn(n_samples, mean.shape[0], device=mean.device, dtype=mean.dtype, generator=generator)
     
@@ -82,7 +119,12 @@ class VESPMonteCarloPropagator:
         # 2. Extract source configuration
         self.source_positions = plugin.sources.positions.to(dtype=self.dtype, device=self.device)
         self.source_weights = plugin.sources.weights.to(dtype=self.dtype, device=self.device)
-        
+        # Honor the fitted operator's acceleration sign + softening so the sampled error field is
+        # consistent with the posterior the samples were drawn from (otherwise the MC field can be
+        # sign-flipped or unsoftened relative to the fit).
+        self.eps = float(plugin.eps)
+        self.accel_sign = float(plugin.acceleration_sign)
+
         # Pre-multiply samples by weights for fast kernel evaluation
         self.weighted_samples = self.sigma_samples * self.source_weights.unsqueeze(0)
 
@@ -100,9 +142,9 @@ class VESPMonteCarloPropagator:
             a_central = -self.mu * r / r_mag3
         
         # VESP-UQ Error Evaluation
-        # Kernel: [N, n_sources, 3]
-        ker = acceleration_kernel(r, self.source_positions) 
-        
+        # Kernel: [N, n_sources, 3] -- sign/eps match the fitted operator (weights applied below).
+        ker = acceleration_kernel(r, self.source_positions, eps=self.eps, sign=self.accel_sign)
+
         # Multiply by weighted sigma samples [N, n_sources] and sum over sources
         a_error = (ker * self.weighted_samples.unsqueeze(-1)).sum(dim=1)
         

@@ -66,12 +66,28 @@ co-rank a surrogate's long-horizon *position* error (`scripts/analyze_512_orbits
 separate **diagnostic**, not a VESP-UQ claim; a null result there is expected when position error
 is not force-model-error dominated.
 
+## Exploratory (code exists, NOT a validated claim)
+
+- **Monte Carlo orbit-dispersion sampling** (`vesp.uq.propagation`, `scripts/run_propagation.py`):
+  draws source-strength samples from the posterior and propagates a batch to show the orbit-level
+  spread implied by the force-error posterior. It samples the *local* force-model error only and is
+  **not** a validated operational orbit-determination / state-covariance product (and force-risk does
+  not rank long-horizon position error). See `docs/VESP_UQ_LIMITATIONS.md`.
+- **Linearized (STM) covariance propagation** (`vesp.uq.linear_propagation`): the deterministic
+  variational counterpart of the MC sampler, mapping the source posterior into a `6x6` state
+  covariance (`P = J Sigma_sigma J^T`). Agrees with the MC sampler in the linear regime; same
+  exploratory caveats (central-field gravity gradient by default; not validated orbit determination).
+- **ST-LRPS adapter wiring** (`vesp.adapters.st_lrps`, `scripts/run_stlrps_propagation.py`): runs the
+  ST-LRPS runtime force model as the MC sampler's base field. Exploratory wiring, not a validated
+  integration result.
+
 ## What is not implemented (future work)
 
+- A **validated** ST-LRPS (or other named surrogate) integration with an explicitly-tested
+  orbit-accuracy / covariance-realism result.
 - Online correction `a_corrected = a_surrogate + mean_error` inside an integrator (Phase 5).
-- STM / covariance propagation consuming `Sigma_a(x)` as a force-model uncertainty input.
-- Any ST-LRPS (or other named surrogate) adapter / integration experiment.
-- Full Monte Carlo orbit uncertainty propagation.
+- Validated operational orbit/state covariance realism (the MC and STM propagators above are
+  exploratory only).
 
 ## Safe claims
 

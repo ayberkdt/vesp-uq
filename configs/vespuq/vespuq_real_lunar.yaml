@@ -66,6 +66,17 @@ uq:
     domain_radial_weight: 1.0     # weight on the radial extrapolation component
     domain_angular_weight: 0.0    # optional nearest-direction angular component (off by default)
     domain_backend: torch         # torch (default) | kdtree (scipy cKDTree; falls back to torch)
+  # --- Optional physical acceleration-error budget (scripts/run_physical_budget_screening.py) ---
+  # This dataset declares body.acceleration_units: km/s^2 above, so the risk scores are already on a
+  # physical scale (1 model unit == 1 km/s^2 == 1e3 m/s^2) -- physical conversion is available WITHOUT
+  # an explicit acceleration_scale_m_s2. A budget given in m/s^2 is converted to the km/s^2 score
+  # scale (e.g. 1e-8 m/s^2 -> 1e-11 km/s^2 model-unit threshold). Requires an absolute scoring mode.
+  physical_budget:
+    enabled: false
+    value: null                  # required when enabled; e.g. 1.0e-8 (in `units`)
+    units: m/s^2                 # m/s^2 | km/s^2 | mm/s^2 | um/s^2
+    scoring: expected_abs_p95    # absolute scoring mode used for the budget screen
+    max_rerun_fraction: null     # optional cap on the flagged count
   screening:
     trajectory_source: generated  # generated (Keplerian orbits) | csv (external surrogate output)
     # trajectory_path: data/my_surrogate_trajectories.csv   # required when trajectory_source: csv

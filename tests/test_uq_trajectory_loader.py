@@ -5,7 +5,9 @@ from __future__ import annotations
 import pytest
 import torch
 
+from vesp.common.units import PositionScaler, UnitConfig
 from vesp.uq.io import TrajectoryDataset, flatten_acceleration_pairs, load_trajectory_csv
+from vesp.uq.physical_units import resolve_acceleration_scale
 
 
 def _write(path, header, rows):
@@ -106,3 +108,67 @@ def test_flatten_rejects_positions_only(tmp_path):
     ds = load_trajectory_csv(csv)
     with pytest.raises(ValueError):
         flatten_acceleration_pairs(ds)
+
+
+# --------------------------------------------------------------- unit handling
+
+_ACCEL_HEADER = [
+    "trajectory_id", "t", "x", "y", "z",
+    "ax_sur", "ay_sur", "az_sur", "ax_ref", "ay_ref", "az_ref",
+]
+
+
+def _accel_csv(path):
+    rows = [
+        [0, 0.0, 1.1, 0.0, 0.0, 0.10, 0.20, 0.30, 0.11, 0.22, 0.33],
+        [0, 1.0, 1.2, 0.0, 0.0, 1.00, 1.00, 1.00, 1.50, 2.00, 2.50],
+    ]
+    return _write(path, _ACCEL_HEADER, rows)
+
+
+def test_default_units_verbatim_metadata_dict(tmp_path):
+    ds = load_trajectory_csv(_accel_csv(tmp_path / "v.csv"))
+    u = ds.metadata["units"]
+    assert u["acceleration_converted_to_model"] is False
+    assert u["acceleration_scale_m_s2"] is None
+    assert u["positions_converted_to_model"] is False
+    # residual unchanged from the verbatim reference - surrogate
+    assert torch.allclose(ds.residual_accelerations[0][0], torch.tensor([0.01, 0.02, 0.03], dtype=torch.float64))
+
+
+def test_physical_acceleration_units_converted_to_model(tmp_path):
+    # CSV accelerations in m/s^2; scale says 1 model unit == 1e-6 m/s^2 -> model = value / 1e-6
+    scale = resolve_acceleration_scale(
+        {"body": {"acceleration_units": "model_normalized_accel", "acceleration_scale_m_s2": 1.0e-6}}
+    )
+    ds = load_trajectory_csv(
+        _accel_csv(tmp_path / "p.csv"), acceleration_scale=scale, acceleration_units="m/s^2"
+    )
+    u = ds.metadata["units"]
+    assert u["acceleration_converted_to_model"] is True
+    assert u["acceleration_scale_m_s2"] == pytest.approx(1.0e-6)
+    # residual (ref - sur) in m/s^2 was [0.01,0.02,0.03] -> model units /1e-6
+    assert torch.allclose(
+        ds.residual_accelerations[0][0],
+        torch.tensor([0.01, 0.02, 0.03], dtype=torch.float64) / 1.0e-6,
+    )
+
+
+def test_physical_units_without_scale_raises(tmp_path):
+    with pytest.raises(ValueError):
+        load_trajectory_csv(_accel_csv(tmp_path / "ns.csv"), acceleration_units="m/s^2")
+
+
+def test_unsupported_acceleration_units_raises(tmp_path):
+    with pytest.raises(ValueError):
+        load_trajectory_csv(_accel_csv(tmp_path / "bad.csv"), acceleration_units="furlongs/s^2")
+
+
+def test_position_scaler_normalizes_positions(tmp_path):
+    rows = [[0, 0.0, 1738.0, 0.0, 0.0], [0, 1.0, 3476.0, 0.0, 0.0]]  # km positions
+    csv = _write(tmp_path / "km.csv", ["trajectory_id", "t", "x", "y", "z"], rows)
+    scaler = PositionScaler(UnitConfig(R_body=1738.0, normalize_positions=True, position_units="km"))
+    ds = load_trajectory_csv(csv, position_scaler=scaler)
+    # 1738 km / 1738 -> 1.0 body radii, 3476 -> 2.0
+    assert ds.trajectories[0][:, 0].tolist() == [1.0, 2.0]
+    assert ds.metadata["units"]["positions_converted_to_model"] is True

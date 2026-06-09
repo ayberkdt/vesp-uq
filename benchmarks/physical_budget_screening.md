@@ -79,6 +79,25 @@ silently using normalized units.
 The smoke config ships a *synthetic* example scale (`acceleration_scale_m_s2: 1.0e-6`) so the script
 is runnable in CI; it is illustrative, not a physical claim about the synthetic data.
 
+## Optional: conformally-corrected budget threshold
+
+VESP-UQ is itself a fitted uncertainty model, so its risk scores can be over- or under-confident.
+With `uq.physical_budget.conformal.enabled: true` (or the `--conformal` flag), a post-hoc
+split-conformal scale `c` is fit on the held-out force-error residuals and the budget's model-unit
+threshold is divided by it:
+
+```
+corrected_threshold = (budget / acceleration_scale_m_s2) / c
+```
+
+- `c > 1` (VESP-UQ **under-covers** the held-out force error) → the threshold is **tightened** so the
+  screen flags more trajectories — i.e. it is more conservative when the model is overconfident.
+- `c < 1` (over-covers) → the threshold is loosened.
+
+The report records the raw and corrected thresholds plus the held-out coverage before/after, so the
+correction is auditable. This adjusts the *screening threshold* using measured held-out coverage; it
+still makes no guarantee about an individual trajectory's true error.
+
 ## Interpreting zero-alarm and nonzero-alarm results
 
 - **Zero alarms** — no trajectory's estimated force-risk reached the budget. A genuinely safe,

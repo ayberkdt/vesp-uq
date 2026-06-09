@@ -16,9 +16,14 @@ Sources (``uq.screening.threshold_source``):
 
 from __future__ import annotations
 
+from vesp.uq.conformal import fit_conformal_scale
 from vesp.uq.ensemble import generate_orbit_ensemble
 from vesp.uq.physical_units import acceleration_to_model_units, resolve_acceleration_scale
 from vesp.uq.scoring import is_absolute_scoring, is_relative_scoring
+
+# Conformal reductions usable for a (magnitude) physical budget; mahalanobis needs a precomputed
+# scalar score and is intentionally not offered for the scalar-budget correction.
+PHYSICAL_BUDGET_CONFORMAL_MODES = ("norm", "component_max")
 
 THRESHOLD_SOURCES = (
     "manual",
@@ -61,6 +66,26 @@ def resolve_physical_budget_threshold(physical_cfg, scale, scoring):
     return model_threshold, float(value), units
 
 
+def conformal_force_error_correction(plugin, held, *, alpha=0.10, mode="norm"):
+    """Fit a post-hoc conformal scale for the held-out force-error uncertainty.
+
+    Returns the fitted :class:`~vesp.uq.conformal.ConformalCalibrator`. The scale is ``>= 1`` when
+    VESP-UQ under-covers the held-out force error; dividing a physical-budget model threshold by it
+    therefore makes the budget screen more conservative when the model is overconfident. Uses the
+    predictive residual ``error - posterior_mean_error`` vs the predictive uncertainty
+    (``sigma`` for ``norm``, per-component std for ``component_max``).
+    """
+
+    if mode not in PHYSICAL_BUDGET_CONFORMAL_MODES:
+        raise ValueError(
+            f"physical_budget conformal mode must be one of {PHYSICAL_BUDGET_CONFORMAL_MODES}, got {mode!r}"
+        )
+    cov = plugin.predict_covariance_3x3(held.positions)
+    residual = held.error - cov.mean_error
+    predicted = cov.std_components if mode == "component_max" else cov.sigma
+    return fit_conformal_scale(predicted, residual, alpha=float(alpha), mode=mode)
+
+
 def resolve_threshold(screen_cfg, plugin, held, scoring, *, dtype, seed, config=None):
     """Resolve the absolute screening threshold and its provenance from config.
 
@@ -88,6 +113,14 @@ def resolve_threshold(screen_cfg, plugin, held, scoring, *, dtype, seed, config=
         "threshold_physical_value": None,
         "threshold_physical_units": None,
         "acceleration_scale_m_s2": None,
+        # Optional conformal correction of the physical-budget threshold (P5.2):
+        "conformal_enabled": False,
+        "conformal_scale": None,
+        "conformal_alpha": None,
+        "conformal_mode": None,
+        "conformal_coverage_before": None,
+        "conformal_coverage_after": None,
+        "threshold_model_units_raw": None,
     }
 
     physical_cfg = ((config or {}).get("uq", {}) or {}).get("physical_budget", {}) or {}
@@ -122,6 +155,27 @@ def resolve_threshold(screen_cfg, plugin, held, scoring, *, dtype, seed, config=
             threshold_physical_units=phys_units,
             acceleration_scale_m_s2=scale.scale_m_s2,
         )
+        # Optional conformal correction: tighten the budget threshold when the held-out force-error
+        # uncertainty under-covers (scale > 1 -> threshold / scale flags more, i.e. more conservative).
+        conformal_cfg = physical_cfg.get("conformal", {}) or {}
+        if conformal_cfg.get("enabled", False):
+            if plugin is None or held is None:
+                raise ValueError("physical_budget conformal correction requires a fitted plugin and held-out samples")
+            alpha = float(conformal_cfg.get("alpha", 0.10))
+            mode = str(conformal_cfg.get("mode", "norm")).lower()
+            cal = conformal_force_error_correction(plugin, held, alpha=alpha, mode=mode)
+            corrected = model_thr / cal.scale if cal.scale > 0.0 else model_thr
+            meta.update(
+                conformal_enabled=True,
+                conformal_scale=cal.scale,
+                conformal_alpha=alpha,
+                conformal_mode=mode,
+                conformal_coverage_before=cal.coverage_before,
+                conformal_coverage_after=cal.coverage_after,
+                threshold_model_units_raw=model_thr,
+                threshold_model_units=corrected,
+            )
+            return corrected, meta
         return model_thr, meta
 
     if src == "manual":

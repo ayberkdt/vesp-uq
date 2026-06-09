@@ -8,9 +8,10 @@ Two CSV formats are recognized (see :mod:`vesp.uq.io.trajectory_loader`):
   ``ax_sur, ay_sur, az_sur, ax_ref, ay_ref, az_ref``. Can both *fit* the residual-force error
   (``residual = reference - surrogate``) and be scored.
 
-Units are NOT converted here -- positions/accelerations are taken as-is (typically normalized
-body radii / normalized acceleration). ``metadata`` carries a unit hook; conversion via
-``UnitConfig`` is a TODO until per-file unit metadata is supplied.
+Units default to verbatim (typically normalized body radii / model-normalized acceleration). When
+explicit metadata is supplied, :func:`~vesp.uq.io.trajectory_loader.load_trajectory_csv` can convert
+positions (via a ``PositionScaler``) and physical accelerations (via an ``AccelerationScale``) into
+the model's working units; ``metadata["units"]`` records exactly what conversion was applied.
 """
 
 from __future__ import annotations

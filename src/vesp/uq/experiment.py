@@ -25,7 +25,7 @@ from vesp.uq.data import (
 )
 from vesp.uq.ensemble import generate_orbit_ensemble, nearest_neighbor_error_magnitude
 from vesp.uq.io import load_trajectory_csv
-from vesp.uq.physical_units import resolve_acceleration_scale
+from vesp.uq.physical_units import MODEL_UNITS, resolve_acceleration_scale
 from vesp.uq.plugin import VESPUQPlugin
 from vesp.uq.reporting import build_summary, build_tables, expected_error_summary
 from vesp.uq.scoring import (
@@ -107,9 +107,10 @@ def _units_metadata(config: dict) -> dict:
         "acceleration_metric_units": accel_units,
         "position_units": str(body.get("position_units", "normalized")),
         "force_error_scale_note": (
-            "Risk scores and expected force errors are in the model's normalized-acceleration "
-            "units (dU/d(model coordinate)); no physical km/s^2 conversion is applied here (TODO: "
-            "expose a UnitConfig-based conversion when per-run unit metadata is wired through)."
+            "Risk scores and expected force errors are in the model's normalized-acceleration units "
+            "(dU/d(model coordinate)) by default. A physical conversion is applied only when explicit "
+            "metadata is supplied (body.acceleration_scale_m_s2 or a physical body.acceleration_units); "
+            "see the physical_conversion_* fields below. No physical scale is ever inferred."
         ),
         "physical_R_body": body.get("physical_R_body"),
         "physical_R_body_units": body.get("physical_R_body_units"),
@@ -131,11 +132,17 @@ def _units_metadata(config: dict) -> dict:
     return meta
 
 
-def _build_trajectories(screen_cfg: dict, *, seed: int, dtype: torch.dtype) -> dict:
+def _build_trajectories(screen_cfg: dict, *, seed: int, dtype: torch.dtype, config: dict | None = None) -> dict:
     """Resolve the trajectory ensemble: generated Keplerian orbits or an external CSV.
 
-    Returns a dict with ``trajectories`` (list of (T,3)), ``source``, ``path``, and optional
-    ``residuals`` (per-trajectory ``(T,3)`` residual force error when the CSV had accel pairs).
+    Returns a dict with ``trajectories`` (list of (T,3)), ``source``, ``path``, optional
+    ``residuals`` (per-trajectory ``(T,3)`` residual force error when the CSV had accel pairs), and
+    ``units`` (the loader's per-file unit metadata, or ``None`` for generated orbits).
+
+    For a CSV source, ``uq.screening.trajectory_acceleration_units`` (default
+    ``model_normalized_accel``) declares the CSV acceleration units; a physical unit is converted to
+    model units via ``body.acceleration_scale_m_s2`` (requires ``config``). Generated orbits are
+    always in model-normalized coordinates.
     """
 
     source = str(screen_cfg.get("trajectory_source", "generated")).lower()
@@ -148,17 +155,20 @@ def _build_trajectories(screen_cfg: dict, *, seed: int, dtype: torch.dtype) -> d
             seed=seed,
             dtype=dtype,
         )
-        return {"trajectories": ensemble.trajectories, "source": "generated", "path": None, "residuals": None}
+        return {"trajectories": ensemble.trajectories, "source": "generated", "path": None, "residuals": None, "units": None}
     if source == "csv":
         path = screen_cfg.get("trajectory_path")
         if not path:
             raise ValueError("uq.screening.trajectory_source=csv requires uq.screening.trajectory_path")
-        ds = load_trajectory_csv(path, dtype=dtype)
+        accel_units = str(screen_cfg.get("trajectory_acceleration_units", MODEL_UNITS))
+        scale = resolve_acceleration_scale(config) if config is not None else None
+        ds = load_trajectory_csv(path, dtype=dtype, acceleration_scale=scale, acceleration_units=accel_units)
         return {
             "trajectories": ds.trajectories,
             "source": "csv",
             "path": str(path),
             "residuals": ds.residual_accelerations,  # None unless accel pairs were present
+            "units": ds.metadata.get("units"),
         }
     raise ValueError("uq.screening.trajectory_source must be 'generated' or 'csv'")
 
@@ -185,7 +195,7 @@ def run_vespuq(config: dict) -> dict:
 
     # ---------------- Experiment 3: trajectory risk screening ----------------
     screen_cfg = config.get("uq", {}).get("screening", {})
-    traj_info = _build_trajectories(screen_cfg, seed=seed, dtype=dtype)
+    traj_info = _build_trajectories(screen_cfg, seed=seed, dtype=dtype, config=config)
     trajectories = traj_info["trajectories"]
     scoring = plugin.risk_scoring
     fraction_policy = str(screen_cfg.get("fraction_policy", "topk")).lower()
@@ -267,6 +277,7 @@ def run_vespuq(config: dict) -> dict:
             "true_error_mode": true_error_mode,
             "trajectory_source": traj_info["source"],
             "trajectory_path": traj_info["path"],
+            "trajectory_units": traj_info.get("units"),
             "external_trajectory_count": n_traj if traj_info["source"] == "csv" else None,
             "external_output_points_total": n_points_total if traj_info["source"] == "csv" else None,
             "n_trajectories": n_traj,
@@ -291,6 +302,12 @@ def run_vespuq(config: dict) -> dict:
             "threshold_physical_value": threshold_meta["threshold_physical_value"],
             "threshold_physical_units": threshold_meta["threshold_physical_units"],
             "acceleration_scale_m_s2": threshold_meta["acceleration_scale_m_s2"],
+            "conformal_enabled": threshold_meta["conformal_enabled"],
+            "conformal_scale": threshold_meta["conformal_scale"],
+            "conformal_alpha": threshold_meta["conformal_alpha"],
+            "conformal_coverage_before": threshold_meta["conformal_coverage_before"],
+            "conformal_coverage_after": threshold_meta["conformal_coverage_after"],
+            "threshold_model_units_raw": threshold_meta["threshold_model_units_raw"],
             "expected_error": expected_error_summary(scores, plugin.domain_support),
             "screen": screening.to_dict(),
         },

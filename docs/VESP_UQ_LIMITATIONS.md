@@ -16,18 +16,39 @@ The interior equivalent sources are a **mathematical** distribution chosen to re
 *exterior* residual-force error field. They are not a physical internal mass-density model and
 carry no geophysical interpretation.
 
-## Not operational orbit uncertainty propagation (yet)
+## Orbit uncertainty propagation: exploratory only, not validated
 
-VESP-UQ supplies a position-dependent force-error covariance `Sigma_a(x)`. It does **not** itself
-propagate state covariance through an integrator. Consuming `Sigma_a(x)` as a force-model
-process-noise input for STM / covariance propagation, or running full Monte Carlo orbit
-uncertainty propagation, is future work and is not claimed unless that experiment is actually run.
+VESP-UQ supplies a position-dependent force-error covariance `Sigma_a(x)`. An **exploratory** Monte
+Carlo orbit-dispersion sampler (`vesp.uq.propagation.VESPMonteCarloPropagator`,
+`scripts/run_propagation.py`) draws source-strength samples from the posterior and propagates a
+batch of trajectories to show the orbit-level *spread* implied by the force-error posterior. This is
+**not** a validated operational orbit-determination or state-covariance product:
 
-## Not integrated with ST-LRPS (or any named surrogate)
+- it samples the *local force-model* error posterior; it does not model measurement processing,
+  realistic process noise, or dynamic mismodelling beyond the fitted residual;
+- the headline force-risk finding is that the VESP-UQ score does **not** rank a surrogate's
+  long-horizon *position* error on the in-distribution set, so the dispersion must not be read as a
+  calibrated position-error or covariance-realism claim;
+- a **linearized (STM) variant** (`vesp.uq.linear_propagation.LinearForceErrorCovariancePropagator`)
+  propagates the same posterior into a deterministic `6x6` state covariance via the variational
+  equation (`P = J Sigma_sigma J^T`); it agrees with the MC sampler in the linear regime but is
+  equally exploratory and carries the same caveats. It uses the central (point-mass) gravity
+  gradient by default (finite-difference Jacobian for a custom base field) -- *not* a validated
+  orbit-determination linearization.
 
-VESP-UQ is surrogate-agnostic at the acceleration interface. No ST-LRPS adapter or integration
-experiment exists in this repository. Do not claim integration unless such an adapter and
-experiment are added and run.
+The sampled field is kept exactly consistent with the fitted posterior (honors `acceleration_sign`,
+softening `eps`, and source quadrature weights), so per-point sample mean/covariance match
+`predict_uncertainty` / `predict_covariance_3x3`.
+
+## ST-LRPS adapter: exploratory wiring, not a validated integration
+
+An ST-LRPS surrogate adapter exists (`vesp.adapters.st_lrps`, the Sobolev-Trained Lunar Residual
+Potential Surrogate package) and `scripts/run_stlrps_propagation.py` uses its runtime force model as
+the `base_accel_fn` of the exploratory MC sampler above. This is **exploratory wiring**, not a
+validated integration claim: there is no validated end-to-end orbit-accuracy or covariance-realism
+result, and a null force-risk vs position-error correlation is *expected* (position error is often
+not force-model-error dominated). Do not claim a validated ST-LRPS integration on the basis of this
+wiring.
 
 ### ST-LRPS diagnostic vs integration
 
@@ -40,8 +61,11 @@ surrogate's long-horizon position error? This is **not** the same as an ST-LRPS 
 - a null correlation there is *expected* (position error is often not force-model-error dominated)
   and is reported as a diagnostic, never as a VESP-UQ failure or a position-error claim.
 
-A real integration (an adapter that feeds `a_corrected`/`Sigma_a(x)` into the ST-LRPS workflow and
-re-runs it) would be a separate, explicitly-tested deliverable; it does not exist yet.
+This read-only diagnostic is distinct from the *exploratory wiring* above
+(`run_stlrps_propagation.py`, which does run ST-LRPS as the MC base field). A **validated**
+integration — an adapter that feeds `a_corrected`/`Sigma_a(x)` into the ST-LRPS workflow with an
+explicitly-tested orbit-accuracy / covariance-realism result — is still a separate deliverable that
+does not exist yet.
 
 ### Local force-error covariance vs orbit/state covariance propagation
 

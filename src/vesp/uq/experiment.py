@@ -25,6 +25,7 @@ from vesp.uq.data import (
 )
 from vesp.uq.ensemble import generate_orbit_ensemble, nearest_neighbor_error_magnitude
 from vesp.uq.io import load_trajectory_csv
+from vesp.uq.physical_units import resolve_acceleration_scale
 from vesp.uq.plugin import VESPUQPlugin
 from vesp.uq.reporting import build_summary, build_tables, expected_error_summary
 from vesp.uq.scoring import (
@@ -91,11 +92,17 @@ def _resolve_time_weighting(screen_cfg: dict) -> str:
 
 
 def _units_metadata(config: dict) -> dict:
-    """Conservative units metadata for the report (no invented physical conversion)."""
+    """Conservative units metadata for the report (no invented physical conversion).
+
+    Physical acceleration conversion is reported as available only when the config supplies explicit
+    metadata (``body.acceleration_scale_m_s2`` or a physical ``body.acceleration_units``); otherwise
+    the report stays in model-normalized units with a clear note.
+    """
 
     body = config.get("body", {})
     accel_units = str(body.get("acceleration_units", "model_normalized_accel"))
-    return {
+    scale = resolve_acceleration_scale(config)
+    meta = {
         "risk_score_units": "model_normalized_accel",
         "acceleration_metric_units": accel_units,
         "position_units": str(body.get("position_units", "normalized")),
@@ -106,7 +113,22 @@ def _units_metadata(config: dict) -> dict:
         ),
         "physical_R_body": body.get("physical_R_body"),
         "physical_R_body_units": body.get("physical_R_body_units"),
+        # Physical-budget conversion metadata (explicit only -- never inferred).
+        "physical_conversion_available": scale.physical,
+        "acceleration_scale_m_s2": scale.scale_m_s2,
+        "acceleration_scale_source": scale.source,
+        "score_units_by_scale": {
+            "relative": "per-trajectory-normalized (ranking only; no physical budget)",
+            "absolute": "fixed model-normalized acceleration scale (physical budget allowed)",
+            "sigma": "predictive-uncertainty magnitude (model-normalized acceleration)",
+        },
     }
+    if not scale.physical:
+        meta["physical_conversion_note"] = (
+            "physical acceleration conversion unavailable; values are reported in "
+            "model-normalized acceleration units."
+        )
+    return meta
 
 
 def _build_trajectories(screen_cfg: dict, *, seed: int, dtype: torch.dtype) -> dict:
@@ -206,7 +228,12 @@ def run_vespuq(config: dict) -> dict:
     # fixed top-fraction. Pointwise budgets are rejected for relative scoring (scale mismatch).
     max_rerun_fraction = screen_cfg.get("max_rerun_fraction")
     rerun_fraction = float(screen_cfg.get("rerun_fraction", 0.20))
-    threshold, threshold_meta = resolve_threshold(screen_cfg, plugin, held, scoring, dtype=dtype, seed=seed)
+    threshold, threshold_meta = resolve_threshold(
+        screen_cfg, plugin, held, scoring, dtype=dtype, seed=seed, config=config
+    )
+    # A physical budget may carry its own optional rerun cap (uq.physical_budget.max_rerun_fraction).
+    if max_rerun_fraction is None and threshold_meta["threshold_source"] == "physical_budget":
+        max_rerun_fraction = config.get("uq", {}).get("physical_budget", {}).get("max_rerun_fraction")
     if threshold is not None:
         screening = select_reruns(
             risk_scores,
@@ -260,6 +287,10 @@ def run_vespuq(config: dict) -> dict:
             "threshold_calibration_scoring": threshold_meta["threshold_calibration_scoring"],
             "threshold_calibration_n": threshold_meta["threshold_calibration_n"],
             "threshold_compatibility_note": threshold_meta["threshold_compatibility_note"],
+            "threshold_model_units": threshold_meta["threshold_model_units"],
+            "threshold_physical_value": threshold_meta["threshold_physical_value"],
+            "threshold_physical_units": threshold_meta["threshold_physical_units"],
+            "acceleration_scale_m_s2": threshold_meta["acceleration_scale_m_s2"],
             "expected_error": expected_error_summary(scores, plugin.domain_support),
             "screen": screening.to_dict(),
         },

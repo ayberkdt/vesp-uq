@@ -134,6 +134,25 @@ score. The scale of the score determines whether it can be used for absolute thr
 Legacy sigma-only modes (`max | mean | low_alt_integral | time_above | combined`) remain
 available and unchanged.
 
+### Physical acceleration budgets and post-hoc auditing
+
+Two optional, post-hoc layers build on the absolute scoring modes (both keep model-normalized
+values and never invent physical units):
+
+```text
+python scripts/run_physical_budget_screening.py --config configs/vespuq/vespuq_smoke.yaml \
+    --budget 1e-8 --units m/s^2 --scoring expected_abs_p95   # benchmarks/physical_budget_screening.md
+python scripts/run_calibration_audit.py --config configs/vespuq/vespuq_smoke.yaml   # benchmarks/calibration_audit.md
+```
+
+- **Physical budget screening** converts a user-defined acceleration-error tolerance (e.g.
+  `1e-8 m/s^2`) into model-score units via an explicit `body.acceleration_scale_m_s2` and flags
+  trajectories whose force-risk exceeds it. Requires an absolute scoring mode; relative scores are
+  rejected. See [`benchmarks/physical_budget_screening.md`](benchmarks/physical_budget_screening.md).
+- **Conformal calibration + sentinel audit** measures held-out force-error coverage and audits
+  accepted low-risk trajectories for false negatives. See
+  [`benchmarks/calibration_audit.md`](benchmarks/calibration_audit.md).
+
 ## Experimental Questions
 
 The point of the framework is to make the MaxEnt-VESP idea **falsifiable**. Each

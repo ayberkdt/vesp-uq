@@ -165,6 +165,18 @@ def build_report_md(report: dict) -> str:
             f"acceleration=`{units.get('acceleration_metric_units')}`, position=`{units.get('position_units')}`"
             + (f"  ({units['force_error_scale_note']})" if units.get("force_error_scale_note") else "")
         )
+        if units.get("physical_conversion_available"):
+            lines.append(
+                f"physical acceleration conversion: available "
+                f"(1 model unit = {fmt(units.get('acceleration_scale_m_s2'), '.3e')} m/s^2, "
+                f"source `{units.get('acceleration_scale_source')}`); model-normalized values are "
+                "also retained."
+            )
+        else:
+            lines.append(
+                "physical acceleration conversion unavailable; values are reported in "
+                "model-normalized acceleration units."
+            )
     if "altitude_noise_b" in fit:
         lines.append(
             f"altitude noise sigma^2(h)=a*h^(-b): a={fmt(fit['altitude_noise_a'], '.3e')}, "
@@ -226,6 +238,12 @@ def build_report_md(report: dict) -> str:
         )
     else:
         selection_line += f" -> absolute force-risk budget (risk score) {fmt(sc['threshold'], '.3e')}"
+        if screen.get("threshold_physical_value") is not None:
+            selection_line += (
+                f" = physical budget {fmt(screen['threshold_physical_value'], '.3e')} "
+                f"{screen.get('threshold_physical_units')} "
+                f"(model-unit threshold {fmt(screen.get('threshold_model_units'), '.3e')})"
+            )
         tsrc = screen.get("threshold_source")
         if tsrc:
             extra = f"source: {tsrc}"

@@ -11,6 +11,10 @@ body:
   R_body: 1.0
   normalize_positions: true
   position_units: normalized
+  acceleration_units: model_normalized_accel
+  # Synthetic example scale for physical-budget screening: 1 model unit == 1e-6 m/s^2.
+  # Set to null (or omit) to keep all scores in model-normalized units (no physical conversion).
+  acceleration_scale_m_s2: 1.0e-6
 
 data:
   type: synthetic
@@ -59,6 +63,28 @@ uq:
     domain_radial_weight: 1.0     # weight on the radial extrapolation component
     domain_angular_weight: 0.0    # optional nearest-direction angular component (off by default)
     domain_backend: torch         # torch (default) | kdtree (scipy cKDTree; falls back to torch)
+  # --- Optional physical acceleration-error budget (scripts/run_physical_budget_screening.py) ---
+  # Flags trajectories whose estimated force-risk exceeds a user-defined acceleration-error
+  # tolerance. Requires an absolute scoring mode (expected_abs / expected_abs_p95 / supervisor_abs /
+  # supervisor_abs_p95) and an explicit acceleration scale (body.acceleration_scale_m_s2 above).
+  physical_budget:
+    enabled: false
+    value: null                  # required when enabled; e.g. 1.0e-8 (in `units`)
+    units: m/s^2                 # m/s^2 | km/s^2 | mm/s^2 | um/s^2
+    scoring: expected_abs_p95    # absolute scoring mode used for the budget screen
+    max_rerun_fraction: null     # optional cap on the flagged count
+  # --- Optional post-hoc reliability layer (scripts/run_calibration_audit.py) ---
+  # Ignored by the main run (python -m vesp.uq.run); read only by the calibration-audit script.
+  conformal:
+    enabled: true
+    alpha: 0.10                  # 1 - alpha is the target held-out force-error coverage
+    mode: norm                   # norm | component_max | mahalanobis  (force-error reduction)
+  audit:
+    enabled: true
+    audit_fraction: 0.02         # sentinel sample as a fraction of the accepted (low-risk) set
+    min_audit: 5                 # minimum sentinel count when accepted set is large enough
+    high_error_quantile: 0.90    # true force error at/above this quantile counts as high-error
+    seed: 0
   screening:
     trajectory_source: generated  # generated (Keplerian orbits) | csv (external surrogate output)
     # trajectory_path: data/my_surrogate_trajectories.csv   # required when trajectory_source: csv

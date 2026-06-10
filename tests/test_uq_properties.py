@@ -1,10 +1,10 @@
 import math
 from dataclasses import dataclass
 
-import numpy as np
 import pytest
 import torch
-from hypothesis import given, settings, strategies as st
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from vesp.uq.conformal import _conformal_quantile_level, fit_conformal_scale
 from vesp.uq.scoring import aggregate_trajectory_error, score_sigma_profile
@@ -31,7 +31,7 @@ def test_select_reruns_threshold_invariant(scores, threshold):
     """Property: threshold flagging must exactly flag items >= threshold."""
     scores_t = torch.tensor(scores, dtype=torch.float64)
     report = select_reruns(scores_t, threshold=threshold)
-    
+
     # Check flagged count
     expected_flag_count = int((scores_t >= threshold).sum())
     assert report.n_flagged == expected_flag_count
@@ -46,7 +46,7 @@ def test_select_reruns_relative_budget_invariant(scores, budget):
     """Property: fraction flags exactly ceil(budget * len(scores))."""
     scores_t = torch.tensor(scores, dtype=torch.float64)
     report = select_reruns(scores_t, rerun_fraction=budget, fraction_policy="topk")
-    
+
     expected_flag_count = math.ceil(budget * len(scores))
     assert report.n_flagged == expected_flag_count
     assert len(report.flagged_indices) == expected_flag_count
@@ -77,7 +77,7 @@ def test_fit_conformal_scale_bounds(predicted, true, alpha):
     n = min(len(predicted), len(true))
     pred_t = torch.tensor(predicted[:n])
     true_t = torch.tensor(true[:n])
-    
+
     calibrator = fit_conformal_scale(pred_t, true_t, alpha=alpha)
     assert calibrator.scale >= 0.0
 
@@ -91,7 +91,7 @@ def test_aggregate_trajectory_error_monotonicity(sigma):
     v_max = aggregate_trajectory_error(t, mode="max")
     v_mean = aggregate_trajectory_error(t, mode="mean")
     v_p95 = aggregate_trajectory_error(t, mode="p95")
-    
+
     assert v_mean <= v_max + 1e-9
     assert v_p95 <= v_max + 1e-9
 
@@ -106,10 +106,10 @@ def test_score_sigma_profile_scaling(sigma, radius, scale):
     n = min(len(sigma), len(radius))
     sig_t = torch.tensor(sigma[:n], dtype=torch.float64)
     rad_t = torch.tensor(radius[:n], dtype=torch.float64)
-    
+
     # Expected abs ignores radius weight
     score_base = score_sigma_profile(sig_t, rad_t, scoring="mean")
     score_scaled = score_sigma_profile(sig_t * scale, rad_t, scoring="mean")
-    
+
     # Tolerance due to float point
     assert pytest.approx(score_scaled.risk_score, rel=1e-5) == score_base.risk_score * scale

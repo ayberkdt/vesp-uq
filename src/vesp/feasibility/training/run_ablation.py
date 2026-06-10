@@ -18,10 +18,10 @@ from __future__ import annotations
 import argparse
 import csv
 import time
+from collections.abc import Iterable
 from copy import deepcopy
 from itertools import product
 from pathlib import Path
-from typing import Iterable
 
 from vesp.core.models import MultiShellDiscreteVESP
 from vesp.feasibility.training.train_discrete import load_config, run

@@ -30,13 +30,13 @@ def compare_models(
     mean_a = plugin_a.posterior.mean
     mean_b = plugin_b.posterior.mean
     mean_l2_diff = float(torch.linalg.norm(mean_a - mean_b))
-    
+
     cov_a = plugin_a.posterior.cov
     cov_b = plugin_b.posterior.cov
     # Tr(Cov_a + Cov_b - 2(Cov_a Cov_b)^0.5) is Frechet distance, but a simple trace diff
     # or frobenius norm of difference is sufficient for a drift diagnostic summary.
     cov_frob_diff = float(torch.linalg.norm(cov_a - cov_b))
-    
+
     noise_var_a = plugin_a.posterior.noise_var
     noise_var_b = plugin_b.posterior.noise_var
     noise_var_delta = float(noise_var_b - noise_var_a)
@@ -53,7 +53,7 @@ def compare_models(
     # Calibration side-by-side
     cal_a = plugin_a.evaluate_calibration(held_out_positions, held_out_error, altitude_bands=altitude_bands)
     cal_b = plugin_b.evaluate_calibration(held_out_positions, held_out_error, altitude_bands=altitude_bands)
-    
+
     # Restructure calibration as a combined dictionary for easy markdown rendering
     calibration_comparison = {}
     for band in cal_a:
@@ -67,8 +67,9 @@ def compare_models(
     # Screening agreement
     agreement = {}
     if trajectory_ensemble:
-        from vesp.uq.selection import select_reruns
         import scipy.stats
+
+        from vesp.uq.selection import select_reruns
 
         # Score ensemble with both models
         res_a = plugin_a.score_ensemble(
@@ -77,24 +78,24 @@ def compare_models(
         res_b = plugin_b.score_ensemble(
             trajectory_ensemble, scoring=scoring_mode
         )
-        
+
         scores_a = [r.risk_score for r in res_a]
         scores_b = [r.risk_score for r in res_b]
-        
+
         # Risk Spearman
         spearman = float(scipy.stats.spearmanr(scores_a, scores_b).statistic)
-        
+
         # Flag overlap
         policy_kwargs = threshold_policy or {"rerun_fraction": 0.2}
         if "type" in policy_kwargs:
             policy_kwargs = {"rerun_fraction": policy_kwargs.get("fraction", 0.2)}
-            
+
         report_a = select_reruns(scores_a, **policy_kwargs)
         report_b = select_reruns(scores_b, **policy_kwargs)
-        
+
         set_a = set(report_a.flagged_indices)
         set_b = set(report_b.flagged_indices)
-        
+
         if len(set_a) == 0 and len(set_b) == 0:
             overlap = 1.0
         elif len(set_a) == 0 or len(set_b) == 0:
@@ -103,7 +104,7 @@ def compare_models(
             intersection = len(set_a & set_b)
             union = len(set_a | set_b)
             overlap = intersection / union
-            
+
         agreement = {
             "risk_spearman": spearman,
             "flag_overlap": overlap,

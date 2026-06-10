@@ -3,8 +3,8 @@ import pytest
 import torch
 
 from vesp.core.sources import SourceSet
-from vesp.uq.plugin import VESPUQPlugin
 from vesp.uq.linear_propagation import score_stm_dispersion
+from vesp.uq.plugin import VESPUQPlugin
 
 
 @pytest.fixture

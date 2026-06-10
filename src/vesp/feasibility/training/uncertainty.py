@@ -17,9 +17,8 @@ accuracy story is unchanged; this only adds — and validates — the error bars
 from __future__ import annotations
 
 import argparse
-import json
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import torch
 

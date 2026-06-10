@@ -14,9 +14,9 @@ from pathlib import Path
 import torch
 
 from vesp.common.config import load_config
-from vesp.uq.plugin import VESPUQPlugin
 from vesp.uq.ensemble import generate_orbit_ensemble
 from vesp.uq.io.run_artifacts import write_run_artifacts
+from vesp.uq.plugin import VESPUQPlugin
 from vesp.uq.run import run_vespuq
 
 
@@ -105,7 +105,7 @@ def main(argv=None):
     state_f32 = plugin_cpu_f64.state_dict()
     state_f32["options"]["dtype"] = "float32"
     plugin_cpu_f32 = VESPUQPlugin.from_state_dict(state_f32, device="cpu")
-    
+
     trajectories_cpu_f32 = [t.to(torch.float32) for t in trajectories_cpu_f64]
     scores_f32, time_f32 = run_env(plugin_cpu_f32, trajectories_cpu_f32)
     risk_f32 = torch.tensor([s.risk_score for s in scores_f32], dtype=torch.float64)

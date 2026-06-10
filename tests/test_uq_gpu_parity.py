@@ -96,9 +96,9 @@ def test_gpu_score_ensemble_parity_float64(base_config):
     scores_cpu = plugin_cpu.score_ensemble(ens_cpu)
     scores_gpu = plugin_gpu.score_ensemble(ens_gpu)
 
-    for sc, sg in zip(scores_cpu, scores_gpu):
+    for sc, sg in zip(scores_cpu, scores_gpu, strict=True):
         assert sg.risk_score == pytest.approx(sc.risk_score, rel=1e-12)
-        
+
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")

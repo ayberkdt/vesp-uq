@@ -7,7 +7,6 @@ linearized STM propagator to score trajectories by their predicted
 position-dispersion scalar (`max(position_sigma)`).
 """
 
-import json
 from pathlib import Path
 
 import numpy as np
@@ -18,7 +17,7 @@ import yaml
 from vesp.uq.data import load_uq_samples_from_csv
 from vesp.uq.linear_propagation import score_stm_dispersion
 from vesp.uq.plugin import VESPUQPlugin
-from vesp.uq.selection import select_reruns, _spearman
+from vesp.uq.selection import _spearman, select_reruns
 
 
 def kepler_to_cartesian(a_norm, e, inc_deg, raan_deg, argp_deg, ta_deg, mu=1.0):
@@ -116,34 +115,34 @@ def main():
     print("  VESP-UQ STM DISPERSION vs ST-LRPS POSITION-ERROR DIAGNOSTIC (512 orbits)")
     print("==================================================================")
     print("WARNING: this is an EXPLORATORY diagnostic, not a direct position-error claim.")
-    
+
     print("\nComputing STM dispersion scores... (this may take a minute)")
     risk_scores = score_stm_dispersion(
-        plugin, 
-        y0s_arr, 
-        duration_s=duration_tu, 
-        output_dt_s=output_dt_tu, 
-        device=device, 
+        plugin,
+        y0s_arr,
+        duration_s=duration_tu,
+        output_dt_s=output_dt_tu,
+        device=device,
         dtype=dtype
     )
 
     rerun_fraction = 0.10
     k = int(np.ceil(rerun_fraction * n))
-    
+
     rep = select_reruns(risk_scores, rerun_fraction=rerun_fraction, fraction_policy="topk")
     spearman_corr = _spearman(risk_scores, true_err_t)
-    
+
     high_thr = float(torch.quantile(true_err_t, 1.0 - rerun_fraction))
     truly_high = true_err_t >= high_thr
     n_high = int(truly_high.sum())
-    
+
     flagged_mask = torch.zeros(n, dtype=torch.bool)
     flagged_mask[rep.flagged_indices] = True
-    
+
     capture_rate = float((flagged_mask & truly_high).sum()) / max(1, n_high)
     precision = float((flagged_mask & truly_high).sum()) / max(1, rep.n_flagged)
     lift = capture_rate / rep.rerun_fraction if rep.rerun_fraction > 0 else float("nan")
-    
+
     mean_err_flagged = float(true_err_t[flagged_mask].mean()) if rep.n_flagged > 0 else float("nan")
     mean_err_accepted = float(true_err_t[~flagged_mask].mean()) if rep.n_flagged < n else float("nan")
     ratio = mean_err_flagged / mean_err_accepted if mean_err_accepted > 0 else float("nan")
@@ -178,7 +177,7 @@ def main():
         "**WARNING**: This is a diagnostic evaluation, NOT a validated position-error prediction",
         "claim. VESP-UQ remains a force-risk calibration layer.",
         "",
-        f"- **Scoring mode:** `stm_dispersion` (`max(sqrt(trace(P_rr)))` along integrated trajectory)",
+        "- **Scoring mode:** `stm_dispersion` (`max(sqrt(trace(P_rr)))` along integrated trajectory)",
         f"- **Trajectories:** {n} Keplerian orbits",
         f"- **Rerun fraction:** {rerun_fraction:.0%}",
         "",

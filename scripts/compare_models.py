@@ -1,10 +1,8 @@
 """CLI to compare two VESP-UQ models and generate a drift report."""
 
 import argparse
-import sys
 from pathlib import Path
 
-from vesp.data.dataset import load_csv_dataset
 from vesp.uq.compare import compare_models
 from vesp.uq.data import load_uq_samples_from_csv
 from vesp.uq.io import load_trajectory_csv
@@ -15,11 +13,11 @@ from vesp.uq.plugin import VESPUQPlugin
 def build_comparison_md(report: dict, model_a_path: str, model_b_path: str) -> str:
     """Format the comparison dict as a markdown report."""
     md = [
-        f"# VESP-UQ Model Comparison Report\n",
+        "# VESP-UQ Model Comparison Report\n",
         f"- **Model A:** `{model_a_path}`",
         f"- **Model B:** `{model_b_path}`\n",
     ]
-    
+
     post = report["posterior_distance"]
     md.extend([
         "## Posterior Distance (Drift)",
@@ -27,7 +25,7 @@ def build_comparison_md(report: dict, model_a_path: str, model_b_path: str) -> s
         f"- **Covariance Frobenius Diff:** {post['cov_frob_diff']:.4e}",
         f"- **Noise Floor Variance Delta (B - A):** {post['noise_var_delta']:.4e}\n",
     ])
-    
+
     ds = report["domain_shift"]
     md.extend([
         "## Domain Support Shift",
@@ -35,7 +33,7 @@ def build_comparison_md(report: dict, model_a_path: str, model_b_path: str) -> s
         f"- **Mean Score:** {ds['mean_score_on_A']:.4f}",
         f"- **Max Score:** {ds['max_score_on_A']:.4f}\n",
     ])
-    
+
     cal = report["calibration"]
     if cal:
         md.append("## Calibration Comparison (Bands)")
@@ -48,7 +46,7 @@ def build_comparison_md(report: dict, model_a_path: str, model_b_path: str) -> s
                 f"| {metrics['picp_90']['A']:.2f} | {metrics['picp_90']['B']:.2f} |"
             )
         md.append("\n")
-        
+
     agr = report["screening_agreement"]
     if agr:
         md.extend([
@@ -57,7 +55,7 @@ def build_comparison_md(report: dict, model_a_path: str, model_b_path: str) -> s
             f"- **Flag Overlap (IoU):** {agr['flag_overlap']:.4f}",
             f"- **Flag Count:** {agr['n_flagged_A']} (A) vs {agr['n_flagged_B']} (B)\n",
         ])
-        
+
     return "\n".join(md)
 
 
@@ -95,10 +93,10 @@ def main() -> None:
     )
 
     md_report = build_comparison_md(report, args.model_a, args.model_b)
-    
+
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    
+
     inputs = {
         "model_a": args.model_a,
         "model_b": args.model_b,

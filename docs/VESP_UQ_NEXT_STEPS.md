@@ -266,6 +266,120 @@ lifecycle: train/serve separation, packaged decision policy + model card, input 
 an exact sequential update. N9 put an operator-facing desktop console on top of the same entry
 points without forking any behavior into the UI.
 
+## Next wave (N10+): planned, independent work items
+
+Each item below is **independently executable** (no item blocks another; soft synergies are
+noted), respects the claims policy, and has its own acceptance gate. Recommended order:
+N10 → N12 → N13 → N11 → N15 → N16 → N14 → N17, but any can be picked up alone.
+
+### N10 — Dynamics-aware risk: `stm_dispersion` scoring mode (exploratory diagnostic)
+
+- **Why:** the headline open finding is that pointwise force-risk does NOT rank long-horizon
+  *position* error (expected; documented). The repo already has the machinery to test the
+  obvious next hypothesis: weight the force-error posterior by trajectory *dynamics* using the
+  existing linearized STM propagator (`vesp.uq.linear_propagation`, `P = J Sigma_sigma J^T`) and
+  score each trajectory by its predicted position-dispersion scalar (e.g. max/final
+  `sqrt(trace(P_rr))`).
+- **Deliverables:** a `stm_dispersion` trajectory score (separate entry point, NOT wired into
+  the default `SCORING_FUNCTIONS` unless it earns it); benchmark script reusing the 512-orbit
+  ST-LRPS diagnostic + `compare_risk_baselines` harness; benchmark doc with the measured
+  Spearman/capture vs the existing supervisor/expected scores and trivial baselines.
+- **Claims guardrail:** framed as an exploratory *diagnostic* derived from the force-error
+  posterior — a positive result is reported as rank correlation only; a null result is reported
+  like the previous nulls. Never a position-error prediction claim.
+- **Acceptance:** benchmark runs from one command through the artifact layer; doc states the
+  numbers either way; tests pin the score's shape/finiteness and its exact reuse of the fitted
+  posterior (sign/eps/weights). **Effort:** M-L.
+
+### N11 — Second band-limited residual dataset (surrogate-agnosticism evidence)
+
+- **Why:** every real-data claim currently rests on ONE dataset (GRAIL gl0420a, degree-2..60
+  residual). A second residual band (e.g. a degree-30 truncation surrogate → 31..90 residual)
+  exercises a different error spectrum and tests that the calibration story is not tuned to one
+  band.
+- **Deliverables:** dataset builder invocation + new CSV under `data/` (or a documented
+  generation command if too large to commit), a `configs/vespuq/vespuq_real_lunar_L90.yaml`,
+  one full train→screen run, and a short results doc comparing per-band calibration vs the L60
+  set.
+- **Acceptance:** pipeline runs end-to-end on the new band; calibration table reported
+  honestly (better or worse); dataset contract test. **Effort:** M.
+
+### N12 — Model comparison + drift report (registry promotion gate)
+
+- **Why:** with persistence + sequential updates, the operational question becomes "is model B
+  (updated/retrained) safe to promote over model A?" — industrial registries answer this with a
+  side-by-side report, not a feeling.
+- **Deliverables:** `vesp.uq.compare` + `scripts/compare_models.py`: two saved plugins + a
+  held-out CSV → per-band calibration side-by-side, screening agreement on a shared ensemble
+  (flag overlap, risk Spearman), posterior distance summaries, domain-support/coverage shift
+  (drift), written via the artifact layer (`model_comparison.{json,md}` + manifest with both
+  model checksums).
+- **Acceptance:** comparing a model against itself yields identity metrics (overlap 1.0,
+  Spearman 1.0); comparing pre/post `update_error` shows the expected n_train/noise deltas;
+  schema locked by tests. **Effort:** M. *(Soft synergy: a UI "Compare" tab later.)*
+
+### N13 — IAC evidence pack: one-command paper bundle
+
+- **Why:** the IAC deliverable ultimately needs figures + tables; today they are scattered
+  across per-benchmark run dirs. Reproducible-paper practice: one command regenerates the whole
+  evidence bundle from configs, with provenance.
+- **Deliverables:** `scripts/build_iac_pack.py` — runs (or collects, `--collect-only`) the
+  benchmark suite, then assembles `outputs/iac_pack/` with the claim-mapped tables/figures
+  (calibration per band, screening capture/lift, zero-alarm demo, MC-vs-STM agreement,
+  correction accuracy-vs-cost), an `EVIDENCE.md` index mapping each artifact to the claim it
+  supports (and to `SCIENTIFIC_CLAIMS.md` limits), and a manifest checksumming everything.
+- **Acceptance:** one command produces the pack on the smoke config in CI; each table/figure
+  traceable to a run manifest. **Effort:** M.
+
+### N14 — GPU verification + float32 screening benchmark (skip-guarded)
+
+- **Why:** `device`/`dtype` knobs exist but are unverified on CUDA; screening throughput is a
+  reported KPI and an easy 10-50x may be available where a GPU exists.
+- **Deliverables:** CUDA-marked tests (skip cleanly when unavailable) for fit/predict/score
+  parity vs CPU (tolerance-documented); a benchmark script reporting CPU vs GPU and
+  float64-vs-float32 screening deltas (max relative risk-score error); docs stating the policy:
+  headline calibration numbers stay float64/CPU-reproducible.
+- **Acceptance:** suite stays green on CPU-only machines (all GPU tests skip); benchmark doc
+  reports measured numbers from at least one environment. **Effort:** S-M.
+
+### N15 — Property-based invariant tests (hypothesis)
+
+- **Why:** the scoring/selection/threshold layer is the safety-critical surface; example-based
+  tests pin known cases, property tests pin the *invariants* (e.g. flag-count bounds, threshold
+  monotonicity, weight-normalization invariance, batched==sequential as a property).
+- **Deliverables:** `hypothesis` in the dev extra; property tests for `score_sigma_profile`,
+  `select_reruns`, `calibrate_risk_threshold`, conformal scale, and the batched-scoring
+  equivalence; CI unchanged otherwise.
+- **Acceptance:** properties run deterministically in CI (fixed profiles/seeds); any
+  discovered edge case fixed or documented. **Effort:** S-M.
+
+### N16 — Release engineering: CHANGELOG + v0.2.0 + CI wheel + `--version`
+
+- **Why:** the package is consumed as a repo; versioned artifacts + a changelog are the
+  industrial baseline (and the N7/N8 surface deserves a version bump).
+- **Deliverables:** `CHANGELOG.md` (retro N1→N9), version 0.2.0 in `pyproject.toml`,
+  `--version` on the `vesp.uq.run`/`vesp.uq.screen` CLIs (via `importlib.metadata`), a CI job
+  building wheel+sdist and uploading them as workflow artifacts.
+- **Acceptance:** `pip install` of the built wheel passes the smoke commands in a clean venv
+  job. **Effort:** S.
+
+### N17 — Mission Console: Propagation page
+
+- **Why:** MC/STM covariance propagation is the one CLI family not yet reachable from the UI.
+- **Deliverables:** a "Propagate" page running `run_propagation.py` / `run_linear_propagation.py`
+  as subprocesses (model/config pickers, duration/samples knobs, live log), plotting
+  position-sigma growth from the emitted CSV, with the exploratory-not-validated framing shown
+  in-page; import-safety tests in `tests/test_vespuq_ui.py` style.
+- **Acceptance:** page drives both scripts on the smoke config; plot renders from the CSV;
+  UI shell stays heavy-import-free. **Effort:** M.
+
+### Backlog (deliberately not scheduled)
+
+- **Angular heteroscedastic noise refinement** — opt-in low-order angular misfit term; only if
+  N11 surfaces region-dependent miscalibration (research risk: marginal gains).
+- **Matrix-free / iterative solver scaling** — only needed beyond ~5-10k sources; large lift.
+- **Full ST-LRPS validated integration** — still out of scope (claims policy; external dep).
+
 ## Out of scope (and why)
 
 - Full ST-LRPS adapter coverage/refactor — large vendored subsystem, outside the VESP-UQ

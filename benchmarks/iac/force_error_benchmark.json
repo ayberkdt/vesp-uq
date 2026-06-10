@@ -1,0 +1,17 @@
+{
+  "benchmark": "force_error_ranking",
+  "claim": "does VESP-UQ force-risk rank TRUE force-model error along trajectories?",
+  "is_position_error_benchmark": false,
+  "scoring": "supervisor_rel_p95",
+  "true_force_error_aggregator": "p95",
+  "true_error_mode": "nn_oracle_heldout",
+  "n_trajectories": 10000,
+  "rerun_fraction": 0.1,
+  "spearman_force_risk_vs_true_force_error": 0.7548877951688779,
+  "capture_rate": 0.404950495049505,
+  "precision": 0.409,
+  "lift_over_random": 4.0495049504950495,
+  "mean_true_force_error_flagged": 0.0013537757297792299,
+  "mean_true_force_error_accepted": 0.0008585149292322405,
+  "force_error_ratio_flagged_to_accepted": 1.5768808248796502
+}

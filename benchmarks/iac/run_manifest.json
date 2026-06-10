@@ -1,0 +1,196 @@
+{
+  "artifacts": {
+    "force_error_benchmark.json": {
+      "bytes": 825,
+      "sha256": "504905d3286203328906eb0506cc0f056f7159c1545647732c791ec2f90d554d"
+    },
+    "force_error_benchmark.md": {
+      "bytes": 829,
+      "sha256": "a8a51fbc2ea23a9c185e67e5e109141bfbcf08f0928df7f0cadffbfa092987e7"
+    },
+    "force_error_scores.csv": {
+      "bytes": 1861,
+      "sha256": "9bd3ef85bd30c228f057b8cb8a1d404c411b0611512b0e07acfb3119c7781c20"
+    }
+  },
+  "config": {
+    "_config_path": "configs/vespuq/vespuq_smoke.yaml",
+    "acceptance": {
+      "max_dominant_shell_energy_fraction": 0.9,
+      "max_low_altitude_rmse_factor": 5.0,
+      "max_relative_acceleration_rmse": 0.75,
+      "max_relative_dipole_leakage": 0.5,
+      "max_relative_monopole_leakage": 0.05,
+      "max_shell_cancellation_ratio": 5.0,
+      "max_sigma_l2": 100.0,
+      "max_top5_source_contribution": 0.4
+    },
+    "body": {
+      "R_body": 1.0,
+      "acceleration_scale_m_s2": 1e-06,
+      "acceleration_units": "model_normalized_accel",
+      "normalize_positions": true,
+      "physical_R_body": null,
+      "physical_R_body_units": "km",
+      "position_units": "normalized",
+      "potential_units": "model"
+    },
+    "data": {
+      "n": 400,
+      "n_truth_sources": 20,
+      "noise_std": 0.0001,
+      "path": null,
+      "seed": 42,
+      "train_fraction": 0.7,
+      "type": "synthetic"
+    },
+    "device": "cpu",
+    "diagnostics": {
+      "shell_collapse_threshold": 0.9,
+      "sigma_l2_warning_threshold": 100.0
+    },
+    "dtype": "float64",
+    "evaluation": {
+      "altitude_bands": {
+        "high": [
+          1.35,
+          1.6
+        ],
+        "low": [
+          1.03,
+          1.15
+        ],
+        "mid": [
+          1.15,
+          1.35
+        ]
+      },
+      "batch_size": 4096,
+      "n_altitude_bins": 6
+    },
+    "kernel": {
+      "acceleration_sign": 1.0,
+      "eps": 0.0,
+      "source_chunk_size": 512
+    },
+    "loss": {
+      "acceleration_scale": "auto",
+      "altitude_weighting": {
+        "boost": 3.0,
+        "enabled": false,
+        "mode": "low_altitude_boost",
+        "r_threshold": 1.15
+      },
+      "lambda_acceleration": 1.0,
+      "lambda_dipole": 1.0,
+      "lambda_l2": 1e-08,
+      "lambda_moment": 1e-06,
+      "lambda_potential": 0.2,
+      "normalize_targets": false,
+      "potential_scale": "auto",
+      "shell_energy_weights": [],
+      "target_scale_eps": 1e-12,
+      "use_acceleration": true,
+      "use_potential": true
+    },
+    "model": {
+      "n_source": 512,
+      "n_sources_per_shell": [
+        48,
+        64
+      ],
+      "shell_alpha": 0.86,
+      "shell_alphas": [
+        0.75,
+        0.9
+      ],
+      "type": "multishell",
+      "weight_mode": "surface_area"
+    },
+    "output": {
+      "output_dir": "outputs",
+      "run_name": "vespuq_smoke",
+      "save_plots": false
+    },
+    "seed": 0,
+    "solver": {
+      "column_normalize": true,
+      "lambda_l2": 1e-08,
+      "ridge_method": "augmented_lstsq",
+      "type": "ridge"
+    },
+    "split": {
+      "radius_units": "normalized",
+      "train_fraction": 0.8,
+      "type": "random"
+    },
+    "uq": {
+      "audit": {
+        "audit_fraction": 0.02,
+        "enabled": true,
+        "high_error_quantile": 0.9,
+        "min_audit": 5,
+        "seed": 0
+      },
+      "conformal": {
+        "alpha": 0.1,
+        "enabled": true,
+        "mode": "norm"
+      },
+      "covariance_mode": "exact",
+      "noise_model": "heteroscedastic",
+      "physical_budget": {
+        "conformal": {
+          "alpha": 0.1,
+          "enabled": false,
+          "mode": "norm"
+        },
+        "enabled": false,
+        "max_rerun_fraction": null,
+        "scoring": "expected_abs_p95",
+        "units": "m/s^2",
+        "value": null
+      },
+      "regularization": {
+        "method": "lcurve"
+      },
+      "risk": {
+        "domain_angular_weight": 0.0,
+        "domain_backend": "torch",
+        "domain_distance_weight": 1.0,
+        "domain_k": 8,
+        "domain_radial_weight": 1.0,
+        "domain_support": true,
+        "domain_weight": 1.0,
+        "low_altitude_radius": 1.15,
+        "scoring": "supervisor_rel"
+      },
+      "screening": {
+        "fraction_policy": "topk",
+        "n_orbits": 40,
+        "n_points": 36,
+        "oracle_source": "heldout",
+        "r_apo_range": [
+          1.4,
+          1.6
+        ],
+        "r_peri_range": [
+          1.03,
+          1.4
+        ],
+        "rerun_fraction": 0.25,
+        "time_weighting": "none",
+        "trajectory_source": "generated",
+        "true_error_aggregator": "p95"
+      },
+      "val_fraction": 0.3
+    }
+  },
+  "config_path": "configs/vespuq/vespuq_smoke.yaml",
+  "created_at_utc": "2026-06-09T22:30:23Z",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.12.1",
+  "schema_version": "vesp_run_manifest_v1",
+  "seed": 0,
+  "tool": "run_force_error_benchmark"
+}

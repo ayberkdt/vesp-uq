@@ -35,15 +35,16 @@ import json
 import sys
 import textwrap
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
-from matplotlib.lines import Line2D
-from matplotlib.colors import LogNorm
 import numpy as np
+from matplotlib.colors import LogNorm
+from matplotlib.lines import Line2D
 
 try:
     import pandas as pd
@@ -97,7 +98,7 @@ def _require(path: Path) -> Path:
     return path
 
 
-def _load_run(run_dir: Path) -> Dict[str, Any]:
+def _load_run(run_dir: Path) -> dict[str, Any]:
     """Load the per-scenario / aggregate / runtime frames for one run dir."""
     m = run_dir / "metrics"
     return {
@@ -109,7 +110,7 @@ def _load_run(run_dir: Path) -> Dict[str, Any]:
     }
 
 
-def _model_frame(per: "pd.DataFrame", display: str) -> "pd.DataFrame":
+def _model_frame(per: pd.DataFrame, display: str) -> pd.DataFrame:
     sub = per[per["model"] == display].copy().reset_index(drop=True)
     if sub.empty:
         raise SystemExit(
@@ -137,7 +138,7 @@ def generate_figures(stlrps_run: Path, multi_run: Path, out_dir: Path) -> None:
     st_agg = st["agg"]
     st_rt = st["rt"]
     scenarios = st["scenarios"]
-    selected: Dict[str, Any] = {}
+    selected: dict[str, Any] = {}
     if st["selected_path"].exists():
         selected = json.loads(st["selected_path"].read_text(encoding="utf-8"))
 

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import textwrap
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
-import textwrap
-from typing import Iterable
 
 import matplotlib
 
@@ -14,16 +14,15 @@ matplotlib.use("Agg")
 
 import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_pdf import PdfPages
 import pandas as pd
 import torch
+from matplotlib.backends.backend_pdf import PdfPages
 from torch.utils.data import DataLoader
 
-from vesp.feasibility.analysis.analysis import load_checkpoint_summary, make_markdown_report
-from vesp.data.dataset import ResidualGravityDataset
 from vesp.core.models import load_checkpoint
+from vesp.data.dataset import ResidualGravityDataset
+from vesp.feasibility.analysis.analysis import load_checkpoint_summary, make_markdown_report
 from vesp.feasibility.training.train_discrete import make_data
-
 
 PDF_SCHEMA_VERSION = "vesp_analysis_pdf_v1"
 

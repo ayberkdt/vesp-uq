@@ -9,6 +9,5 @@ Still works (deprecate-and-delegate); the underlying runner prints a deprecation
 
 from vesp.feasibility.training.feasibility import main
 
-
 if __name__ == "__main__":
     main()

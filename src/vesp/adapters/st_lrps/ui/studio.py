@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 ST-LRPS Studio.
 
@@ -11,27 +10,15 @@ import sys
 
 from lunaris.common.paths import project_root_from_file
 
+from vesp.adapters.st_lrps.ui.studio_parts.common_widgets import _NoWheelOnSpinFilter
+from vesp.adapters.st_lrps.ui.studio_parts.main_window import MainWindow
 from vesp.adapters.st_lrps.ui.studio_parts.qt_common import (
     QApplication,
     QGuiApplication,
     Qt,
-    SCRIPT_DIR,
     apply_premium_dark_theme,
 )
-from vesp.adapters.st_lrps.ui.studio_parts.common_widgets import _NoWheelOnSpinFilter
-from vesp.adapters.st_lrps.ui.studio_parts.main_window import MainWindow
 
-from vesp.adapters.st_lrps.ui.studio_parts.training_pages import STLRPSTrainTab
-from vesp.adapters.st_lrps.ui.studio_parts.runtime_pages import STLRPSProfilingTab
-from vesp.adapters.st_lrps.ui.studio_parts.evaluation_pages import STLRPSEvalTab
-from vesp.adapters.st_lrps.ui.studio_parts.orbit_benchmark_pages import (
-    OrbitBenchmarkTab,
-    OrbitBenchmarkPage,
-    OrbitBenchmarkPlotsTab,
-    OrbitBenchmarkPlotsPage,
-    BENCHMARK_CLI_MODULE,
-)
-from vesp.adapters.st_lrps.ui.studio_parts.qt_common import TRAIN_CLI_MODULE, PROFILE_CLI_MODULE
 
 def main() -> None:
     try:

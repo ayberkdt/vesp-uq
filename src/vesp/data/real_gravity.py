@@ -12,17 +12,16 @@ import argparse
 import csv
 import math
 import urllib.request
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 
 from vesp.common.artifacts import atomic_write_json
+from vesp.common.lunar import canonical_scales
 from vesp.data.dataset import write_dataset_metadata
 from vesp.data.gravity_io import read_shadr_ascii
-from vesp.common.lunar import canonical_scales
-
 
 PDS_GRAIL_SHADR_BASE = "https://pds-geosciences.wustl.edu/grail/grail-l-lgrs-5-rdr-v1/grail_1001/shadr"
 
@@ -144,15 +143,15 @@ def build_legendre_coeffs(n_max: int) -> tuple[np.ndarray, np.ndarray, np.ndarra
 def compute_normalized_legendre_matrix(degree_max: int, sin_lat: np.ndarray) -> np.ndarray:
     N = int(degree_max)
     K = sin_lat.shape[0]
-    
+
     # cos_lat is strictly non-negative because -pi/2 <= lat <= pi/2
     cos_lat = np.sqrt(1.0 - sin_lat**2)
-    
+
     diag, subdiag, A, B, scale_m = build_legendre_coeffs(N)
-    
+
     P = np.zeros((N + 1, N + 1, K), dtype=np.float64)
     P[0, 0, :] = 1.0
-    
+
     for n in range(1, N + 1):
         # Diagonal
         P[n, n, :] = diag[n] * cos_lat * P[n - 1, n - 1, :]
@@ -162,10 +161,10 @@ def compute_normalized_legendre_matrix(degree_max: int, sin_lat: np.ndarray) -> 
         if n >= 2:
             for m in range(n - 1):
                 P[n, m, :] = A[n, m] * sin_lat * P[n - 1, m, :] - B[n, m] * P[n - 2, m, :]
-                
+
     for m in range(N + 1):
         P[:, m, :] *= scale_m[m]
-        
+
     return P
 
 

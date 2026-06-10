@@ -4,29 +4,23 @@ from __future__ import annotations
 
 import argparse
 import math
+from collections.abc import Iterable
 from dataclasses import replace
 from pathlib import Path
-from typing import Iterable
 
 import torch
 from torch.utils.data import DataLoader
 
-from vesp.common.config import get_device, get_dtype, load_config as load_standard_config, merge_defaults, validate_config
-from vesp.data.dataset import ResidualGravityDataset, load_csv_dataset
-from vesp.feasibility.training.acceptability import classify_run_acceptability
-from vesp.feasibility.training.evaluate import evaluate_model, print_metrics, write_evaluation_artifacts
+from vesp.common.config import get_device, get_dtype, merge_defaults, validate_config
+from vesp.common.config import load_config as load_standard_config
+from vesp.common.units import UnitConfig
 from vesp.core.losses import composite_loss
 from vesp.core.models import DiscreteVESP, save_checkpoint
 from vesp.core.operators import build_joint_operator
 from vesp.core.regularization import lambda_is_auto, select_lambda_l2
 from vesp.core.solvers import RidgeSolveConfig, solve_discrete_ridge
-from vesp.feasibility.training.maxent import MaxEntSolveConfig, solve_discrete_maxent, solve_discrete_maxent_constrained
-from vesp.extensions.entropy import (
-    effective_source_entropy,
-    positive_negative_entropy,
-    relative_entropy_to_uniform,
-    shell_energy_balance_entropy,
-)
+from vesp.core.sources import SourceSet, make_shell_sources
+from vesp.data.dataset import ResidualGravityDataset, load_csv_dataset
 from vesp.data.splits import DataSplits, make_splits
 from vesp.data.synthetic import make_synthetic_dataset
 from vesp.data.target_scaling import (
@@ -37,8 +31,15 @@ from vesp.data.target_scaling import (
     observation_row_weights,
     write_target_scales,
 )
-from vesp.common.units import UnitConfig
-from vesp.core.sources import SourceSet, make_shell_sources
+from vesp.extensions.entropy import (
+    effective_source_entropy,
+    positive_negative_entropy,
+    relative_entropy_to_uniform,
+    shell_energy_balance_entropy,
+)
+from vesp.feasibility.training.acceptability import classify_run_acceptability
+from vesp.feasibility.training.evaluate import evaluate_model, print_metrics, write_evaluation_artifacts
+from vesp.feasibility.training.maxent import MaxEntSolveConfig, solve_discrete_maxent, solve_discrete_maxent_constrained
 
 
 def load_config(path: str | Path) -> dict:

@@ -12,7 +12,6 @@ import torch
 from vesp.common.artifacts import atomic_write_json
 from vesp.data.dataset import ResidualGravityData
 
-
 TARGET_SCALES_SCHEMA_VERSION = "vesp_target_scales_v1"
 
 

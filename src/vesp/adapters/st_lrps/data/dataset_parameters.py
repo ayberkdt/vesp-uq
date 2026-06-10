@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 Lunar Surrogate Dataset Parameters
 =================================
@@ -36,9 +35,10 @@ Design principles
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any
 
 try:
     from lunaris.common.constants import MU_MOON, R_MOON
@@ -99,7 +99,7 @@ class DatasetParameters:
 
         return float(self.r_ref_m)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable mapping for provenance snapshots."""
 
         return asdict(self)
@@ -113,7 +113,7 @@ DEFAULT_DATASET_CONFIG = DatasetParameters()
 # =============================================================================
 
 
-def canonical_scales(*, mu_si: float, du_m: float) -> Tuple[float, float, float]:
+def canonical_scales(*, mu_si: float, du_m: float) -> tuple[float, float, float]:
     """
     Compute canonical length / time / velocity scales for gravity datasets.
 
@@ -168,10 +168,10 @@ def resolve_lunar_gravity_path(path: str | Path | None = None) -> Path:
 def load_icgem_gfc(
     *,
     file_path: str | Path,
-    max_degree: Optional[int] = None,
+    max_degree: int | None = None,
     expected_norm: str = "fully_normalized",
     strict: bool = True,
-) -> Tuple[Any, Any, Dict[str, Any]]:
+) -> tuple[Any, Any, dict[str, Any]]:
     """
     Load the repository's lunar gravity coefficient file.
 
@@ -206,8 +206,8 @@ def load_icgem_gfc(
 
 def is_lunar_body_signature(
     *,
-    mu_si: Optional[float] = None,
-    r_ref_m: Optional[float] = None,
+    mu_si: float | None = None,
+    r_ref_m: float | None = None,
     rel_tol: float = 0.20,
 ) -> bool:
     """
@@ -219,7 +219,7 @@ def is_lunar_body_signature(
 
     tol = max(float(rel_tol), 0.0)
 
-    def _close(val: Optional[float], ref: float) -> bool:
+    def _close(val: float | None, ref: float) -> bool:
         if val is None:
             return False
         v = float(val)
@@ -233,7 +233,7 @@ def is_lunar_body_signature(
     return bool(checks) and all(checks)
 
 
-def _safe_float(mapping: Mapping[str, Any], key: str) -> Optional[float]:
+def _safe_float(mapping: Mapping[str, Any], key: str) -> float | None:
     """Best-effort float extraction from loosely typed JSON-like mappings."""
 
     value = mapping.get(key)
@@ -292,7 +292,7 @@ def looks_like_lunar_run_config(config: Mapping[str, Any]) -> bool:
     return has_numeric_evidence
 
 
-def load_run_config(path: str | Path) -> Dict[str, Any]:
+def load_run_config(path: str | Path) -> dict[str, Any]:
     """Load a surrogate run ``config.json`` using UTF-8 with fail-fast errors."""
 
     cfg_path = Path(path).expanduser().resolve()

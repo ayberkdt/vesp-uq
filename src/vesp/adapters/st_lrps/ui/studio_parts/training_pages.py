@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 ST-LRPS Studio.
 
@@ -45,27 +44,16 @@ Run
 from __future__ import annotations
 
 import json
-import math
-import os
-import platform
 import re
-import shlex
-import subprocess
 import sys
-import time
-from collections import deque
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from lunaris.common.paths import project_root_from_file
-from typing import Any, Callable, Dict, List, Optional, Tuple
-
-import sys
 
 from .qt_common import *
 from .qt_common import NoScrollComboBox
-from .qt_common import _USE_PYSIDE
-
 
 # pyqtgraph — optional, graceful fallback
 try:
@@ -88,9 +76,13 @@ try:
         CHECKPOINT_SCHEMA_VERSION,
         CRITICAL_CONFIG_FIELDS,
         compute_payload_sha256,
-        load_checkpoint as load_artifact_checkpoint,
         make_run_layout,
         read_run_manifest,
+    )
+    from vesp.adapters.st_lrps.artifacts.manager import (
+        load_checkpoint as load_artifact_checkpoint,
+    )
+    from vesp.adapters.st_lrps.artifacts.manager import (
         resolve_run_dir as resolve_artifact_run_dir,
     )
 except Exception:  # pragma: no cover - UI remains usable without artifact deps
@@ -105,9 +97,7 @@ except Exception:  # pragma: no cover - UI remains usable without artifact deps
 # Dashboard widgets and training metrics (Phase 1-8 redesign)
 try:
     from vesp.adapters.st_lrps.ui.dashboard_widgets import (
-        ExperimentHeader,
         KPIStrip,
-        MetricCard,
         StructuredLogView,
         TimeMetricsStrip,
     )
@@ -116,7 +106,6 @@ try:
         ETAEstimator,
         TrainingLogParser,
         TrainingMetricsStore,
-        compute_auto_log_interval,
     )
     _HAS_DASHBOARD_V2 = True
 except Exception:  # pragma: no cover
@@ -174,14 +163,28 @@ except Exception:  # pragma: no cover - UI remains usable without generator deps
 
 
 from .common_widgets import *
-from .common_widgets import _tune_form, _tune_inputs, _row_lineedit_with_button, _scroll_wrap, _settings, _read_json_if_exists, _split_cli_args, _format_command, _send_os_notification, _apply_status_tips, _cfg_value, _norm_path, _timestamp_slug, _safe_slug, _default_training_output_dir, _default_runtime_output_dir, _default_dataset_report_dir, _output_standard_text, _mono_font, _make_page_header, _style_command_preview, _inspect_run_artifacts, _NoWheelOnSpinFilter
-
-
+from .common_widgets import (
+    _cfg_value,
+    _format_command,
+    _inspect_run_artifacts,
+    _make_page_header,
+    _mono_font,
+    _norm_path,
+    _read_json_if_exists,
+    _row_lineedit_with_button,
+    _scroll_wrap,
+    _send_os_notification,
+    _settings,
+    _split_cli_args,
+    _style_command_preview,
+    _tune_form,
+    _tune_inputs,
+)
 from .data_pages import *
 from .data_pages import _introspect_h5
 
 
-def _base_preset(**overrides) -> Dict[str, Any]:
+def _base_preset(**overrides) -> dict[str, Any]:
     base = {
         "dataset_mode": "single",
         "hidden": 512, "depth": 5, "activation": "sine",
@@ -223,7 +226,7 @@ def _base_preset(**overrides) -> Dict[str, Any]:
     return base
 
 
-_BUILTIN_PRESETS: Dict[str, Dict[str, Any]] = {
+_BUILTIN_PRESETS: dict[str, dict[str, Any]] = {
     "Quick Debug": _base_preset(
         hidden=64, depth=2, epochs=5, batch_size=1024,
         lr=1e-3, weight_decay=0.0, t_max=5, warmup_epochs=0,
@@ -262,20 +265,20 @@ _BUILTIN_PRESETS: Dict[str, Dict[str, Any]] = {
     ),
 }
 
-def _load_user_presets() -> Dict[str, Dict[str, Any]]:
-    presets: Dict[str, Dict[str, Any]] = {}
+def _load_user_presets() -> dict[str, dict[str, Any]]:
+    presets: dict[str, dict[str, Any]] = {}
     if not _PRESETS_DIR.is_dir():
         return presets
     for fp in sorted(_PRESETS_DIR.glob("*.json")):
         try:
-            with open(fp, "r", encoding="utf-8") as f:
+            with open(fp, encoding="utf-8") as f:
                 presets[fp.stem] = json.load(f)
         except Exception:
             pass
     return presets
 
 
-def _save_user_preset(name: str, data: Dict[str, Any]) -> None:
+def _save_user_preset(name: str, data: dict[str, Any]) -> None:
     _PRESETS_DIR.mkdir(parents=True, exist_ok=True)
     with open(_PRESETS_DIR / f"{name}.json", "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
@@ -307,10 +310,10 @@ class TrainingQueue(QWidget):
     # Emitted when entire queue is done
     queue_finished = pyqtSignal()
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
 
-        self._queue: List[Dict[str, Any]] = []  # [{label, args, out_dir, config}, ...]
+        self._queue: list[dict[str, Any]] = []  # [{label, args, out_dir, config}, ...]
         self._current_index: int = -1
         self._running: bool = False
 
@@ -368,9 +371,9 @@ class TrainingQueue(QWidget):
     def enqueue(
         self,
         label: str,
-        args: List[str],
+        args: list[str],
         out_dir: str = "",
-        config: Optional[Dict[str, Any]] = None,
+        config: dict[str, Any] | None = None,
     ) -> None:
         """Add a training job to the queue."""
         item_data = {
@@ -387,7 +390,7 @@ class TrainingQueue(QWidget):
     def is_running(self) -> bool:
         return self._running
 
-    def current_args(self) -> Optional[List[str]]:
+    def current_args(self) -> list[str] | None:
         if 0 <= self._current_index < len(self._queue):
             return self._queue[self._current_index]["args"]
         return None
@@ -532,7 +535,7 @@ class TrainingQueue(QWidget):
 class STLRPSTrainTab(QWidget):
     navigate_monitor_requested = pyqtSignal()
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
 
         # =====================================================================
@@ -1652,7 +1655,7 @@ class STLRPSTrainTab(QWidget):
         self.runner.set_progress_parser(self._parse_progress)
         self.runner.set_finished_hook(self._on_train_finished)
         self._user_stopped = False  # set when the user clicks Stop (→ INTERRUPTED)
-        self._device_badge: Optional[str] = None
+        self._device_badge: str | None = None
         # The experiment header lives on the MainWindow. Because this tab's
         # setup_page/monitor_page are re-homed into the page stack (this tab
         # itself is not in the widget tree), self.window() does NOT reach it —
@@ -1664,7 +1667,7 @@ class STLRPSTrainTab(QWidget):
         self._history_poll_timer = QTimer(self)
         self._history_poll_timer.setInterval(2000)
         self._history_poll_timer.timeout.connect(self._poll_training_history)
-        self._history_poll_path: Optional[Path] = None
+        self._history_poll_path: Path | None = None
         self._history_poll_mtime: float = 0.0
 
         # --- Dashboard v2: KPI strip, structured log, ETA, parser ---
@@ -1695,7 +1698,7 @@ class STLRPSTrainTab(QWidget):
         self.btn_enqueue_setup.setToolTip("Adds the current settings to the training queue.")
         self.btn_enqueue_setup.setProperty("kind", "ghost")
         self.btn_enqueue_setup.clicked.connect(self._enqueue_current)
-        
+
         self.btn_start_setup = QPushButton("Start Training")
         self.btn_start_setup.setToolTip(
             "Start the current training workflow and open the Training Monitor page."
@@ -1706,7 +1709,7 @@ class STLRPSTrainTab(QWidget):
         self.btn_preview_cmd_setup = QPushButton("Preview Command")
         self.btn_preview_cmd_setup.setProperty("kind", "ghost")
         self.btn_preview_cmd_setup.clicked.connect(self._preview_command_popup)
-        
+
         self.btn_copy_cmd_setup = QPushButton("Copy Command")
         self.btn_copy_cmd_setup.setProperty("kind", "ghost")
         self.btn_copy_cmd_setup.clicked.connect(self._copy_command_preview)
@@ -1731,7 +1734,7 @@ class STLRPSTrainTab(QWidget):
         # ── 2. Add Model Preset to grp_arch ──
         form_arch.insertRow(0, "Model Preset", self.model_preset)
         grp_data.setTitle("Dataset & Output")
-        
+
         # ── 3. Horizontal Launch Plan Strip (Phase 1) ──
         launch_strip = QFrame()
         launch_strip.setObjectName("setupLaunchStrip")
@@ -1745,9 +1748,9 @@ class STLRPSTrainTab(QWidget):
         launch_l = QHBoxLayout()
         launch_l.setContentsMargins(16, 12, 16, 12)
         launch_l.setSpacing(16)
-        
+
         launch_l.addLayout(workflow_bar)
-        
+
         output_mode_box = QHBoxLayout()
         output_mode_box.setSpacing(6)
         out_mode_lbl = QLabel("Output:")
@@ -1756,7 +1759,7 @@ class STLRPSTrainTab(QWidget):
         self._output_mode_short.setStyleSheet("color: #cbd5e1; font-size: 13px;")
         output_mode_box.addWidget(out_mode_lbl)
         output_mode_box.addWidget(self._output_mode_short)
-        
+
         launch_l.addLayout(output_mode_box)
         launch_l.addWidget(self._checklist_label)
         launch_l.addStretch(1)
@@ -1768,7 +1771,7 @@ class STLRPSTrainTab(QWidget):
         workspace_grid = QGridLayout()
         workspace_grid.setContentsMargins(0, 0, 0, 0)
         workspace_grid.setSpacing(16)
-        
+
         # Resume / continue-from-checkpoint sits at the very top of the config
         # so it is the first thing visible (it was previously attached to an
         # unused layout and never displayed at all).
@@ -1788,14 +1791,14 @@ class STLRPSTrainTab(QWidget):
         cmd_l = QVBoxLayout()
         cmd_l.setContentsMargins(0, 0, 0, 0)
         cmd_l.setSpacing(8)
-        
+
         cmd_header = QHBoxLayout()
         cmd_header.addWidget(self.btn_preview_cmd_setup)
         cmd_header.addWidget(self.btn_copy_cmd_setup)
         cmd_header.addStretch(1)
-        
+
         _style_command_preview(self.command_preview, min_h=72, max_h=96)
-        
+
         extra_row_layout = QHBoxLayout()
         extra_lbl = QLabel("Extra CLI Arguments:")
         extra_lbl.setStyleSheet("color: #94a3b8; font-size: 12px;")
@@ -1806,7 +1809,7 @@ class STLRPSTrainTab(QWidget):
         cmd_l.addWidget(self.command_preview)
         cmd_l.addWidget(self.command_warning)
         cmd_l.addLayout(cmd_header)
-        
+
         cmd_inner = QWidget()
         cmd_inner.setLayout(cmd_l)
         cmd_vbox = QVBoxLayout()
@@ -1835,7 +1838,7 @@ class STLRPSTrainTab(QWidget):
         ))
         setup_l.addWidget(launch_strip)
         setup_l.addWidget(params_page, 1)
-        
+
         self.setup_page.setLayout(setup_l)
 
         # ── 7. Training Monitor (single scrollable column — no nested
@@ -2101,19 +2104,19 @@ class STLRPSTrainTab(QWidget):
         self.btn_clear_log_monitor = QPushButton("Clear Log")
         self.btn_clear_log_monitor.setProperty("kind", "ghost")
         self.btn_clear_log_monitor.clicked.connect(self._clear_logs)
-        
+
         self.btn_open_run_monitor = QPushButton("Open Run Folder")
         self.btn_open_run_monitor.setProperty("kind", "ghost")
         self.btn_open_run_monitor.clicked.connect(self._open_run_folder)
-        
+
         self.btn_preview_cmd_monitor = QPushButton("Preview Command")
         self.btn_preview_cmd_monitor.setProperty("kind", "ghost")
         self.btn_preview_cmd_monitor.clicked.connect(self._preview_command_popup)
-        
+
         self.btn_copy_cmd_monitor = QPushButton("Copy Command")
         self.btn_copy_cmd_monitor.setProperty("kind", "ghost")
         self.btn_copy_cmd_monitor.clicked.connect(self._copy_command_preview)
-        
+
         self.btn_enqueue_monitor = QPushButton("Add to Queue")
         self.btn_enqueue_monitor.setToolTip("Adds the current settings to the training queue.")
         self.btn_enqueue_monitor.setProperty("kind", "ghost")
@@ -2348,7 +2351,7 @@ class STLRPSTrainTab(QWidget):
     def _current_preset_key(self) -> str:
         return self._preset_combo.currentData() or ""
 
-    def _collect_config(self) -> Dict[str, Any]:
+    def _collect_config(self) -> dict[str, Any]:
         return {
             # Dataset routing
             "dataset_mode": self.dataset_mode.currentData() or "single",
@@ -2432,9 +2435,9 @@ class STLRPSTrainTab(QWidget):
             "preload_data": self.preload_data.isChecked(),
             "auto_preload_mb": self.auto_preload_mb.value(),
             "pin_memory": self.pin_memory.isChecked(),
-            
-            
-            
+
+
+
             # PINN architecture
             "use_residual_blocks": self.use_residual_blocks.isChecked(),
             "n_bands": self.n_bands.value(),
@@ -2465,7 +2468,7 @@ class STLRPSTrainTab(QWidget):
             "extra_args": self.extra_args.text(),
         }
 
-    def _apply_config(self, cfg: Dict[str, Any]) -> None:
+    def _apply_config(self, cfg: dict[str, Any]) -> None:
         _map_int = {
             "hidden": self.hidden, "depth": self.depth, "epochs": self.epochs,
             "batch_size": self.batch_size, "t_max": self.t_max,
@@ -2730,7 +2733,7 @@ class STLRPSTrainTab(QWidget):
         if d:
             self.out_dir.setText(_norm_path(d))
 
-    def _resolve_resume_run_dir(self) -> Optional[Path]:
+    def _resolve_resume_run_dir(self) -> Path | None:
         """Resolve the run directory from the resume source (run dir / checkpoints/ / .pt)."""
         src = self.resume_from.text().strip()
         if not src:
@@ -2762,7 +2765,7 @@ class STLRPSTrainTab(QWidget):
                 continue
             try:
                 if name.endswith(".jsonl"):
-                    with open(p, "r", encoding="utf-8") as fh:
+                    with open(p, encoding="utf-8") as fh:
                         for line in fh:
                             line = line.strip()
                             if not line:
@@ -2774,7 +2777,7 @@ class STLRPSTrainTab(QWidget):
                                 continue
                 else:
                     import csv as _csv
-                    with open(p, "r", encoding="utf-8", newline="") as fh:
+                    with open(p, encoding="utf-8", newline="") as fh:
                         for row in _csv.DictReader(fh):
                             try:
                                 e = int(float(row.get("epoch", -1)))
@@ -2948,7 +2951,7 @@ class STLRPSTrainTab(QWidget):
                 "fourier_n", "laplacian_every_n_batches",
                 "laplacian_subset_size",
                 "n_bands", "grad_accumulation_steps", "n_hutchinson_samples",
-                
+
                 "physical_radial_decay_max_power",
             }
             _float_keys = {
@@ -2984,9 +2987,9 @@ class STLRPSTrainTab(QWidget):
     # -----------------------------------------------------------------
     # Build CLI args from current widgets
     # -----------------------------------------------------------------
-    def _build_args(self, show_errors: bool = True) -> Optional[List[str]]:
+    def _build_args(self, show_errors: bool = True) -> list[str] | None:
         """Build the CLI argument list. Returns None on validation error."""
-        def fail(title: str, message: str) -> Optional[List[str]]:
+        def fail(title: str, message: str) -> list[str] | None:
             if show_errors:
                 QMessageBox.critical(self, title, message)
             else:
@@ -3253,12 +3256,12 @@ class STLRPSTrainTab(QWidget):
         self,
         model_dir: str,
         *,
-        data_path: Optional[str] = None,
-        test_data: Optional[str] = None,
-        ood_data: Optional[str] = None,
+        data_path: str | None = None,
+        test_data: str | None = None,
+        ood_data: str | None = None,
         use_config_datasets: bool = False,
-        out_dir: Optional[str] = None,
-    ) -> Optional[List[str]]:
+        out_dir: str | None = None,
+    ) -> list[str] | None:
         """Build CLI argument list for the evaluation module (st_lrps.evaluation.cli)."""
         if not EVAL_CLI_PATH.exists():
             return None
@@ -3423,7 +3426,7 @@ class STLRPSTrainTab(QWidget):
         self._queue.enqueue(label, args, out_dir, cfg)
         self.runner.append(f"[UI] Added to queue: {label}")
 
-    def _on_queue_job_started(self, job_index: int, args: List[str]) -> None:
+    def _on_queue_job_started(self, job_index: int, args: list[str]) -> None:
         """Called by the queue when it's time to start the next job."""
         self._live_plot.clear()
         self._epochs_max = int(self.epochs.value())
@@ -3460,7 +3463,7 @@ class STLRPSTrainTab(QWidget):
             self.btn_start_setup.setEnabled(False)
         self.runner.start(sys.executable, args, workdir=str(_REPO_ROOT))
 
-    def _arg_value(self, args: List[str], flag: str) -> Optional[str]:
+    def _arg_value(self, args: list[str], flag: str) -> str | None:
         try:
             idx = args.index(flag)
             if idx + 1 < len(args):
@@ -3603,7 +3606,7 @@ class STLRPSTrainTab(QWidget):
         # Verify checkpoint exists before launching eval
         if run_dir:
             layout = make_run_layout(Path(run_dir)) if make_run_layout is not None else None
-            missing: List[str] = []
+            missing: list[str] = []
             if layout is not None:
                 if not layout.config_json.exists():
                     missing.append(str(layout.config_json))
@@ -3658,13 +3661,13 @@ class STLRPSTrainTab(QWidget):
         self._eval_run_dir = run_dir
         self._eval_runner.start(sys.executable, eval_args)
 
-    def _on_eval_stdout(self, proc: "QProcess") -> None:
+    def _on_eval_stdout(self, proc: QProcess) -> None:
         raw = bytes(proc.readAllStandardOutput()).decode("utf-8", errors="replace")
         raw += bytes(proc.readAllStandardError()).decode("utf-8", errors="replace")
         for line in raw.splitlines():
             self.runner.append(f"[EVAL] {line}")
 
-    def _on_auto_eval_finished(self, exit_code: int, exit_status: "QProcess.ExitStatus") -> None:
+    def _on_auto_eval_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
         if exit_code == 0:
             self.runner.append("[UI] ─── Auto-evaluation complete ───")
         else:
@@ -3833,8 +3836,8 @@ class STLRPSTrainTab(QWidget):
 
     def _parse_progress(self, line: str) -> None:
         # Accept both "Epoch [N/M]" banners and the engine's "epoch=N" kv form.
-        ep: Optional[int] = None
-        total: Optional[int] = None
+        ep: int | None = None
+        total: int | None = None
         m = re.search(r"Epoch\s*(?:\[\s*)?(\d+)\s*/\s*(\d+)(?:\s*\])?", line)
         if m:
             ep = int(m.group(1))

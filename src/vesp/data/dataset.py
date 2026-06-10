@@ -5,9 +5,9 @@ from __future__ import annotations
 import csv
 import json
 import warnings
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
 import torch
 from torch.utils.data import Dataset
@@ -164,7 +164,7 @@ class ResidualGravityData:
     acceleration: torch.Tensor
     metadata: dict | None = None
 
-    def to(self, device: torch.device | str) -> "ResidualGravityData":
+    def to(self, device: torch.device | str) -> ResidualGravityData:
         return ResidualGravityData(
             positions=self.positions.to(device),
             potential=self.potential.to(device),
@@ -172,7 +172,7 @@ class ResidualGravityData:
             metadata=self.metadata,
         )
 
-    def subset(self, indices: torch.Tensor) -> "ResidualGravityData":
+    def subset(self, indices: torch.Tensor) -> ResidualGravityData:
         return ResidualGravityData(
             positions=self.positions[indices],
             potential=self.potential[indices],
@@ -345,7 +345,7 @@ def load_csv_dataset(
             metadata.setdefault("resolved_mu_si", contract["resolved_mu_si"])
         if contract.get("resolved_r_ref_m") is not None:
             metadata.setdefault("resolved_r_ref_m", contract["resolved_r_ref_m"])
-    with open(path, "r", encoding="utf-8-sig", newline="") as f:
+    with open(path, encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
         if reader.fieldnames is None:
             raise ValueError(f"CSV file has no header: {path}")

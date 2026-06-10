@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 ST-LRPS Studio.
 
@@ -51,20 +50,15 @@ import platform
 import re
 import shlex
 import subprocess
-import sys
-import time
-from collections import deque
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from lunaris.common.paths import project_root_from_file
-from typing import Any, Callable, Dict, List, Optional, Tuple
-
-import sys
 
 from .qt_common import *
 from .qt_common import _USE_PYSIDE
-
 
 # pyqtgraph — optional, graceful fallback
 try:
@@ -101,9 +95,13 @@ try:
         CHECKPOINT_SCHEMA_VERSION,
         CRITICAL_CONFIG_FIELDS,
         compute_payload_sha256,
-        load_checkpoint as load_artifact_checkpoint,
         make_run_layout,
         read_run_manifest,
+    )
+    from vesp.adapters.st_lrps.artifacts.manager import (
+        load_checkpoint as load_artifact_checkpoint,
+    )
+    from vesp.adapters.st_lrps.artifacts.manager import (
         resolve_run_dir as resolve_artifact_run_dir,
     )
 except Exception:  # pragma: no cover - UI remains usable without artifact deps
@@ -117,20 +115,6 @@ except Exception:  # pragma: no cover - UI remains usable without artifact deps
 
 # Dashboard widgets and training metrics (Phase 1-8 redesign)
 try:
-    from vesp.adapters.st_lrps.ui.dashboard_widgets import (
-        ExperimentHeader,
-        KPIStrip,
-        MetricCard,
-        StructuredLogView,
-        TimeMetricsStrip,
-    )
-    from vesp.adapters.st_lrps.ui.training_metrics import (
-        EpochGuard,
-        ETAEstimator,
-        TrainingLogParser,
-        TrainingMetricsStore,
-        compute_auto_log_interval,
-    )
     _HAS_DASHBOARD_V2 = True
 except Exception:  # pragma: no cover
     _HAS_DASHBOARD_V2 = False
@@ -293,7 +277,7 @@ def _style_surface(frame: QFrame, *, object_name: str = "studioSurface", padding
     return frame
 
 
-def _style_command_preview(edit: QPlainTextEdit, *, min_h: int = 76, max_h: Optional[int] = None) -> None:
+def _style_command_preview(edit: QPlainTextEdit, *, min_h: int = 76, max_h: int | None = None) -> None:
     """Make generated CLI/log snippets readable without dominating the page."""
     edit.setReadOnly(True)
     edit.setFont(_mono_font())
@@ -409,7 +393,7 @@ def _settings() -> QSettings:
     return QSettings(_SETTINGS_ORG, _SETTINGS_APP)
 
 
-def _read_json_if_exists(path: Path) -> Dict[str, Any]:
+def _read_json_if_exists(path: Path) -> dict[str, Any]:
     try:
         if path.exists():
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -419,7 +403,7 @@ def _read_json_if_exists(path: Path) -> Dict[str, Any]:
     return {}
 
 
-def _split_cli_args(text: str) -> Tuple[Optional[List[str]], Optional[str]]:
+def _split_cli_args(text: str) -> tuple[list[str] | None, str | None]:
     """Split an advanced CLI text field exactly like a shell would."""
     if not text.strip():
         return [], None
@@ -429,7 +413,7 @@ def _split_cli_args(text: str) -> Tuple[Optional[List[str]], Optional[str]]:
         return None, str(exc)
 
 
-def _format_command(program: str, args: List[str]) -> str:
+def _format_command(program: str, args: list[str]) -> str:
     """Return a copy/paste friendly command line for the generated subprocess."""
     return subprocess.list2cmdline([program] + args)
 
@@ -490,7 +474,7 @@ class ValidatedPathEdit(QLineEdit):
         self,
         placeholder: str = "",
         check_file: bool = True,
-        parent: Optional[QWidget] = None,
+        parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self._check_file = check_file
@@ -512,7 +496,7 @@ class ValidatedPathEdit(QLineEdit):
 
 class CollapsibleSection(QWidget):
     def __init__(
-        self, title: str = "Advanced Settings", parent: Optional[QWidget] = None
+        self, title: str = "Advanced Settings", parent: QWidget | None = None
     ):
         super().__init__(parent)
         self._title = title
@@ -563,7 +547,7 @@ class DatasetInfoLabel(QLabel):
     beneath the dataset path field.
     """
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWordWrap(True)
         self.setStyleSheet(
@@ -574,7 +558,7 @@ class DatasetInfoLabel(QLabel):
         )
         self.setVisible(False)
 
-    def show_info(self, info: Dict[str, Any]) -> None:
+    def show_info(self, info: dict[str, Any]) -> None:
         parts = []
         attrs = info.get("attrs", {}) if isinstance(info.get("attrs"), dict) else {}
         if "rows" in info:
@@ -614,9 +598,9 @@ class DatasetInfoLabel(QLabel):
 
 
 class LogHighlighter(QSyntaxHighlighter):
-    def __init__(self, parent: Optional[QTextDocument] = None):
+    def __init__(self, parent: QTextDocument | None = None):
         super().__init__(parent)
-        self._rules: List[Tuple[re.Pattern, QTextCharFormat]] = []
+        self._rules: list[tuple[re.Pattern, QTextCharFormat]] = []
 
         fmt_err = QTextCharFormat()
         fmt_err.setForeground(QColor("#f87171"))
@@ -692,38 +676,38 @@ class LiveLossPlot(QWidget):
       - robust duplicate-epoch handling
     """
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         from pyqtgraph.Qt import QtCore as pg_QtCore
 
-        self._epochs: List[int] = []
-        self._train_loss: List[float] = []
-        self._val_loss: List[float] = []
-        self._train_opt_loss: List[float] = []
-        self._train_loss_u: List[float] = []
-        self._val_loss_u: List[float] = []
-        self._train_loss_a: List[float] = []
-        self._val_base_loss: List[float] = []
-        self._train_loss_dir: List[float] = []
-        self._val_dir_loss: List[float] = []
-        self._val_loss_a: List[float] = []
-        self._train_cos_sim: List[float] = []
-        self._val_angular_mean_deg: List[float] = []
-        self._val_cos_sim: List[float] = []
-        self._checkpoint_scores: List[float] = []
-        self._best_scores: List[float] = []
-        self._lr_values: List[float] = []
-        self._best_val: Optional[float] = None
-        self._best_epoch: Optional[int] = None
-        self._latest_epoch: Optional[int] = None
-        self._latest_train_opt: Optional[float] = None
-        self._latest_train_ref: Optional[float] = None
-        self._latest_val_ref: Optional[float] = None
-        self._latest_lam_dir: Optional[float] = None
-        self._latest_checkpoint_score: Optional[float] = None
+        self._epochs: list[int] = []
+        self._train_loss: list[float] = []
+        self._val_loss: list[float] = []
+        self._train_opt_loss: list[float] = []
+        self._train_loss_u: list[float] = []
+        self._val_loss_u: list[float] = []
+        self._train_loss_a: list[float] = []
+        self._val_base_loss: list[float] = []
+        self._train_loss_dir: list[float] = []
+        self._val_dir_loss: list[float] = []
+        self._val_loss_a: list[float] = []
+        self._train_cos_sim: list[float] = []
+        self._val_angular_mean_deg: list[float] = []
+        self._val_cos_sim: list[float] = []
+        self._checkpoint_scores: list[float] = []
+        self._best_scores: list[float] = []
+        self._lr_values: list[float] = []
+        self._best_val: float | None = None
+        self._best_epoch: int | None = None
+        self._latest_epoch: int | None = None
+        self._latest_train_opt: float | None = None
+        self._latest_train_ref: float | None = None
+        self._latest_val_ref: float | None = None
+        self._latest_lam_dir: float | None = None
+        self._latest_checkpoint_score: float | None = None
         self._best_metric_name: str = "best metric"
         self._best_formula: str = "N/A"
-        self._epochs_since_improvement: Optional[int] = None
+        self._epochs_since_improvement: int | None = None
         self._checkpoint_status: str = "Waiting for training"
         self._paused: bool = False
 
@@ -1169,7 +1153,7 @@ class LiveLossPlot(QWidget):
         return lbl
 
     @staticmethod
-    def _fmt_metric(v: Optional[float]) -> str:
+    def _fmt_metric(v: float | None) -> str:
         if v is None:
             return "—"
         try:
@@ -1201,21 +1185,21 @@ class LiveLossPlot(QWidget):
         is_train_phase = "[train]" in lower or lower.startswith("train ") or " train opt" in f" {lower}"
         is_val_phase = "[val" in lower or " validation " in f" {lower} " or " val ref" in f" {lower}"
 
-        train_opt: Optional[float] = None
-        train_ref: Optional[float] = None
-        train_u: Optional[float] = None
-        train_a: Optional[float] = None
-        train_dir: Optional[float] = None
-        train_cos: Optional[float] = None
-        val_ref: Optional[float] = None
-        val_u: Optional[float] = None
-        val_a: Optional[float] = None
-        val_base: Optional[float] = None
-        val_dir: Optional[float] = None
-        val_cos: Optional[float] = None
-        val_angular: Optional[float] = None
-        checkpoint_score: Optional[float] = None
-        best_score: Optional[float] = None
+        train_opt: float | None = None
+        train_ref: float | None = None
+        train_u: float | None = None
+        train_a: float | None = None
+        train_dir: float | None = None
+        train_cos: float | None = None
+        val_ref: float | None = None
+        val_u: float | None = None
+        val_a: float | None = None
+        val_base: float | None = None
+        val_dir: float | None = None
+        val_cos: float | None = None
+        val_angular: float | None = None
+        checkpoint_score: float | None = None
+        best_score: float | None = None
 
         m_train_opt_ref = self._re_train_opt_ref.search(line)
         if m_train_opt_ref:
@@ -1395,7 +1379,7 @@ class LiveLossPlot(QWidget):
         if not p.exists():
             return
         try:
-            rows: List[Dict[str, Any]] = []
+            rows: list[dict[str, Any]] = []
             if p.suffix.lower() == ".jsonl":
                 for line in p.read_text(encoding="utf-8").splitlines():
                     if line.strip():
@@ -1406,7 +1390,7 @@ class LiveLossPlot(QWidget):
                     rows.extend(dict(row) for row in _csv.DictReader(handle))
             else:
                 return
-            rows_by_epoch: Dict[int, Dict[str, Any]] = {}
+            rows_by_epoch: dict[int, dict[str, Any]] = {}
             for row in rows:
                 try:
                     epoch = int(float(row.get("epoch_display") or (float(row.get("epoch", 0)) + 1)))
@@ -1414,7 +1398,7 @@ class LiveLossPlot(QWidget):
                     continue
                 rows_by_epoch[epoch] = row
 
-            def _row_float(row: Dict[str, Any], key: str, default: str = "nan") -> float:
+            def _row_float(row: dict[str, Any], key: str, default: str = "nan") -> float:
                 try:
                     value = float(row.get(key, default))
                 except Exception:
@@ -1485,7 +1469,7 @@ class LiveLossPlot(QWidget):
             self._checkpoint_status = "Tracking best model"
 
     @staticmethod
-    def _percentile(values: List[float], pct: float) -> float:
+    def _percentile(values: list[float], pct: float) -> float:
         if not values:
             return float("nan")
         ordered = sorted(values)
@@ -1499,11 +1483,11 @@ class LiveLossPlot(QWidget):
         weight = pos - lo
         return float(ordered[lo] * (1.0 - weight) + ordered[hi] * weight)
 
-    def _smooth_plot_values(self, values: List[float]) -> List[float]:
+    def _smooth_plot_values(self, values: list[float]) -> list[float]:
         if not self._chk_smooth.isChecked() or len(values) < 3:
             return values
         window = max(2, int(self._smooth_window.value()))
-        smoothed: List[float] = []
+        smoothed: list[float] = []
         for idx in range(len(values)):
             start = max(0, idx - window + 1)
             chunk = values[start : idx + 1]
@@ -1512,15 +1496,15 @@ class LiveLossPlot(QWidget):
 
     def _valid_xy(
         self,
-        values: List[float],
+        values: list[float],
         *,
-        log_y: Optional[bool] = None,
+        log_y: bool | None = None,
         smooth: bool = True,
-    ) -> Tuple[List[int], List[float]]:
+    ) -> tuple[list[int], list[float]]:
         if log_y is None:
             log_y = self._chk_log_y.isChecked()
-        xs: List[int] = []
-        ys: List[float] = []
+        xs: list[int] = []
+        ys: list[float] = []
         for e, v in zip(self._epochs, values):
             try:
                 finite = math.isfinite(v)
@@ -1544,14 +1528,14 @@ class LiveLossPlot(QWidget):
 
     def _range_for_values(
         self,
-        series_values: List[List[float]],
+        series_values: list[list[float]],
         *,
         log_y: bool,
-        y_bounds: Optional[Tuple[float, float]] = None,
-    ) -> Optional[Tuple[float, float]]:
+        y_bounds: tuple[float, float] | None = None,
+    ) -> tuple[float, float] | None:
         if y_bounds is not None:
             return y_bounds
-        valid: List[float] = []
+        valid: list[float] = []
         for values in series_values:
             for value in values:
                 try:
@@ -1582,10 +1566,10 @@ class LiveLossPlot(QWidget):
     def _set_plot_range(
         self,
         plot: Any,
-        series_values: List[List[float]],
+        series_values: list[list[float]],
         *,
         log_y: bool,
-        y_bounds: Optional[Tuple[float, float]] = None,
+        y_bounds: tuple[float, float] | None = None,
     ) -> None:
         if not plot:
             return
@@ -1825,7 +1809,7 @@ class LiveLossPlot(QWidget):
         self._lbl_status.setText("Waiting for history/log data…")
         self._refresh_metric_labels()
 
-    def get_final_losses(self) -> Dict[str, Any]:
+    def get_final_losses(self) -> dict[str, Any]:
         """Return summary for queue status display."""
         result = {}
         valid_train = [v for v in self._train_loss if math.isfinite(v)]
@@ -1855,7 +1839,7 @@ class LiveLossPlot(QWidget):
 
 
 class ImageGallery(QWidget):
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self._header = QLabel("Result Plots")
         self._header.setStyleSheet(
@@ -1927,7 +1911,7 @@ class ImageGallery(QWidget):
         self._tabs.setVisible(True)
         return len(pngs)
 
-    def load_images(self, img_paths: List[Path]) -> int:
+    def load_images(self, img_paths: list[Path]) -> int:
         """Load an ordered list of image paths (pre-sorted by caller)."""
         self._tabs.clear()
         loaded = 0
@@ -1973,16 +1957,16 @@ class ImageGallery(QWidget):
 
 
 class ProcessPane(QWidget):
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self.proc: Optional[QProcess] = None
-        self._on_parse_progress: Optional[Callable[[str], None]] = None
-        self._display_filter: Optional[Callable[[str], bool]] = None
-        self._on_finished_hook: Optional[Callable[[int, QProcess.ExitStatus], None]] = (
+        self.proc: QProcess | None = None
+        self._on_parse_progress: Callable[[str], None] | None = None
+        self._display_filter: Callable[[str], bool] | None = None
+        self._on_finished_hook: Callable[[int, QProcess.ExitStatus], None] | None = (
             None
         )
         self._stop_hint: str = ""
-        self._raw_log_container: Optional[QWidget] = None
+        self._raw_log_container: QWidget | None = None
 
         self.status = QLabel("Ready")
         self.status.setTextInteractionFlags(
@@ -2085,10 +2069,10 @@ class ProcessPane(QWidget):
     def set_output_dir(self, path: str) -> None:
         self._output_dir = path
 
-    def set_progress_parser(self, fn: Optional[Callable[[str], None]]) -> None:
+    def set_progress_parser(self, fn: Callable[[str], None] | None) -> None:
         self._on_parse_progress = fn
 
-    def set_display_filter(self, fn: Optional[Callable[[str], bool]]) -> None:
+    def set_display_filter(self, fn: Callable[[str], bool] | None) -> None:
         """Install a predicate deciding whether a line is shown in the log.
 
         The progress parser still receives every line; only the visible log is
@@ -2098,7 +2082,7 @@ class ProcessPane(QWidget):
         self._display_filter = fn
 
     def set_finished_hook(
-        self, fn: Optional[Callable[[int, QProcess.ExitStatus], None]]
+        self, fn: Callable[[int, QProcess.ExitStatus], None] | None
     ) -> None:
         self._on_finished_hook = fn
 
@@ -2124,7 +2108,7 @@ class ProcessPane(QWidget):
                 pass
 
     def start(
-        self, program: str, args: list[str], workdir: Optional[str] = None
+        self, program: str, args: list[str], workdir: str | None = None
     ) -> None:
         if self.proc and self.proc.state() != QProcess.ProcessState.NotRunning:
             QMessageBox.warning(self, "Running", "A process is already running.")
@@ -2218,8 +2202,8 @@ class ProcessPane(QWidget):
             QDesktopServices.openUrl(QUrl.fromLocalFile(self._output_dir))
 
 
-def _inspect_run_artifacts(run_dir: str) -> Dict[str, Any]:
-    status: Dict[str, Any] = {
+def _inspect_run_artifacts(run_dir: str) -> dict[str, Any]:
+    status: dict[str, Any] = {
         "run_dir": "",
         "manifest_path": None,
         "config_path": None,
@@ -2266,7 +2250,7 @@ def _inspect_run_artifacts(run_dir: str) -> Dict[str, Any]:
             scaler_hash = None
     status["scaler_hash"] = scaler_hash
 
-    ckpt_path: Optional[Path] = None
+    ckpt_path: Path | None = None
     if layout.ckpt_best.exists():
         ckpt_path = layout.ckpt_best
     elif layout.ckpt_last.exists():
@@ -2280,7 +2264,7 @@ def _inspect_run_artifacts(run_dir: str) -> Dict[str, Any]:
         status["warnings"].append("missing_scaler")
         status["scaler_status"] = "missing"
 
-    ckpt: Dict[str, Any] = {}
+    ckpt: dict[str, Any] = {}
     if ckpt_path is not None and load_artifact_checkpoint is not None:
         try:
             import torch
@@ -2325,7 +2309,7 @@ def _inspect_run_artifacts(run_dir: str) -> Dict[str, Any]:
     elif layout.scaler_json.exists():
         status["scaler_status"] = "present"
 
-    mismatch_fields: List[str] = []
+    mismatch_fields: list[str] = []
     ckpt_cfg = ckpt.get("config") if isinstance(ckpt, dict) else {}
     if isinstance(config_payload, dict) and isinstance(ckpt_cfg, dict):
         for field in CRITICAL_CONFIG_FIELDS:

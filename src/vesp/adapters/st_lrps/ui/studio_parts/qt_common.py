@@ -1,5 +1,6 @@
 import os
 import sys
+
 _USE_PYSIDE = "PyQt6" not in sys.modules
 
 try:
@@ -16,6 +17,8 @@ try:
             Qt,
             QTimer,
             QUrl,
+        )
+        from PySide6.QtCore import (
             Signal as pyqtSignal,
         )
         from PySide6.QtGui import (
@@ -66,64 +69,14 @@ try:
     else:
         raise ImportError
 except ImportError:
-    from PyQt6.QtCore import (
-        QEasingCurve,
-        QEvent,
-        QObject,
-        QProcess,
-        QProcessEnvironment,
-        QPropertyAnimation,
-        QSettings,
-        QSize,
-        Qt,
-        QTimer,
-        QUrl,
-        pyqtSignal,
-    )
     from PyQt6.QtGui import (
         QColor,
-        QDesktopServices,
         QFont,
-        QGuiApplication,
-        QIcon,
         QPalette,
-        QPixmap,
-        QSyntaxHighlighter,
-        QTextCharFormat,
-        QTextDocument,
     )
     from PyQt6.QtWidgets import (
-        QAbstractSpinBox,
         QApplication,
-        QCheckBox,
         QComboBox,
-        QDoubleSpinBox,
-        QFileDialog,
-        QFormLayout,
-        QFrame,
-        QGridLayout,
-        QGroupBox,
-        QHBoxLayout,
-        QInputDialog,
-        QLabel,
-        QLineEdit,
-        QListWidget,
-        QListWidgetItem,
-        QMainWindow,
-        QMessageBox,
-        QPlainTextEdit,
-        QProgressBar,
-        QPushButton,
-        QScrollArea,
-        QSizePolicy,
-        QSpinBox,
-        QSplitter,
-        QStackedWidget,
-        QSystemTrayIcon,
-        QTabWidget,
-        QToolButton,
-        QVBoxLayout,
-        QWidget,
     )
 
 QT_BINDING_NAME = "PySide6" if _USE_PYSIDE else "PyQt6"
@@ -142,6 +95,7 @@ class NoScrollComboBox(QComboBox):
         e.ignore()
 
 from pathlib import Path
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 def apply_premium_dark_theme(app: QApplication) -> None:

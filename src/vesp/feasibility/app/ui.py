@@ -9,28 +9,27 @@ import sys
 from pathlib import Path
 
 import yaml
-
-from PyQt6.QtCore import QSize, QProcess, Qt, QUrl
+from PyQt6.QtCore import QProcess, QSize, Qt, QUrl
 from PyQt6.QtGui import QAction, QDesktopServices, QFont, QPixmap, QTextCursor
 from PyQt6.QtWidgets import (
-    QApplication,
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
     QFrame,
     QGridLayout,
     QGroupBox,
-    QHeaderView,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
-    QPushButton,
     QPlainTextEdit,
+    QPushButton,
     QScrollArea,
     QSplitter,
     QStyle,
@@ -41,7 +40,6 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CONFIG_ROOT = PROJECT_ROOT / "configs"
@@ -81,12 +79,22 @@ CONFIG_PRESETS = {
 }
 
 try:
-    from vesp.feasibility.analysis.analysis import interpret_experiment, load_checkpoint_summary, make_markdown_report, write_markdown_report
     from vesp.feasibility.analysis.advanced_analysis import make_advanced_report, write_analysis_pdf
+    from vesp.feasibility.analysis.analysis import (
+        interpret_experiment,
+        load_checkpoint_summary,
+        make_markdown_report,
+        write_markdown_report,
+    )
 except ImportError:
     sys.path.insert(0, str(PROJECT_ROOT / "src"))
-    from vesp.feasibility.analysis.analysis import interpret_experiment, load_checkpoint_summary, make_markdown_report, write_markdown_report
     from vesp.feasibility.analysis.advanced_analysis import make_advanced_report, write_analysis_pdf
+    from vesp.feasibility.analysis.analysis import (
+        interpret_experiment,
+        load_checkpoint_summary,
+        make_markdown_report,
+        write_markdown_report,
+    )
 
 
 class VespWorkbench(QMainWindow):

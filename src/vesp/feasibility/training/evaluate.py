@@ -4,18 +4,17 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import io
 import warnings
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import torch
 from torch.utils.data import DataLoader
 
 from vesp.common.artifacts import atomic_write_json, atomic_write_text, ensure_run_layout, write_run_manifest
 from vesp.common.config import load_config
-from vesp.data.dataset import ResidualGravityData, ResidualGravityDataset, load_csv_dataset
+from vesp.common.units import UnitConfig
 from vesp.core.diagnostics import source_diagnostics, time_inference
 from vesp.core.kernels import evaluate_kernel
 from vesp.core.metrics import (
@@ -23,15 +22,15 @@ from vesp.core.metrics import (
     altitude_binned_error,
     radial_cross_radial_error,
     relative_rmse_acceleration,
+    rmse_acceleration,
     rmse_acceleration_components,
     rmse_acceleration_norm,
-    rmse_acceleration,
     rmse_potential,
     vector_angle_error,
 )
 from vesp.core.models import DiscreteVESP, load_checkpoint
+from vesp.data.dataset import ResidualGravityData, ResidualGravityDataset, load_csv_dataset
 from vesp.data.target_scaling import TargetScales
-from vesp.common.units import UnitConfig
 
 
 def evaluate_model(

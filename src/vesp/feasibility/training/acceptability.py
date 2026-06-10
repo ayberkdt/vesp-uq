@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 STATUS_GOOD = "GOOD"
 STATUS_CONDITIONAL = "CONDITIONAL"
 STATUS_REJECT_REGULARIZATION = "REJECT_REGULARIZATION"

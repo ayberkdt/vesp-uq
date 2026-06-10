@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Validation checks for benchmark output artifacts."""
 
 from __future__ import annotations
@@ -7,11 +6,11 @@ import csv
 import json
 import math
 import re
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from .benchmark_config import canonical_json_text
-
 
 REQUIRED_OUTPUT_FILES = (
     "benchmark_manifest.json",

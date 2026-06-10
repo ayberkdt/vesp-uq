@@ -19,6 +19,7 @@ It matters *what each benchmark tests* — a result can be strong on one and nul
 | Force-error covariance propagation (MC) | [`covariance_propagation.md`](covariance_propagation.md) | Monte Carlo orbit-dispersion sample covariance of the **same** force-error posterior; cross-checks the STM result and agrees in the small-perturbation regime. |
 | Online force-model correction | [`online_force_correction.md`](online_force_correction.md) | does `a_corrected = a_surrogate + posterior-mean force error` cut integrated **position** error vs the bare surrogate, and at what per-RHS cost? (exploratory force-model correction) |
 | Position-error diagnostic | [`position_error_diagnostic.md`](position_error_diagnostic.md) | does force-risk *co-rank* long-horizon ST-LRPS **position** error? (diagnostic only) |
+| GPU / Float32 Verification | [`gpu_verification.md`](gpu_verification.md) | throughput speedups and float32 precision degradation for CUDA hardware paths; states the policy that headline claims remain CPU float64. |
 
 Two scoring families are used:
 - **relative** (`supervisor_rel*`): per-trajectory altitude normalization — for *ranking* which
@@ -47,6 +48,7 @@ python scripts/run_physical_budget_screening.py --config configs/vespuq/vespuq_s
 python scripts/run_linear_propagation.py --config configs/vespuq/vespuq_smoke.yaml          # STM force-error covariance (deterministic)
 python scripts/run_propagation.py --config configs/vespuq/vespuq_real_lunar.yaml            # MC orbit-dispersion sampler (cross-check)
 python scripts/run_force_correction_benchmark.py --config configs/vespuq/vespuq_smoke.yaml  # online force-model correction (accuracy vs cost)
+python scripts/benchmark_gpu.py --config configs/vespuq/vespuq_smoke.yaml                   # GPU and float32 screening throughput vs precision
 python scripts/analyze_512_orbits.py                                             # ST-LRPS position-error diagnostic
 ```
 

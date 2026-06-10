@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 import torch
 
@@ -18,7 +18,7 @@ class RidgeSolveConfig:
     shell_energy_weights: list[float] = field(default_factory=list)
 
     @classmethod
-    def from_config(cls, config: dict) -> "RidgeSolveConfig":
+    def from_config(cls, config: dict) -> RidgeSolveConfig:
         solver_cfg = config.get("solver", {})
         if not isinstance(solver_cfg, dict):
             solver_cfg = {"type": solver_cfg}

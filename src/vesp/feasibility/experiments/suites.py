@@ -7,7 +7,6 @@ and unit tests (no real-lunar data, quick sweeps).
 
 from __future__ import annotations
 
-
 # Paths are relative to the repository root.
 SUITES: dict[str, list[str]] = {
     "synthetic": [

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 import torch
 
-from vesp.data.dataset import ResidualGravityData
 from vesp.core.kernels import evaluate_kernel
 from vesp.core.sources import make_shell_sources
+from vesp.data.dataset import ResidualGravityData
 
 
 def make_synthetic_dataset(

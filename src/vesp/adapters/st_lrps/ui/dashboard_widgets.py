@@ -17,11 +17,8 @@ from __future__ import annotations
 
 import csv
 import json
-import re
-from datetime import datetime
-from typing import Any, Dict, List, Optional
-
 import sys
+from typing import Any
 
 _USE_PYSIDE = "PyQt6" not in sys.modules
 
@@ -30,8 +27,8 @@ try:
         from PySide6.QtCore import (
             QAbstractTableModel,
             QModelIndex,
-            QTimer,
             Qt,
+            QTimer,
         )
         from PySide6.QtGui import QColor, QFont
         from PySide6.QtWidgets import (
@@ -41,8 +38,8 @@ try:
             QLabel,
             QPlainTextEdit,
             QSizePolicy,
-            QTabWidget,
             QTableView,
+            QTabWidget,
             QVBoxLayout,
             QWidget,
         )
@@ -50,8 +47,8 @@ try:
         from PyQt6.QtCore import (
             QAbstractTableModel,
             QModelIndex,
-            QTimer,
             Qt,
+            QTimer,
         )
         from PyQt6.QtGui import QColor, QFont
         from PyQt6.QtWidgets import (
@@ -61,8 +58,8 @@ try:
             QLabel,
             QPlainTextEdit,
             QSizePolicy,
-            QTabWidget,
             QTableView,
+            QTabWidget,
             QVBoxLayout,
             QWidget,
         )
@@ -117,7 +114,7 @@ if _HAS_QT:
     class StatusPill(QLabel):
         """Small colored status badge."""
 
-        def __init__(self, initial: str = "IDLE", parent: Optional[QWidget] = None):
+        def __init__(self, initial: str = "IDLE", parent: QWidget | None = None):
             super().__init__(parent)
             self.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.set_status(initial)
@@ -150,7 +147,7 @@ if _HAS_QT:
             self,
             label: str,
             initial_value: str = "—",
-            parent: Optional[QWidget] = None,
+            parent: QWidget | None = None,
         ):
             super().__init__(parent)
             layout = QHBoxLayout()
@@ -205,7 +202,7 @@ if _HAS_QT:
     class ExperimentHeader(QFrame):
         """Compact, restrained application header for ST-LRPS Studio."""
 
-        def __init__(self, parent: Optional[QWidget] = None):
+        def __init__(self, parent: QWidget | None = None):
             super().__init__(parent)
             self.setObjectName("experimentHeader")
             # Restrained dark panel — no large decorative gradients.
@@ -274,8 +271,8 @@ if _HAS_QT:
             badges.setContentsMargins(0, 0, 0, 0)
             badges.setSpacing(6)
             for m in (
-                self._page, self._run, self._dataset, self._preset, 
-                self._device, self._checkpoint, self._elapsed, 
+                self._page, self._run, self._dataset, self._preset,
+                self._device, self._checkpoint, self._elapsed,
                 self._remaining, self._finish
             ):
                 badges.addWidget(m)
@@ -329,7 +326,7 @@ if _HAS_QT:
             self,
             label: str,
             initial_value: str = "—",
-            parent: Optional[QWidget] = None,
+            parent: QWidget | None = None,
         ):
             super().__init__(parent)
             self.setObjectName("metricCard")
@@ -361,8 +358,8 @@ if _HAS_QT:
         def set_value(
             self,
             value: str,
-            subtitle: Optional[str] = None,
-            state: Optional[str] = None,
+            subtitle: str | None = None,
+            state: str | None = None,
         ) -> None:
             self._value.setText(value)
             if subtitle:
@@ -413,7 +410,7 @@ if _HAS_QT:
     class KPIStrip(QWidget):
         """Horizontal strip of MetricCard widgets for training KPIs."""
 
-        def __init__(self, parent: Optional[QWidget] = None):
+        def __init__(self, parent: QWidget | None = None):
             super().__init__(parent)
 
             layout = QHBoxLayout()
@@ -455,7 +452,7 @@ if _HAS_QT:
     class TimeMetricsStrip(QWidget):
         """Horizontal strip of time-oriented MetricCards for the Live Monitor."""
 
-        def __init__(self, parent: Optional[QWidget] = None):
+        def __init__(self, parent: QWidget | None = None):
             super().__init__(parent)
             layout = QHBoxLayout()
             layout.setContentsMargins(0, 0, 0, 0)
@@ -514,7 +511,7 @@ if _HAS_QT:
 
         def __init__(self, parent=None):
             super().__init__(parent)
-            self._records: List[TrainingRecord] = []
+            self._records: list[TrainingRecord] = []
 
         def rowCount(self, parent=QModelIndex()):
             return len(self._records)
@@ -615,14 +612,14 @@ if _HAS_QT:
                 return rec.event.replace("_", " ")
             return ""
 
-    def _fmt_loss(v: Optional[float]) -> Optional[str]:
+    def _fmt_loss(v: float | None) -> str | None:
         if v is None:
             return None
         if abs(v) < 1e-2:
             return f"{v:.3e}"
         return f"{v:.5f}"
 
-    def _fmt_eta(seconds: Optional[float]) -> str:
+    def _fmt_eta(seconds: float | None) -> str:
         if seconds is None:
             return ""
         seconds = max(0, int(round(seconds)))
@@ -656,13 +653,13 @@ if _HAS_QT:
         ("LR",        ["lr"],                                              "sci"),
     ]
 
-    def _flatten_history_row(d: Dict[str, Any]) -> Dict[str, Any]:
+    def _flatten_history_row(d: dict[str, Any]) -> dict[str, Any]:
         """Flatten one level of nested dicts into ``parent_child`` keys.
 
         Flat CSV rows pass through unchanged; nested JSONL rows
         (``{"train": {"loss_total": ...}}``) become ``train_loss_total``.
         """
-        out: Dict[str, Any] = {}
+        out: dict[str, Any] = {}
         for k, v in d.items():
             if isinstance(v, dict):
                 for k2, v2 in v.items():
@@ -690,13 +687,13 @@ if _HAS_QT:
         # scientific for losses
         return f"{f:.3e}"
 
-    def load_history_rows(path: str) -> List[Dict[str, Any]]:
+    def load_history_rows(path: str) -> list[dict[str, Any]]:
         """Load per-epoch history rows from a .csv or .jsonl history file."""
-        rows: List[Dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
         try:
             p = str(path)
             if p.lower().endswith(".jsonl"):
-                with open(p, "r", encoding="utf-8") as fh:
+                with open(p, encoding="utf-8") as fh:
                     for line in fh:
                         line = line.strip()
                         if not line:
@@ -708,7 +705,7 @@ if _HAS_QT:
                         except Exception:
                             continue
             else:  # treat as CSV
-                with open(p, "r", encoding="utf-8", newline="") as fh:
+                with open(p, encoding="utf-8", newline="") as fh:
                     reader = csv.DictReader(fh)
                     for r in reader:
                         rows.append(_flatten_history_row(dict(r)))
@@ -721,7 +718,7 @@ if _HAS_QT:
 
         def __init__(self, parent=None):
             super().__init__(parent)
-            self._rows: List[Dict[str, Any]] = []
+            self._rows: list[dict[str, Any]] = []
             self._cols = _HISTORY_COLUMNS
 
         def rowCount(self, parent=QModelIndex()):
@@ -755,7 +752,7 @@ if _HAS_QT:
                 return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             return None
 
-        def set_rows(self, rows: List[Dict[str, Any]]) -> None:
+        def set_rows(self, rows: list[dict[str, Any]]) -> None:
             self.beginResetModel()
             self._rows = list(rows)
             self.endResetModel()
@@ -771,7 +768,7 @@ if _HAS_QT:
     class StructuredLogView(QWidget):
         """Tabbed widget: structured progress table + raw log text."""
 
-        def __init__(self, parent: Optional[QWidget] = None):
+        def __init__(self, parent: QWidget | None = None):
             super().__init__(parent)
 
             layout = QVBoxLayout()

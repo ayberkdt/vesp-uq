@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 st_lrps.training.cli
 ====================
@@ -42,21 +41,31 @@ from __future__ import annotations
 
 import sys
 
-from vesp.adapters.st_lrps.training.config import TrainConfig, parse_args
 from vesp.adapters.st_lrps.data.datasets import (
-    BlockShuffleSampler, DatasetMeta, H5BlockDataset, TensorMemoryDataset,
-    collate_h5, _build_train_val_indices, _find_latest_dataset,
-    _resolve_loader_worker_count, _resolve_lunar_dataset_contract,
+    BlockShuffleSampler,
+    DatasetMeta,
+    H5BlockDataset,
+    TensorMemoryDataset,
+    _resolve_loader_worker_count,
+    collate_h5,
 )
-from vesp.adapters.st_lrps.training.engine import STLRPSTrainer, train
-from vesp.adapters.st_lrps.training.losses import GradNormWeights, LossCurriculum, SobolevLoss
 from vesp.adapters.st_lrps.networks.models import (
-    FourierInputEmbedding, MLP, PhysicsNet, Sine, SirenMLP,
+    MLP,
+    FourierInputEmbedding,
+    PhysicsNet,
+    Sine,
+    SirenMLP,
     build_model_from_config,
 )
 from vesp.adapters.st_lrps.shared.scaling import (
-    IsometricScaleParams, OnlineIsometricStats, ScalerPack, fit_scaler_streaming,
+    IsometricScaleParams,
+    OnlineIsometricStats,
+    ScalerPack,
+    fit_scaler_streaming,
 )
+from vesp.adapters.st_lrps.training.config import TrainConfig, parse_args
+from vesp.adapters.st_lrps.training.engine import STLRPSTrainer, train
+from vesp.adapters.st_lrps.training.losses import GradNormWeights, LossCurriculum, SobolevLoss
 
 __all__ = [
     'TrainConfig', 'parse_args', 'train', 'STLRPSTrainer',

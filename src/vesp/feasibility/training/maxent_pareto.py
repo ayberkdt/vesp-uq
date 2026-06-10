@@ -15,16 +15,15 @@ from __future__ import annotations
 
 import argparse
 import csv
+from collections.abc import Iterable
 from copy import deepcopy
 from pathlib import Path
-from typing import Iterable
 
 import yaml
 
 from vesp.common.config import merge_defaults
 from vesp.core.models import MultiShellDiscreteVESP
 from vesp.feasibility.training.train_discrete import run
-
 
 FIELDNAMES = [
     "entropy_weight",

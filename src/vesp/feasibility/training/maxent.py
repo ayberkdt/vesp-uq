@@ -62,7 +62,7 @@ class MaxEntSolveConfig:
     weight_bounds: tuple[float, float] = (1.0e-4, 1.0e3)
 
     @classmethod
-    def from_config(cls, config: dict) -> "MaxEntSolveConfig":
+    def from_config(cls, config: dict) -> MaxEntSolveConfig:
         loss_cfg = config.get("loss", {})
         maxent_cfg = config.get("maxent", {})
         bounds = maxent_cfg.get("weight_bounds", [1.0e-4, 1.0e3])

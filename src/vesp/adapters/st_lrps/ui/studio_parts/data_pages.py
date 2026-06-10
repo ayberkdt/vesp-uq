@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 ST-LRPS Studio.
 
@@ -45,26 +44,15 @@ Run
 from __future__ import annotations
 
 import json
-import math
-import os
-import platform
 import re
-import shlex
-import subprocess
 import sys
-import time
 from collections import deque
-from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from lunaris.common.paths import project_root_from_file
-from typing import Any, Callable, Dict, List, Optional, Tuple
-
-import sys
 
 from .qt_common import *
-from .qt_common import _USE_PYSIDE
-
 
 # pyqtgraph — optional, graceful fallback
 try:
@@ -87,9 +75,13 @@ try:
         CHECKPOINT_SCHEMA_VERSION,
         CRITICAL_CONFIG_FIELDS,
         compute_payload_sha256,
-        load_checkpoint as load_artifact_checkpoint,
         make_run_layout,
         read_run_manifest,
+    )
+    from vesp.adapters.st_lrps.artifacts.manager import (
+        load_checkpoint as load_artifact_checkpoint,
+    )
+    from vesp.adapters.st_lrps.artifacts.manager import (
         resolve_run_dir as resolve_artifact_run_dir,
     )
 except Exception:  # pragma: no cover - UI remains usable without artifact deps
@@ -103,20 +95,6 @@ except Exception:  # pragma: no cover - UI remains usable without artifact deps
 
 # Dashboard widgets and training metrics (Phase 1-8 redesign)
 try:
-    from vesp.adapters.st_lrps.ui.dashboard_widgets import (
-        ExperimentHeader,
-        KPIStrip,
-        MetricCard,
-        StructuredLogView,
-        TimeMetricsStrip,
-    )
-    from vesp.adapters.st_lrps.ui.training_metrics import (
-        EpochGuard,
-        ETAEstimator,
-        TrainingLogParser,
-        TrainingMetricsStore,
-        compute_auto_log_interval,
-    )
     _HAS_DASHBOARD_V2 = True
 except Exception:  # pragma: no cover
     _HAS_DASHBOARD_V2 = False
@@ -174,10 +152,23 @@ except Exception:  # pragma: no cover - UI remains usable without generator deps
 
 
 from .common_widgets import *
-from .common_widgets import _tune_form, _tune_inputs, _row_lineedit_with_button, _scroll_wrap, _settings, _read_json_if_exists, _split_cli_args, _format_command, _send_os_notification, _apply_status_tips, _cfg_value, _norm_path, _timestamp_slug, _safe_slug, _default_training_output_dir, _default_runtime_output_dir, _default_dataset_report_dir, _output_standard_text, _mono_font, _make_page_header, _style_command_preview, _style_surface, _inspect_run_artifacts, _NoWheelOnSpinFilter
+from .common_widgets import (
+    _cfg_value,
+    _default_dataset_report_dir,
+    _format_command,
+    _make_page_header,
+    _norm_path,
+    _row_lineedit_with_button,
+    _scroll_wrap,
+    _settings,
+    _style_command_preview,
+    _style_surface,
+    _tune_form,
+    _tune_inputs,
+)
 
 
-def _introspect_h5(path: str) -> Optional[Dict[str, Any]]:
+def _introspect_h5(path: str) -> dict[str, Any] | None:
     """
     Read metadata from an HDF5 file without loading the full dataset.
     Returns a dict with: rows, cols, col_names (if stored), attrs, is_si.
@@ -187,7 +178,7 @@ def _introspect_h5(path: str) -> Optional[Dict[str, Any]]:
         return None
     try:
         with h5py.File(path, "r") as f:
-            info: Dict[str, Any] = {"attrs": {}}
+            info: dict[str, Any] = {"attrs": {}}
 
             # Gather file-level attributes
             for key in f.attrs:
@@ -253,7 +244,7 @@ def _introspect_h5(path: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _attr_lookup(attrs: Dict[str, Any], *keys: str) -> Any:
+def _attr_lookup(attrs: dict[str, Any], *keys: str) -> Any:
     """Return the first present metadata value across common naming variants."""
     for key in keys:
         if key in attrs:
@@ -270,8 +261,8 @@ def _data_action_card(
     subtitle: str,
     primary_button: QPushButton,
     *,
-    secondary_buttons: Optional[List[QPushButton]] = None,
-    detail: Optional[QWidget] = None,
+    secondary_buttons: list[QPushButton] | None = None,
+    detail: QWidget | None = None,
     object_name: str = "dataActionCard",
 ) -> QFrame:
     """Create a compact, action-first card for the Data workspace."""
@@ -372,13 +363,13 @@ class CloudGenTab(QWidget):
     _MODE_SINGLE = 0
     _MODE_SUITE  = 1
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
 
-        self._train_tab_ref: Optional[Any] = None  # set by MainWindow
-        self._last_suite_dir: Optional[str] = None  # set after suite completes
-        self._analysis_queue: deque[Tuple[str, str, str]] = deque()
-        self._active_analysis: Optional[Tuple[str, str, str]] = None
+        self._train_tab_ref: Any | None = None  # set by MainWindow
+        self._last_suite_dir: str | None = None  # set after suite completes
+        self._analysis_queue: deque[tuple[str, str, str]] = deque()
+        self._active_analysis: tuple[str, str, str] | None = None
 
         import os as _os_cloudgen
         _cpu_count = max(1, _os_cloudgen.cpu_count() or 1)
@@ -1106,7 +1097,7 @@ class CloudGenTab(QWidget):
             out = _default_dataset_report_dir(str(dataset_path))
         return out / label if label else out
 
-    def _suite_manifest_files(self, suite_dir: Path) -> Dict[str, str]:
+    def _suite_manifest_files(self, suite_dir: Path) -> dict[str, str]:
         manifest_path = suite_dir / "manifest.json"
         if not manifest_path.exists():
             return {}
@@ -1131,8 +1122,8 @@ class CloudGenTab(QWidget):
 
         return {str(k): _resolve(v) for k, v in files.items()}
 
-    def _analysis_candidates(self) -> List[str]:
-        candidates: List[str] = []
+    def _analysis_candidates(self) -> list[str]:
+        candidates: list[str] = []
         if self._mode_combo.currentData() == self._MODE_SINGLE:
             out = self.out_path.text().strip()
             if out:
@@ -1147,7 +1138,7 @@ class CloudGenTab(QWidget):
             self.out_path.text().strip() if hasattr(self, "out_path") else "",
         ])
         seen: set[str] = set()
-        resolved: List[str] = []
+        resolved: list[str] = []
         for item in candidates:
             if not item:
                 continue
@@ -1167,7 +1158,7 @@ class CloudGenTab(QWidget):
             return
         self.analysis_input.setText(candidates[0])
 
-    def _build_analysis_args(self, dataset_path: Path, outdir: Path) -> List[str]:
+    def _build_analysis_args(self, dataset_path: Path, outdir: Path) -> list[str]:
         script = _STLRPS_DATA_MODULE_DIR / "spatial_cloud_analysis.py"
         args = [
             "-u", str(script), str(dataset_path),
@@ -1181,7 +1172,7 @@ class CloudGenTab(QWidget):
             args.append("--no-plots")
         return args
 
-    def _run_cloud_analysis(self, dataset_path: Optional[str] = None, label: str = "dataset") -> None:
+    def _run_cloud_analysis(self, dataset_path: str | None = None, label: str = "dataset") -> None:
         if self._analysis_proc.state() != QProcess.ProcessState.NotRunning:
             QMessageBox.information(self, "Cloud Analysis", "Analysis is already running.")
             return
@@ -1380,7 +1371,7 @@ class CloudGenTab(QWidget):
                 self.s_dtype.setCurrentIndex(dtype_idx)
             self._update_suite_total_label()
             return
-        presets: Dict[str, Dict[str, int]] = {
+        presets: dict[str, dict[str, int]] = {
             "debug_suite": {
                 "su": 50_000, "ir2": 20_000, "rm": 20_000, "bb": 10_000,
                 "val": 20_000, "test": 20_000, "ood_lo": 10_000, "ood_hi": 10_000,
@@ -1572,7 +1563,7 @@ class CloudGenTab(QWidget):
     # ------------------------------------------------------------------
     # CLI arg builders
     # ------------------------------------------------------------------
-    def _build_single_args(self, show_errors: bool = True) -> Optional[List[str]]:
+    def _build_single_args(self, show_errors: bool = True) -> list[str] | None:
         script = _STLRPS_DATA_MODULE_DIR / "spatial_cloud_generator.py"
         if not script.exists():
             if show_errors:
@@ -1590,7 +1581,7 @@ class CloudGenTab(QWidget):
             if show_errors:
                 QMessageBox.critical(self, "Invalid Altitude", f"alt_max ({alt_max}) must be greater than alt_min ({alt_min}).")
             return None
-        args: List[str] = ["-u", str(script)]
+        args: list[str] = ["-u", str(script)]
         args += ["--degree-max", str(deg_max), "--degree-min", str(deg_min)]
         args += ["--n-samples", str(self.n_samples.value())]
         args += ["--alt-range", str(alt_min), str(alt_max)]
@@ -1612,7 +1603,7 @@ class CloudGenTab(QWidget):
             args += ["--no-multiprocessing"]
         return args
 
-    def _build_suite_args(self, show_errors: bool = True) -> Optional[List[str]]:
+    def _build_suite_args(self, show_errors: bool = True) -> list[str] | None:
         script = _STLRPS_DATA_MODULE_DIR / "spatial_cloud_generator.py"
         if not script.exists():
             if show_errors:
@@ -1631,7 +1622,7 @@ class CloudGenTab(QWidget):
                 QMessageBox.critical(self, "Invalid Altitude", f"alt_max ({alt_max}) must be greater than alt_min ({alt_min}).")
             return None
 
-        args: List[str] = ["-u", str(script), "--generate-suite"]
+        args: list[str] = ["-u", str(script), "--generate-suite"]
         args += ["--degree-min", str(deg_min), "--degree-max", str(deg_max)]
         args += ["--train-alt-min-km", str(alt_min), "--train-alt-max-km", str(alt_max)]
         args += ["--ood-margin-km", str(self.s_ood_margin_km.value())]
@@ -1673,7 +1664,7 @@ class CloudGenTab(QWidget):
             args += ["--gfc-path", gfc]
         return args
 
-    def _build_args(self, show_errors: bool = True) -> Optional[List[str]]:
+    def _build_args(self, show_errors: bool = True) -> list[str] | None:
         if self._mode_combo.currentData() == self._MODE_SUITE:
             return self._build_suite_args(show_errors=show_errors)
         return self._build_single_args(show_errors=show_errors)
@@ -1727,7 +1718,7 @@ class CloudGenTab(QWidget):
             log_text = self.runner.log.toPlainText()
         except Exception:
             pass
-        suite_dir: Optional[str] = None
+        suite_dir: str | None = None
         for line in reversed(log_text.splitlines()):
             m = re.search(r"suite dir\s*[:\->]+\s*(.+)", line, re.IGNORECASE)
             if m:
@@ -1934,7 +1925,7 @@ class CloudGenTab(QWidget):
 class CloudAnalysisTab(QWidget):
     """Run spatial_cloud_analysis.py on a dataset and display the resulting plots."""
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
 
         self.input_file = ValidatedPathEdit(
@@ -2231,7 +2222,7 @@ class DatasetInspectionPanel(QWidget):
 
     send_to_training = pyqtSignal(str)
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
 
         self.path_edit = ValidatedPathEdit(
@@ -2410,7 +2401,7 @@ class DataPage(QWidget):
     """Data workspace: dataset readiness, generation, and analysis."""
 
     def __init__(self, cloud_tab: QWidget, analysis_tab: QWidget,
-                 parent: Optional[QWidget] = None):
+                 parent: QWidget | None = None):
         super().__init__(parent)
         self.inspect_panel = DatasetInspectionPanel()
         self._stack = QStackedWidget()
@@ -2418,7 +2409,7 @@ class DataPage(QWidget):
         self._stack.addWidget(_scroll_wrap(self.inspect_panel))
         self._stack.addWidget(cloud_tab)
         self._stack.addWidget(analysis_tab)
-        self._section_buttons: List[QPushButton] = []
+        self._section_buttons: list[QPushButton] = []
 
         nav = QFrame()
         nav.setObjectName("dataSectionNav")

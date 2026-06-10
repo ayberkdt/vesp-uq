@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Paper tables and figures for ST-LRPS, generated from CSV evidence outputs.
 
 Every table and figure is derived from a produced CSV — numbers are never
@@ -10,8 +9,9 @@ otherwise the tables are still produced and the figures are skipped with a note.
 from __future__ import annotations
 
 import csv
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any
 
 
 def read_csv_rows(path: str | Path) -> list[dict[str, str]]:
@@ -25,8 +25,8 @@ def read_csv_rows(path: str | Path) -> list[dict[str, str]]:
 def csv_to_markdown_table(
     path: str | Path,
     *,
-    columns: Optional[Sequence[str]] = None,
-    max_rows: Optional[int] = None,
+    columns: Sequence[str] | None = None,
+    max_rows: int | None = None,
 ) -> str:
     """Render a CSV as a Markdown table (no values are altered or hardcoded)."""
     rows = read_csv_rows(path)
@@ -52,7 +52,7 @@ PAPER_TABLE_SPECS = {
 }
 
 
-def _find_csv(evidence_root: Path, filename: str) -> Optional[Path]:
+def _find_csv(evidence_root: Path, filename: str) -> Path | None:
     direct = evidence_root / filename
     if direct.exists():
         return direct
@@ -200,7 +200,7 @@ def generate_paper_figures(evidence_root: str | Path, out_dir: str | Path) -> di
     return {"rendered": rendered, "skipped": False}
 
 
-def _f(value: Any) -> Optional[float]:
+def _f(value: Any) -> float | None:
     if value is None or value == "":
         return None
     try:

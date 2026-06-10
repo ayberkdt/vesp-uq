@@ -16,7 +16,6 @@ import torch
 
 from vesp.core.solvers import RidgeSolveConfig, solve_discrete_ridge
 
-
 DEFAULT_LAMBDA_GRID = [
     1.0e-10, 1.0e-8, 1.0e-6, 1.0e-5, 1.0e-4, 1.0e-3,
     1.0e-2, 1.0e-1, 1.0, 3.0, 10.0, 30.0, 100.0, 1000.0,

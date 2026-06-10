@@ -34,7 +34,6 @@ from dataclasses import dataclass
 
 import torch
 
-
 # Standard-normal half-widths z such that P(|Z| <= z) = level. Hardcoded to avoid a
 # scipy dependency in the hot path (values are exact to the digits shown).
 _NORMAL_HALF_WIDTH = {
@@ -65,7 +64,7 @@ class LinearGaussianPosterior:
         lambda_l2: float,
         noise_var: float | None = None,
         jitter: float = 1.0e-10,
-    ) -> "LinearGaussianPosterior":
+    ) -> LinearGaussianPosterior:
         """Fit the conjugate posterior for ``b = A sigma + noise`` with an L2 prior.
 
         ``noise_var`` defaults to the empirical residual variance of the ridge mean
@@ -104,7 +103,7 @@ class LinearGaussianPosterior:
         iters: int = 100,
         tol: float = 1.0e-6,
         jitter: float = 1.0e-10,
-    ) -> "LinearGaussianPosterior":
+    ) -> LinearGaussianPosterior:
         """Empirical-Bayes (MacKay evidence) selection of noise variance and prior precision.
 
         Instead of a fixed ``lambda_l2`` and a naive residual-variance noise estimate, this
@@ -218,7 +217,7 @@ class AltitudeNoiseModel:
         iters: int = 400,
         lr: float = 0.05,
         h_floor: float = 1.0e-3,
-    ) -> "AltitudeNoiseModel":
+    ) -> AltitudeNoiseModel:
         radii = radii.detach()
         res2 = (residuals.detach()) ** 2
         epistemic_var = epistemic_var.detach()

@@ -43,7 +43,6 @@ from vesp.common.config import merge_defaults
 from vesp.core.models import MultiShellDiscreteVESP
 from vesp.feasibility.training.train_discrete import run
 
-
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 

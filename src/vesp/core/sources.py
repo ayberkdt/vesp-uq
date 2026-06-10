@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 import torch
 
@@ -17,7 +17,7 @@ class SourceSet:
     shell_ids: torch.Tensor
     shell_radii: tuple[float, ...]
 
-    def to(self, device: torch.device | str) -> "SourceSet":
+    def to(self, device: torch.device | str) -> SourceSet:
         return SourceSet(
             positions=self.positions.to(device),
             weights=self.weights.to(device),

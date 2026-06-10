@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Internal module of the lunar gravity-model benchmark harness.
 
 Part of :mod:`vesp.adapters.st_lrps.evaluation.compare_gravity_models`;
@@ -11,17 +10,25 @@ import argparse
 import math
 import re
 import time
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any
 
-import numpy as np
 import matplotlib
+import numpy as np
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from lunaris.common.constants import R_MOON
 from matplotlib.backends.backend_pdf import PdfPages
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
-from lunaris.common.constants import R_MOON
+from .compute import (
+    _gpu_rk4_dt_values,
+)
+from .results_io import (
+    _ensure_dir,
+)
 
 # --- intra-package wiring (auto-generated split) ---
 from .types import (
@@ -30,12 +37,6 @@ from .types import (
     TruthTrajectorySet,
     compute_ric_errors,
     interpolate_state_to_times,
-)
-from .compute import (
-    _gpu_rk4_dt_values,
-)
-from .results_io import (
-    _ensure_dir,
 )
 
 # =============================================================================
@@ -78,16 +79,16 @@ MODEL_COLORS = {
 }
 
 
-def _hex_to_rgb(h: str) -> Tuple[float, float, float]:
+def _hex_to_rgb(h: str) -> tuple[float, float, float]:
     h = h.lstrip("#")
     return tuple(int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))  # type: ignore[return-value]
 
 
-def _rgb_to_hex(rgb: Tuple[float, float, float]) -> str:
+def _rgb_to_hex(rgb: tuple[float, float, float]) -> str:
     return "#%02x%02x%02x" % tuple(int(round(max(0.0, min(1.0, c)) * 255)) for c in rgb)
 
 
-def _model_degree(model: str) -> Optional[int]:
+def _model_degree(model: str) -> int | None:
     m = str(model).upper()
     if "ST_LRPS" in m or "ST-LRPS" in m:
         return None
@@ -154,7 +155,7 @@ def model_zorder(model: str) -> int:
 def display_label(model: str) -> str:
     """Human label, e.g. GPU_SH20_RK4 -> SH20, GPU_ST_LRPS_RK4 -> ST-LRPS."""
     m = str(model)
-    dt_label: Optional[str] = None
+    dt_label: str | None = None
     if "_DT" in m.upper():
         head, tail = re.split(r"_DT", m, maxsplit=1, flags=re.IGNORECASE)
         m = head
@@ -166,7 +167,7 @@ def display_label(model: str) -> str:
     return f"{label} dt{dt_label}" if dt_label else label
 
 
-def select_length_unit(max_km: float) -> Tuple[str, float]:
+def select_length_unit(max_km: float) -> tuple[str, float]:
     """Pick a readable display unit for a length given the largest value in km.
 
     Returns ``(unit_label, multiplier)`` where ``display = value_km * multiplier``.
@@ -206,7 +207,7 @@ def _fmt_km(value: Any) -> str:
     return f"{x:.4f}"
 
 
-def _finite_positive(values: Sequence[float]) -> List[float]:
+def _finite_positive(values: Sequence[float]) -> list[float]:
     out = []
     for v in values:
         try:
@@ -270,8 +271,8 @@ def apply_plot_theme(theme: str) -> None:
     })
 
 
-def _style_ax(ax: Any, *, title: Optional[str] = None, xlabel: Optional[str] = None,
-              ylabel: Optional[str] = None, subtitle: Optional[str] = None) -> None:
+def _style_ax(ax: Any, *, title: str | None = None, xlabel: str | None = None,
+              ylabel: str | None = None, subtitle: str | None = None) -> None:
     th = _ACTIVE_PLOT_THEME
     if title:
         ax.set_title(title, color=th["text"], pad=30 if subtitle else 8)
@@ -326,7 +327,7 @@ def _highlight_ticklabels(ax: Any, labels: Sequence[str], axis: str = "y") -> No
             lbl.set_color(th["text"])
 
 
-def _model_sort_key(model: str) -> Tuple[int, int]:
+def _model_sort_key(model: str) -> tuple[int, int]:
     m = str(model).upper()
     if "SH200" in m:
         return (0, 200)
@@ -346,10 +347,10 @@ def _model_sort_key(model: str) -> Tuple[int, int]:
 def plot_selected_scenario(
     scenario: Scenario,
     truth_model: str,
-    model_trajectories: Dict[str, Any],
+    model_trajectories: dict[str, Any],
     out_dir: Path,
     prefix: str = "selected",
-) -> List[Path]:
+) -> list[Path]:
     saved = []
     plt.style.use("dark_background")
 
@@ -445,16 +446,16 @@ def plot_selected_scenario(
 
 
 def plot_aggregate_stats(
-    all_metrics: List[Dict],
-    agg: Dict[str, Dict],
-    rankings: List[Dict],
+    all_metrics: list[dict],
+    agg: dict[str, dict],
+    rankings: list[dict],
     out_dir: Path,
-) -> List[Path]:
+) -> list[Path]:
     saved = []
     plt.style.use("dark_background")
 
     from collections import defaultdict
-    grouped: Dict[str, List[float]] = defaultdict(list)
+    grouped: dict[str, list[float]] = defaultdict(list)
     for m in all_metrics:
         if m.get("status") == "ok" and m.get("rms_pos_err_km") is not None:
             grouped[m["model"]].append(m["rms_pos_err_km"])
@@ -515,12 +516,12 @@ def plot_aggregate_stats(
 
 
 def plot_batch_rk4_results(
-    total_rows: List[Dict],
-    model_rows: List[Dict],
-    integr_rows: List[Dict],
-    batch_meta: Dict[str, Any],
+    total_rows: list[dict],
+    model_rows: list[dict],
+    integr_rows: list[dict],
+    batch_meta: dict[str, Any],
     out_dir: Path,
-) -> List[Path]:
+) -> list[Path]:
     saved = []
     plt.style.use("dark_background")
 
@@ -599,12 +600,12 @@ def plot_batch_rk4_results(
 
 
 def plot_batch_selected_scenario(
-    total_rows: List[Dict],
-    batch_result: Dict[str, Any],
-    truth_results: List[Optional[Any]],
-    scenarios: List[Scenario],
+    total_rows: list[dict],
+    batch_result: dict[str, Any],
+    truth_results: list[Any | None],
+    scenarios: list[Scenario],
     out_dir: Path,
-) -> List[Path]:
+) -> list[Path]:
     """Plot the median-error batch RK4 scenario against SH200 DOP853."""
 
     ok_rows = [
@@ -629,7 +630,7 @@ def plot_batch_selected_scenario(
     y_truth = interpolate_state_to_times(truth.t, truth.y, t_batch)
     t_days = t_batch / 86400.0
 
-    saved: List[Path] = []
+    saved: list[Path] = []
     plt.style.use("dark_background")
 
     pos_err_km = np.linalg.norm(y_st[:, :3] - y_truth[:, :3], axis=1) / 1_000.0
@@ -658,7 +659,7 @@ def plot_batch_selected_scenario(
     return saved
 
 
-def estimate_stlrps_equivalent_sh_degree(aggregate_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+def estimate_stlrps_equivalent_sh_degree(aggregate_rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Estimate which classical SH degree ST-LRPS resembles by error level."""
 
     by_model = {str(r["model"]).upper(): r for r in aggregate_rows}
@@ -666,7 +667,7 @@ def estimate_stlrps_equivalent_sh_degree(aggregate_rows: List[Dict[str, Any]]) -
     if not st:
         return {"status": "missing_st_lrps"}
 
-    def _metric(metric_key: str) -> Dict[str, Any]:
+    def _metric(metric_key: str) -> dict[str, Any]:
         sh_points = []
         for model, row in by_model.items():
             deg = _model_degree(model)
@@ -718,8 +719,8 @@ def estimate_stlrps_equivalent_sh_degree(aggregate_rows: List[Dict[str, Any]]) -
     }
 
 
-def select_stlrps_scenarios(rows: List[Dict[str, Any]], scenarios_by_id: Dict[int, Scenario],
-                            args: argparse.Namespace) -> Dict[str, Any]:
+def select_stlrps_scenarios(rows: list[dict[str, Any]], scenarios_by_id: dict[int, Scenario],
+                            args: argparse.Namespace) -> dict[str, Any]:
     st_rows = [
         r for r in rows
         if str(r.get("model", "")).upper().startswith("GPU_ST_LRPS_RK4")
@@ -729,8 +730,8 @@ def select_stlrps_scenarios(rows: List[Dict[str, Any]], scenarios_by_id: Dict[in
     source_label = "ST-LRPS"
     if not st_rows:
         from collections import defaultdict
-        vals_by_sid: Dict[int, List[float]] = defaultdict(list)
-        base_by_sid: Dict[int, Dict[str, Any]] = {}
+        vals_by_sid: dict[int, list[float]] = defaultdict(list)
+        base_by_sid: dict[int, dict[str, Any]] = {}
         for r in rows:
             if r.get("status") not in {"ok", "warning_negative_altitude"}:
                 continue
@@ -755,7 +756,7 @@ def select_stlrps_scenarios(rows: List[Dict[str, Any]], scenarios_by_id: Dict[in
 
     by_id = {int(r["scenario_id"]): r for r in st_rows}
 
-    def _pick(label: str, override: Optional[int], key_fn: Any) -> Dict[str, Any]:
+    def _pick(label: str, override: int | None, key_fn: Any) -> dict[str, Any]:
         if override is not None and override in by_id:
             row = by_id[override]
         else:
@@ -791,17 +792,17 @@ def select_stlrps_scenarios(rows: List[Dict[str, Any]], scenarios_by_id: Dict[in
 
 
 def plot_gpu_batch_report_figures(
-    aggregate_rows: List[Dict[str, Any]],
-    runtime_rows: List[Dict[str, Any]],
-    metrics_rows: List[Dict[str, Any]],
-    results: List[BatchModelResult],
+    aggregate_rows: list[dict[str, Any]],
+    runtime_rows: list[dict[str, Any]],
+    metrics_rows: list[dict[str, Any]],
+    results: list[BatchModelResult],
     truth: TruthTrajectorySet,
-    scenarios: List[Scenario],
-    selected: Dict[str, Any],
-    equivalent: Dict[str, Any],
+    scenarios: list[Scenario],
+    selected: dict[str, Any],
+    equivalent: dict[str, Any],
     plots_dir: Path,
     args: argparse.Namespace,
-) -> List[Path]:
+) -> list[Path]:
     """Create publication-grade report figures for the GPU batch comparison.
 
     Visualization only — no metric value is recomputed here. CSV units stay in
@@ -811,7 +812,7 @@ def plot_gpu_batch_report_figures(
     plots_dir.mkdir(parents=True, exist_ok=True)
     apply_plot_theme(getattr(args, "plot_theme", "report_light"))
     th = _ACTIVE_PLOT_THEME
-    saved: List[Path] = []
+    saved: list[Path] = []
     agg_by_model = {r["model"]: r for r in aggregate_rows}
     runtime_by_model = {r["model"]: r for r in runtime_rows}
 
@@ -831,7 +832,7 @@ def plot_gpu_batch_report_figures(
     def _fmt(v: float) -> str:
         return f"{v:.3g}"
 
-    def _model_vals(m: str, key: str = "rms_pos_err_km") -> List[float]:
+    def _model_vals(m: str, key: str = "rms_pos_err_km") -> list[float]:
         out = []
         for r in metrics_rows:
             if r.get("model") != m or r.get("status") not in {"ok", "warning_negative_altitude"}:
@@ -1108,9 +1109,9 @@ def plot_gpu_batch_report_figures(
     if scenarios and truth.t_by_scenario:
         common_t = next(iter(truth.t_by_scenario.values()))
         t_days = np.asarray(common_t) / 86400.0
-        med_by_model: Dict[str, np.ndarray] = {}
-        band_by_model: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
-        ric_by_model: Dict[str, np.ndarray] = {}
+        med_by_model: dict[str, np.ndarray] = {}
+        band_by_model: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        ric_by_model: dict[str, np.ndarray] = {}
         for result in results:
             if result.status != "ok":
                 continue
@@ -1192,8 +1193,8 @@ def plot_gpu_batch_report_figures(
         y_truth = truth.y_by_scenario[sid]
         t_days = np.asarray(t_truth) / 86400.0
 
-        pos_by_model: Dict[str, np.ndarray] = {}
-        alt_by_model: Dict[str, np.ndarray] = {}
+        pos_by_model: dict[str, np.ndarray] = {}
+        alt_by_model: dict[str, np.ndarray] = {}
         ric_by_model = {}
         for result in results:
             if result.status != "ok":
@@ -1333,10 +1334,10 @@ class _ReportPager:
         fig.patch.set_facecolor(_REPORT_THEME["page"])
         return fig
 
-    def _chrome(self, fig, heading: Optional[str]) -> Any:
+    def _chrome(self, fig, heading: str | None) -> Any:
         """Draw header band + footer; return a content axes (0..1)."""
-        from matplotlib.patches import Rectangle
         from matplotlib.lines import Line2D
+        from matplotlib.patches import Rectangle
         self.page_no += 1
         t = _REPORT_THEME
         # Header band
@@ -1368,9 +1369,9 @@ class _ReportPager:
         plt.close(fig)
 
     # -- public page builders ------------------------------------------
-    def cover(self, meta: List[Tuple[str, str]], note: str) -> None:
-        from matplotlib.patches import Rectangle
+    def cover(self, meta: list[tuple[str, str]], note: str) -> None:
         from matplotlib.lines import Line2D
+        from matplotlib.patches import Rectangle
         t = _REPORT_THEME
         self.page_no += 1
         fig = self._blank()
@@ -1398,8 +1399,8 @@ class _ReportPager:
                  color=t["muted"], fontsize=8, va="center")
         self._save(fig)
 
-    def table_page(self, heading: str, col_labels: List[str], rows: List[List[str]],
-                   *, highlight_row: Optional[int] = None, intro: Optional[str] = None) -> None:
+    def table_page(self, heading: str, col_labels: list[str], rows: list[list[str]],
+                   *, highlight_row: int | None = None, intro: str | None = None) -> None:
         fig = self._blank()
         ax = self._chrome(fig, heading)  # content axes, axis off, coords 0..1
         top = 0.90
@@ -1447,7 +1448,7 @@ class _ReportPager:
         self._save(fig)
         return True
 
-    def text_page(self, heading: str, paragraphs: List[str]) -> None:
+    def text_page(self, heading: str, paragraphs: list[str]) -> None:
         fig = self._blank()
         ax = self._chrome(fig, heading)
         y = 0.92
@@ -1459,7 +1460,7 @@ class _ReportPager:
 
 
 def _style_table(tbl, *, n_body: int, first_col_left: bool = False,
-                 highlight_row: Optional[int] = None) -> None:
+                 highlight_row: int | None = None) -> None:
     """Apply the professional table style to a matplotlib table in place."""
     t = _REPORT_THEME
     tbl.auto_set_font_size(False)
@@ -1486,10 +1487,10 @@ def _style_table(tbl, *, n_body: int, first_col_left: bool = False,
 
 def write_report_pdf(
     args: argparse.Namespace,
-    scenarios: List[Scenario],
-    agg: Dict[str, Dict],
-    rankings: List[Dict],
-    worst_cases: List[Dict],
+    scenarios: list[Scenario],
+    agg: dict[str, dict],
+    rankings: list[dict],
+    worst_cases: list[dict],
     plots_dir: Path,
     out_dir: Path,
 ) -> None:
@@ -1563,10 +1564,10 @@ def write_report_pdf(
 
 def write_gpu_batch_report_pdf(
     args: argparse.Namespace,
-    aggregate_rows: List[Dict[str, Any]],
-    runtime_rows: List[Dict[str, Any]],
-    equivalent: Dict[str, Any],
-    selected: Dict[str, Any],
+    aggregate_rows: list[dict[str, Any]],
+    runtime_rows: list[dict[str, Any]],
+    equivalent: dict[str, Any],
+    selected: dict[str, Any],
     plots_dir: Path,
     reports_dir: Path,
 ) -> None:

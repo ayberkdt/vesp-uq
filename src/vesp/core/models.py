@@ -6,8 +6,8 @@ import torch
 from torch import nn
 
 from vesp.common.artifacts import atomic_torch_save
-from vesp.core.kernels import evaluate_kernel
 from vesp.core.diagnostics import source_diagnostics
+from vesp.core.kernels import evaluate_kernel
 from vesp.core.losses import shell_energy
 from vesp.core.sources import SourceSet
 

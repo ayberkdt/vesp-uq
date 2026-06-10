@@ -8,12 +8,11 @@ generation.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
-
 
 _FLOAT_RE = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[EeDd][+-]?\d+)?")
 _NUM_DELIM_TRANS = str.maketrans({",": " ", "\t": " "})

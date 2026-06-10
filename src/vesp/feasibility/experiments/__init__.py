@@ -32,12 +32,12 @@ from vesp.feasibility.experiments.runner import (
     load_experiment_config,
     run_experiment,
 )
+from vesp.feasibility.experiments.suites import SUITES, resolve_suite
 from vesp.feasibility.experiments.summarize import (
     SUMMARY_COLUMNS,
     summary_row,
     write_suite_artifacts,
 )
-from vesp.feasibility.experiments.suites import SUITES, resolve_suite
 
 __all__ = [
     "CORE_EXPERIMENTS",

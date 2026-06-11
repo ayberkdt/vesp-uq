@@ -279,27 +279,37 @@ src/vesp/
                    runner.py     load experiment YAML, expand sweeps, run trials
                    summarize.py  standardized summary row + suite CSV/MD/Pareto + plots
                    suites.py     named suites (synthetic, real_lunar, ci, all)
-    app/         ui.py (PyQt6 workbench)
+    app/         ui.py (legacy PyQt6 Stage-1/2 workbench)
     uq/          VESP-UQ: surrogate-agnostic uncertainty / risk-calibration layer
-                   plugin.py     VESPUQPlugin: fit / predict_uncertainty /
-                                 predict_covariance_3x3 / score_trajectory
+                   plugin.py     VESPUQPlugin: fit / predict_uncertainty / predict_covariance_3x3
+                                 / score_trajectory / save / load / update_error
+                   run.py        TRAINING driver: calibration + screening -> JSON / MD / CSV
+                   screen.py     SERVE driver: screen ensembles with a persisted model (no refit)
+                   compare.py    model-vs-model promotion gate (drift / calibration / agreement)
                    trajectory.py trajectory risk scoring + selective rerun (run_risk_screening)
                    ensemble.py   synthetic orbit ensemble + nearest-neighbour ground-truth error
                    data.py       surrogate-agnostic UQSamples loader (error / ref-surrogate modes)
                    metrics.py    vector (ellipsoid / Mahalanobis chi-square-3) calibration metrics
-                   run.py        IAC driver: calibration + screening -> JSON / MD / CSV reports
+                   propagation.py / linear_propagation.py   exploratory MC / STM covariance
+                   conformal.py / audit.py / physical_units.py / correction.py
+    ui/          Mission Console (PyQt6): theme / widgets / jobs / pages (7 pages)
 
+ui/              app_vespuq.py -- Mission Console launcher (python ui/app_vespuq.py)
 configs/         experiment YAML configs (single source of truth), grouped by purpose
   feasibility/   Stage 1-2 deterministic synthetic + stress configs
   real_lunar/    Stage 2-3 real GRAIL gl0420a runs (ridge / maxent / pareto)
   ablation/      real-lunar ablation studies (shells / regularization / low-alt weighting)
   uncertainty/   Stage 3C posterior-calibration configs
-  vespuq/        VESP-UQ layer configs (vespuq_smoke + vespuq_real_lunar)
+  vespuq/        VESP-UQ layer configs (vespuq_smoke + vespuq_real_lunar + vespuq_real_lunar_L90)
   experiments/   the falsifiable experiment configs (E0-E5 families)
-scripts/         dataset builders and orchestration helpers
+scripts/         dataset builders, benchmarks, and orchestration helpers
                  run_experiment_suite.py / summarize_experiments.py / run_vespuq.py
+                 compare_models.py / build_iac_pack.py / benchmark_gpu.py / benchmark_stm_dispersion.py
+benchmarks/      curated benchmark result docs (see benchmarks/README.md)
 docs/            SCIENTIFIC_CLAIMS.md + VESP_UQ_IAC_PLAN.md + VESP_UQ_LIMITATIONS.md
+                 + VESP_UQ_NEXT_STEPS.md (roadmap with N-item statuses)
 tests/           pytest suite
+CHANGELOG.md     versioned release notes (semver on the `vesp` package surface)
 data/            input gravity models and prepared residual CSVs
 outputs/         generated run artifacts (git-ignored)
 pyproject.toml   packaging (src layout) + pytest config

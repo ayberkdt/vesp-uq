@@ -74,6 +74,18 @@ It is surrogate-agnostic: it only needs acceleration samples, not the surrogate'
 - **Batched + query-chunked prediction**: `score_ensemble` scores the whole ensemble in batched
   dense passes and all prediction paths chunk over queries (`uq.query_chunk_size`), bounding
   memory with per-trajectory numbers identical to sequential scoring.
+- **Model comparison / promotion gate** (`vesp.uq.compare`, `scripts/compare_models.py`):
+  posterior distance, per-band calibration side-by-side, screening agreement (flag IoU + risk
+  Spearman), domain-support drift; both model artifacts checksummed into the manifest.
+- **IAC evidence pack** (`scripts/build_iac_pack.py`): one command assembles the claim-mapped,
+  checksummed evidence bundle (`EVIDENCE.md` maps each artifact to its claim and to the
+  `SCIENTIFIC_CLAIMS.md` limits).
+- **Second residual band (N11)**: the degree-31..90 set (a degree-30 truncation surrogate's
+  error) calibrates without retuning -- conservatively, not sharply; see
+  `benchmarks/vespuq_real_lunar_L90_report.md` for the band-vs-band table.
+- **STM-dispersion diagnostic (N10, honest null)**: dynamics-weighting the force-error
+  posterior via the linearized STM does NOT co-rank long-horizon ST-LRPS position error
+  (Spearman ~ -0.05); kept out of the default scoring modes by design.
 
 **Force-risk / OOD vs position-error diagnostic.** The core deliverable is *force-model risk /
 OOD detection* — does the score flag low-altitude/OOD passes and rank the surrogate's true

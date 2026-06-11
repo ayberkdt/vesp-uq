@@ -19,9 +19,11 @@ jobs:
       - name: Install ruff
         run: python -m pip install ruff==0.15.16
 
-      - name: Ruff lint (VESP-UQ surface + scripts + tests)
+      - name: Ruff lint (VESP-UQ + common + UI surfaces, scripts, tests)
         # N2: lint-only gate (see pyproject [tool.ruff]). The formatter is intentionally not gated.
-        run: ruff check src/vesp/uq scripts tests
+        # Scope = the maintained surfaces (uq/common/ui + launchers); the legacy Stage-1/2
+        # feasibility tree stays out by the original N2 churn decision.
+        run: ruff check src/vesp/uq src/vesp/common src/vesp/ui ui scripts tests
 
   test:
     runs-on: ubuntu-latest

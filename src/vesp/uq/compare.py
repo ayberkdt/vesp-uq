@@ -16,12 +16,16 @@ def compare_models(
     plugin_b: VESPUQPlugin,
     held_out_positions: torch.Tensor,
     held_out_error: torch.Tensor,
-    trajectory_ensemble: list[dict] | None = None,
+    trajectory_ensemble: list[torch.Tensor] | None = None,
     altitude_bands: dict[str, list[float]] | None = None,
     scoring_mode: str = "supervisor_rel",
     threshold_policy: dict | None = None,
 ) -> dict:
-    """Compare two fitted models on posterior distance, calibration, and screening agreement."""
+    """Compare two fitted models on posterior distance, calibration, and screening agreement.
+
+    ``trajectory_ensemble`` is a list of ``(T_i, 3)`` position tensors (the same shape
+    :meth:`VESPUQPlugin.score_ensemble` consumes).
+    """
 
     plugin_a._require_fitted()
     plugin_b._require_fitted()
@@ -54,22 +58,24 @@ def compare_models(
     cal_a = plugin_a.evaluate_calibration(held_out_positions, held_out_error, altitude_bands=altitude_bands)
     cal_b = plugin_b.evaluate_calibration(held_out_positions, held_out_error, altitude_bands=altitude_bands)
 
-    # Restructure calibration as a combined dictionary for easy markdown rendering
+    # Restructure calibration as a combined dictionary for easy markdown rendering. The
+    # calibration report also carries scalar summary keys (e.g. low_high_epistemic_std_ratio);
+    # only the per-band dict entries are band rows.
     calibration_comparison = {}
-    for band in cal_a:
-        if band in cal_b:
-            calibration_comparison[band] = {
-                "rmse": {"A": cal_a[band]["rmse"], "B": cal_b[band]["rmse"]},
-                "mean_pred_std": {"A": cal_a[band]["mean_pred_std"], "B": cal_b[band]["mean_pred_std"]},
-                "picp_90": {"A": cal_a[band]["picp_90"], "B": cal_b[band]["picp_90"]},
-            }
+    for band, metrics_a in cal_a.items():
+        metrics_b = cal_b.get(band)
+        if not isinstance(metrics_a, dict) or not isinstance(metrics_b, dict):
+            continue
+        calibration_comparison[band] = {
+            "rmse": {"A": metrics_a["rmse"], "B": metrics_b["rmse"]},
+            "mean_pred_std": {"A": metrics_a["mean_pred_std"], "B": metrics_b["mean_pred_std"]},
+            "picp_90": {"A": metrics_a["picp_90"], "B": metrics_b["picp_90"]},
+        }
 
     # Screening agreement
     agreement = {}
     if trajectory_ensemble:
-        import scipy.stats
-
-        from vesp.uq.selection import select_reruns
+        from vesp.uq.selection import _spearman, select_reruns
 
         # Score ensemble with both models
         res_a = plugin_a.score_ensemble(
@@ -82,8 +88,10 @@ def compare_models(
         scores_a = [r.risk_score for r in res_a]
         scores_b = [r.risk_score for r in res_b]
 
-        # Risk Spearman
-        spearman = float(scipy.stats.spearmanr(scores_a, scores_b).statistic)
+        # Risk Spearman (the same dependency-free rank correlation the selection layer reports)
+        spearman = _spearman(
+            torch.tensor(scores_a, dtype=torch.float64), torch.tensor(scores_b, dtype=torch.float64)
+        )
 
         # Flag overlap
         policy_kwargs = threshold_policy or {"rerun_fraction": 0.2}

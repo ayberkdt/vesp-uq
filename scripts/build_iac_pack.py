@@ -40,6 +40,14 @@ This bundle aggregates the claim-mapped evidence for the VESP-UQ calibration lay
 **Claim**: *Does not claim position-error prediction. Force-risk does not rank long-horizon ST-LRPS position error.* (SCIENTIFIC_CLAIMS.md)
 **Evidence**: `position_error_diagnostic.md` (skipped or indicates diagnostic only).
 
+### 8. Dynamics-Aware Risk Diagnostic (Null Result, N10)
+**Claim**: *Weighting the force-error posterior by linearized trajectory dynamics (STM dispersion) also does NOT rank long-horizon ST-LRPS position error -- reported as an honest exploratory null, never a position-error claim.* (VESP_UQ_NEXT_STEPS.md N10)
+**Evidence**: `stm_dispersion_diagnostic.md` (from `benchmark_stm_dispersion.py`; requires the local 512-scenario set).
+
+### 9. Surrogate-Agnosticism Across Error Bands (N11)
+**Claim**: *The same layer calibrates a second, disjoint residual band (degree-31..90, a degree-30 truncation surrogate) without retuning; coverage is conservative rather than sharp on the second band.* (benchmarks/vespuq_real_lunar_L90_report.md)
+**Evidence**: `vespuq_real_lunar_L90_report.md` (band-vs-band comparison table included).
+
 ## Provenance
 Every file in this pack is tracked in `run_manifest.json` via SHA-256 checksums, tying it directly to the exact source configurations.
 """
@@ -79,6 +87,9 @@ def main(argv=None):
         "position_error_diagnostic.md": Path("outputs/iac/position_error_diagnostic.md"),
         "linear_propagation.md": Path("outputs/linear_propagation/linear_propagation.md"),
         "force_correction_benchmark.md": Path("outputs/correction/force_correction_benchmark.md"),
+        # Optional evidence (collected when present; needs local data / a real-lunar run):
+        "stm_dispersion_diagnostic.md": Path("outputs/stm_dispersion/stm_dispersion_diagnostic.md"),
+        "vespuq_real_lunar_L90_report.md": Path("benchmarks/vespuq_real_lunar_L90_report.md"),
     }
 
     collected = []
@@ -94,11 +105,9 @@ def main(argv=None):
     if missing:
         print(f"Warning: the following evidence files were missing and skipped: {missing}")
 
-    # 3. Write EVIDENCE.md
-    (out / "EVIDENCE.md").write_text(EVIDENCE_MD, encoding="utf-8")
-
-    # 4. Generate manifest via write_run_artifacts
-    # Note: write_run_artifacts automatically checksums text_files and json_files
+    # 3. EVIDENCE.md + manifest via the artifact layer. The collected evidence files were
+    # copied above, so checksum them into the manifest as consumed inputs -- every table in
+    # the pack traces back to the exact bytes of the run that produced it.
     print("Writing artifact manifest...")
     write_run_artifacts(
         out_dir=out,
@@ -106,15 +115,15 @@ def main(argv=None):
         json_files={},
         text_files={"EVIDENCE.md": EVIDENCE_MD},
         config={"source_config": args.config, "collected_files": collected},
-
+        inputs={name: out / name for name in collected},
     )
 
-    # 5. Zip it up
-    zip_path = Path("outputs") / "iac_pack"
-    shutil.make_archive(str(zip_path), 'zip', out)
+    # 4. Zip the bundle next to the output directory (honors --out-dir).
+    zip_base = out.parent / out.name
+    shutil.make_archive(str(zip_base), 'zip', out)
 
     print(f"IAC Pack assembled at: {out}")
-    print(f"IAC Pack archived at: {zip_path}.zip")
+    print(f"IAC Pack archived at: {zip_base}.zip")
 
 if __name__ == "__main__":
     main()

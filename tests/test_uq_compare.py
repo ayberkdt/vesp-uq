@@ -84,6 +84,29 @@ def test_updated_model_comparison(dummy_plugin, dummy_data, dummy_ensemble, tmp_
     assert report["domain_shift"]["mean_score_on_A"] < 1.0
 
 
+def test_identity_comparison_with_full_band_coverage():
+    # Regression: the calibration report carries SCALAR summary keys (low_high_*_ratio) next to
+    # the per-band dicts; the comparison must skip them instead of subscripting floats. This
+    # needs enough held-out samples that BOTH the low and high bands exist.
+    g = torch.Generator().manual_seed(11)
+    dirs = torch.randn(400, 3, generator=g, dtype=torch.float64)
+    dirs = dirs / torch.linalg.norm(dirs, dim=-1, keepdim=True)
+    radii = 1.03 + 0.57 * torch.rand(400, 1, generator=g, dtype=torch.float64)
+    pos = dirs * radii
+    err = 1.0e-4 * torch.randn(400, 3, generator=g, dtype=torch.float64)
+
+    sources = make_shell_sources([0.86], 48, dtype=torch.float64)
+    plugin = VESPUQPlugin(sources, reg_method="fixed", lambda_l2=1.0e-6)
+    plugin.fit_error(pos, err)
+
+    report = compare_models(plugin, plugin, pos, err)
+    bands = report["calibration"]
+    assert "low" in bands and "high" in bands  # the ratio keys existed -> loop survived them
+    assert "low_high_epistemic_std_ratio" not in bands
+    for metrics in bands.values():
+        assert metrics["rmse"]["A"] == metrics["rmse"]["B"]
+
+
 def test_compare_models_cli(tmp_path, dummy_plugin, dummy_data):
     p_a = tmp_path / "a.pt"
     p_b = tmp_path / "b.pt"
@@ -100,12 +123,21 @@ def test_compare_models_cli(tmp_path, dummy_plugin, dummy_data):
             "position_units": "normalized",
         }, f)
 
+    # Trajectory CSV exercises the screening-agreement path of the CLI (Format A).
+    traj_csv = tmp_path / "traj.csv"
+    with open(traj_csv, "w") as f:
+        f.write("trajectory_id,t,x,y,z\n")
+        for tid in range(3):
+            for k in range(4):
+                f.write(f"{tid},{k},{1.1 + 0.05 * k},{0.1 * tid},0\n")
+
     out_dir = tmp_path / "out"
     subprocess.check_call([
         sys.executable, "-m", "scripts.compare_models",
         "--model-a", str(p_a),
         "--model-b", str(p_b),
         "--data", str(data_csv),
+        "--trajectories", str(traj_csv),
         "--out", str(out_dir)
     ])
 
@@ -116,3 +148,11 @@ def test_compare_models_cli(tmp_path, dummy_plugin, dummy_data):
     with open(out_dir / "model_comparison.json") as f:
         res = json.load(f)
     assert "posterior_distance" in res
+    assert res["screening_agreement"]["flag_overlap"] == 1.0  # identical models, same ensemble
+
+    # promotion decisions must trace to exact model bytes: both artifacts checksummed as inputs
+    with open(out_dir / "run_manifest.json") as f:
+        manifest = json.load(f)
+    assert manifest["inputs"]["model_a"]["sha256"]
+    assert manifest["inputs"]["model_b"]["sha256"]
+    assert manifest["inputs"]["trajectories"]["sha256"]

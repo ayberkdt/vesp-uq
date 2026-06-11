@@ -1,12 +1,15 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+# >=77 for PEP 639 license metadata (license = SPDX string + license-files)
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "vesp"
-version = "0.1.0"
-description = "MaxEnt-VESP Stage 1-2 discrete equivalent-source gravity feasibility framework"
+version = "0.2.0"
+description = "MaxEnt-VESP equivalent-source gravity feasibility framework + VESP-UQ force-risk calibration layer"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.22.0",
@@ -19,7 +22,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "ruff==0.15.16"]
+dev = ["pytest", "ruff==0.15.16", "hypothesis"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

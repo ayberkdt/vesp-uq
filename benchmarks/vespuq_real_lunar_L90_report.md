@@ -1,4 +1,9 @@
-# VESP-UQ Report - Equivalent-Source Force-Risk / OOD Calibration Layer
+# VESP-UQ Report - Equivalent-Source Force-Risk / OOD Calibration Layer (second band, N11)
+
+This is the N11 surrogate-agnosticism run: the SAME layer, fit on a **different error
+spectrum** -- the degree-31..90 residual, i.e. the error of a degree-30 truncation surrogate
+(the headline runs use the degree-2..60 residual of a degree-60 truncation surrogate). See the
+band-vs-band comparison at the end of this report.
 
 dataset: `data/lunar_grail_gl0420a_L90_residual.csv`
 sources: 1280  |  reg: lcurve (lambda_l2=0.0001)  |  noise_model: heteroscedastic  |  covariance_mode: exact  |  global noise_std=6.37e-05
@@ -52,4 +57,31 @@ altitude noise sigma^2(h)=a*h^(-b): a=1.645e-14, b=0.105 (h=r-1; larger b = fast
 - **Did flagged trajectories carry larger true error?** Yes (5.22x the accepted-set error).
 - **Runtime overhead:** 18.938 ms/trajectory, 157.81 us/output point (post-processing only).
 - **What should NOT be claimed:** not a better deterministic surrogate; not a position-error predictor; not true lunar density recovery; not operational orbit covariance propagation; not integrated with ST-LRPS. VESP-UQ is a force-risk / OOD uncertainty-calibration layer at the acceleration interface.
+
+## Band-vs-band comparison: degree-2..60 (headline) vs degree-31..90 (this run)
+
+Same layer architecture (1280 sources, three shells, L-curve ridge, heteroscedastic altitude
+noise), two different error spectra. Numbers from `vespuq_real_lunar_report.md` (L60) and this
+report (L90):
+
+| metric | L60 (deg-2..60) | L90 (deg-31..90) |
+| --- | ---: | ---: |
+| selected lambda (L-curve) | 10 | 1e-4 |
+| global noise_std | 2.11e-04 | 6.37e-05 |
+| low-band z_std | 1.09 | 0.17 |
+| low-band PICP90 | 0.87 | 1.00 |
+| low-band ellipsoid PICP90 | 0.87 | 1.00 |
+| low/high epistemic std ratio | 6.40 | 48.78 |
+| screening capture rate (top decile) | -- (see L60 report) | 0.73 |
+| screening Spearman (force-error oracle) | -- (see L60 report) | 0.84 |
+
+**Honest reading.** The layer remains *usable* on the second band without retuning -- epistemic
+uncertainty still grows strongly toward low altitude (ratio 48.8) and the screening ranks true
+force error well (Spearman 0.84, lift 3.6x). Calibration *sharpness*, however, differs by band:
+on L60 the low band is near-nominal (z_std 1.09, PICP90 0.87), while on L90 the layer is
+**under-confident in-distribution** (z_std 0.09-0.17, PICP90 = 1.00 in every band -- intervals
+wider than needed). The conservative direction is the safe failure mode for screening, but the
+per-band coverage targets are only *met sharply* on the band the noise law was developed
+against; treat L90 coverage as conservative, not optimally calibrated. Both runs are
+reproducible from their configs (`vespuq_real_lunar.yaml`, `vespuq_real_lunar_L90.yaml`).
 

@@ -19,6 +19,8 @@ It matters *what each benchmark tests* — a result can be strong on one and nul
 | Force-error covariance propagation (MC) | [`covariance_propagation.md`](covariance_propagation.md) | Monte Carlo orbit-dispersion sample covariance of the **same** force-error posterior; cross-checks the STM result and agrees in the small-perturbation regime. |
 | Online force-model correction | [`online_force_correction.md`](online_force_correction.md) | does `a_corrected = a_surrogate + posterior-mean force error` cut integrated **position** error vs the bare surrogate, and at what per-RHS cost? (exploratory force-model correction) |
 | Position-error diagnostic | [`position_error_diagnostic.md`](position_error_diagnostic.md) | does force-risk *co-rank* long-horizon ST-LRPS **position** error? (diagnostic only) |
+| STM-dispersion diagnostic (N10) | [`stm_dispersion_diagnostic.md`](stm_dispersion_diagnostic.md) | does *dynamics-weighted* force risk (linearized STM position dispersion) co-rank ST-LRPS **position** error? (exploratory diagnostic; measured **null**, Spearman ~ -0.05) |
+| Second residual band (N11) | [`vespuq_real_lunar_L90_report.md`](vespuq_real_lunar_L90_report.md) | does the same layer calibrate a **different error spectrum** (degree-31..90, a degree-30 truncation surrogate) without retuning? (band-vs-band table included; conservative, not sharp) |
 | GPU / Float32 Verification | [`gpu_verification.md`](gpu_verification.md) | throughput speedups and float32 precision degradation for CUDA hardware paths; states the policy that headline claims remain CPU float64. |
 
 Two scoring families are used:
@@ -50,6 +52,10 @@ python scripts/run_propagation.py --config configs/vespuq/vespuq_real_lunar.yaml
 python scripts/run_force_correction_benchmark.py --config configs/vespuq/vespuq_smoke.yaml  # online force-model correction (accuracy vs cost)
 python scripts/benchmark_gpu.py --config configs/vespuq/vespuq_smoke.yaml                   # GPU and float32 screening throughput vs precision
 python scripts/analyze_512_orbits.py                                             # ST-LRPS position-error diagnostic
+python scripts/benchmark_stm_dispersion.py                                       # N10 STM-dispersion diagnostic (needs the local 512-scenario set)
+python -m vesp.uq.run --config configs/vespuq/vespuq_real_lunar_L90.yaml          # N11 second residual band (degree-31..90)
+python scripts/compare_models.py --model-a A.pt --model-b B.pt --data heldout.csv --out outputs/compare   # N12 promotion gate
+python scripts/build_iac_pack.py --config configs/vespuq/vespuq_smoke.yaml        # N13 claim-mapped evidence bundle (--collect-only to skip reruns)
 ```
 
 Each VESP-UQ script writes a `run_manifest.json` alongside its outputs, recording the config

@@ -364,9 +364,12 @@ def _build_screen_md(report: dict) -> str:
 
 
 def main(argv: Iterable[str] | None = None) -> None:
+    from vesp.common.version import package_version
+
     parser = argparse.ArgumentParser(
         description="Screen a trajectory ensemble with a persisted VESP-UQ layer (no refitting)."
     )
+    parser.add_argument("--version", action="version", version=f"vesp-uq {package_version()}")
     parser.add_argument("--model", required=True, help="path to a saved vespuq_plugin.pt")
     parser.add_argument("--out", required=True, help="output run directory")
     parser.add_argument("--trajectories", default=None, help="external trajectory CSV (Format A/B)")

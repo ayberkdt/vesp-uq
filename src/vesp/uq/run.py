@@ -145,7 +145,10 @@ def run(config: dict) -> dict:
 
 
 def main(argv: Iterable[str] | None = None) -> None:
+    from vesp.common.version import package_version
+
     parser = argparse.ArgumentParser(description="VESP-UQ: calibration + trajectory force-risk screening.")
+    parser.add_argument("--version", action="version", version=f"vesp-uq {package_version()}")
     parser.add_argument("--config", required=True)
     parser.add_argument(
         "--save-model",

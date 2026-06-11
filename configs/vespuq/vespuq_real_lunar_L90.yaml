@@ -1,10 +1,12 @@
-# VESP-UQ -- Equivalent-source uncertainty calibration layer on the real lunar residual.
-#   python -m vesp.uq.run --config configs/vespuq/vespuq_real_lunar.yaml
+# VESP-UQ -- second band-limited residual (N11): surrogate-agnosticism evidence.
+#   python -m vesp.uq.run --config configs/vespuq/vespuq_real_lunar_L90.yaml
 #
 # Runs Experiment 1 (standalone residual-error calibration) and Experiment 3 (trajectory risk
-# screening) on the GRAIL gl0420a degree-2..60 residual. That residual IS the error of a
-# degree-60 truncation surrogate, so the layer is fit on e_a = a_reference - a_surrogate with
-# the surrogate being the truncated model (surrogate = 0 in residual space).
+# screening) on the GRAIL gl0420a degree-31..90 residual. That residual IS the error of a
+# degree-30 truncation surrogate (band-limited to degree 90), so the layer is fit on
+# e_a = a_reference - a_surrogate with the surrogate being the truncated model (surrogate = 0 in
+# residual space). A different error spectrum than the degree-2..60 set: see
+# benchmarks/vespuq_real_lunar_L90_report.md for the side-by-side calibration comparison.
 seed: 42
 device: cpu
 dtype: float64
@@ -20,7 +22,7 @@ body:
 
 data:
   type: csv
-  format: residual          # acceleration column IS the degree-90 surrogate's error
+  format: residual          # acceleration column IS the degree-30 truncation surrogate's error (31..90 band)
   path: data/lunar_grail_gl0420a_L90_residual.csv
   train_fraction: 0.6
 

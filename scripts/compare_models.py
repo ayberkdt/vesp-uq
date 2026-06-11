@@ -79,7 +79,8 @@ def main() -> None:
     ensemble = None
     if args.trajectories:
         print(f"Loading trajectories from: {args.trajectories}")
-        ensemble = load_trajectory_csv(args.trajectories)
+        # compare_models consumes the list of (T, 3) position tensors, not the dataset wrapper.
+        ensemble = load_trajectory_csv(args.trajectories).trajectories
 
     print("Computing comparisons...")
     report = compare_models(
@@ -105,12 +106,15 @@ def main() -> None:
     if args.trajectories:
         inputs["trajectories"] = args.trajectories
 
+    # `inputs=` checksums both model artifacts (and the data CSVs) into the manifest, so a
+    # promotion decision is traceable to the exact model bytes that were compared.
     write_run_artifacts(
         out_dir=out_dir,
         tool="compare_models",
         json_files={"model_comparison.json": report},
         text_files={"model_comparison.md": md_report},
         config=inputs,
+        inputs=inputs,
         seed=0,
     )
     print(f"Comparison reports written to {out_dir}")

@@ -156,16 +156,17 @@ The full lifecycle is also drivable from a PyQt6 desktop app:
 python ui/app_vespuq.py
 ```
 
-Six pages — **Dashboard** (models/runs overview), **Train** (configure + launch a training run
+Seven pages — **Dashboard** (models/runs overview), **Train** (configure + launch a training run
 with live logs and a calibration result panel), **Screen** (serve a persisted model over a
 generated ensemble or an external CSV, with policy overrides and a flagged-trajectory table),
-**Model** (provenance, packaged decision policy, model card, and the uncertainty-vs-altitude
-profile), **Update** (exact sequential update with the honesty warning surfaced in-page), and
-**Runs** (manifest/provenance browser). The heavy pipelines run as subprocesses of the
-documented CLIs (`python -m vesp.uq.run` / `vesp.uq.screen`), so anything done in the UI is
-reproducible from the command line; results are read back from the artifact/manifest layer.
-The UI shell imports no torch/matplotlib at startup (lazy workers; pinned by
-`tests/test_vespuq_ui.py`).
+**Propagate** (STM/MC force-error covariance propagation with the position-sigma growth plot and
+the exploratory-not-validated caveat in-page), **Model** (provenance, packaged decision policy,
+model card, and the uncertainty-vs-altitude profile), **Update** (exact sequential update with
+the honesty warning surfaced in-page), and **Runs** (manifest/provenance browser). The heavy
+pipelines run as subprocesses of the documented CLIs (`python -m vesp.uq.run` / `vesp.uq.screen`
+/ the propagation scripts), so anything done in the UI is reproducible from the command line;
+results are read back from the artifact/manifest layer. The UI shell imports no
+torch/matplotlib at startup (lazy workers; pinned by `tests/test_vespuq_ui.py`).
 
 Prediction paths are query-chunked (`uq.query_chunk_size`, default 8192 positions per dense
 block) and `score_ensemble` scores the whole trajectory ensemble in batched passes — bounded

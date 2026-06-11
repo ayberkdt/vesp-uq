@@ -28,6 +28,7 @@ UI_MODULES = (
     "vesp.ui.pages.dashboard",
     "vesp.ui.pages.train",
     "vesp.ui.pages.screen",
+    "vesp.ui.pages.propagate",
     "vesp.ui.pages.model",
     "vesp.ui.pages.update",
     "vesp.ui.pages.runs",
@@ -47,7 +48,7 @@ def test_app_exposes_entry_point_and_pages():
 
     assert callable(app.main)
     assert {key for key, _label in app.NAV_ITEMS} == {
-        "dashboard", "train", "screen", "model", "update", "runs",
+        "dashboard", "train", "screen", "propagate", "model", "update", "runs",
     }
 
 

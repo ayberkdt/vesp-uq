@@ -38,6 +38,7 @@ def write_run_artifacts(
     config: Mapping[str, Any] | None = None,
     json_files: Mapping[str, Mapping[str, Any]] | None = None,
     text_files: Mapping[str, str] | None = None,
+    inputs: Mapping[str, str | Path] | None = None,
     seed: Any = None,
     config_path: str | None = None,
     manifest_name: str = MANIFEST_NAME,
@@ -45,7 +46,10 @@ def write_run_artifacts(
     """Write a VESP-UQ script's outputs atomically with a provenance manifest + checksums.
 
     ``json_files`` maps filename -> JSON-able payload (a ``_provenance`` block is injected unless one
-    is already present); ``text_files`` maps filename -> text (Markdown / CSV). Returns the manifest
+    is already present); ``text_files`` maps filename -> text (Markdown / CSV). ``inputs`` maps a
+    logical name -> path of a file the run CONSUMED (saved models, datasets, trajectory CSVs); each
+    existing input is checksummed into the manifest's ``inputs`` block so results trace to exact
+    input bytes (mirrors :func:`vesp.common.artifacts.write_run_manifest`). Returns the manifest
     dict. Output filenames are preserved exactly; ``run_manifest.json`` is added alongside them.
     """
 
@@ -81,6 +85,17 @@ def write_run_artifacts(
         }
         for name in written
     }
+    input_payload: dict[str, dict[str, Any]] = {}
+    for name, input_path in (inputs or {}).items():
+        p = Path(input_path)
+        if p.exists() and p.is_file():
+            input_payload[str(name)] = {
+                "path": str(p),
+                "sha256": compute_file_sha256(p),
+                "bytes": p.stat().st_size,
+            }
+        else:
+            input_payload[str(name)] = {"path": str(p), "missing": True}
     manifest = {
         "schema_version": RUN_MANIFEST_SCHEMA_VERSION,
         "tool": tool,
@@ -91,6 +106,7 @@ def write_run_artifacts(
         "config_path": config_path,
         "config": json_safe(dict(cfg_map)),
         "artifacts": artifacts,
+        "inputs": input_payload,
     }
     atomic_write_json(out_dir / manifest_name, manifest)
     return manifest

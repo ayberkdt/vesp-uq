@@ -55,3 +55,45 @@ jobs:
           python scripts/run_physical_budget_screening.py --config configs/vespuq/vespuq_smoke.yaml --budget 1e-8 --units m/s^2 --scoring expected_abs_p95
           python scripts/run_linear_propagation.py --config configs/vespuq/vespuq_smoke.yaml --duration 7.0
           python scripts/run_force_correction_benchmark.py --config configs/vespuq/vespuq_smoke.yaml --duration 7.0 --cost-reps 20
+          python scripts/run_iac_benchmarks.py --config configs/vespuq/vespuq_smoke.yaml --out-dir outputs/iac
+          python scripts/run_linear_propagation.py --config configs/vespuq/vespuq_smoke.yaml --duration 7.0 --out-dir outputs/linear_propagation
+          python scripts/build_iac_pack.py --collect-only --out-dir outputs/iac_pack
+          test -f outputs/iac_pack/EVIDENCE.md
+          test -f outputs/iac_pack/run_manifest.json
+          test -f outputs/iac_pack/calibration_report.md
+          test -f outputs/iac_pack/linear_propagation.md
+          test -f outputs/iac_pack/force_correction_benchmark.md
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Build wheel + sdist
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Smoke-test the wheel in a clean venv
+        # N16 acceptance: the BUILT wheel (not the source tree) must run the documented CLIs.
+        run: |
+          python -m venv /tmp/wheel-venv
+          /tmp/wheel-venv/bin/pip install --upgrade pip
+          /tmp/wheel-venv/bin/pip install dist/*.whl --no-deps
+          /tmp/wheel-venv/bin/pip install numpy scipy pandas matplotlib pyyaml
+          /tmp/wheel-venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
+          /tmp/wheel-venv/bin/python -m vesp.uq.run --version
+          /tmp/wheel-venv/bin/python -m vesp.uq.screen --version
+          /tmp/wheel-venv/bin/python -m vesp.uq.run --config configs/vespuq/vespuq_smoke.yaml --save-model
+          /tmp/wheel-venv/bin/python -m vesp.uq.screen --model outputs/vespuq_smoke/vespuq_plugin.pt --config configs/vespuq/vespuq_smoke.yaml --out outputs/wheel_screen_smoke
+
+      - name: Upload distribution artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vesp-dist
+          path: dist/

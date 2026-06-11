@@ -304,7 +304,15 @@ N10 → N12 → N13 → N11 → N15 → N16 → N14 → N17, but any can be pick
 - **Acceptance:** pipeline runs end-to-end on the new band; calibration table reported
   honestly (better or worse); dataset contract test. **Effort:** M.
 
-### N12 — Model comparison + drift report (registry promotion gate)
+### ~~N12 — Model comparison + drift report (registry promotion gate)~~ **(DONE)**
+
+> Implemented: `vesp.uq.compare.compare_models` + `scripts/compare_models.py`
+> (`model_comparison.{json,md}` through the artifact layer; both model files checksummed into
+> the manifest's `inputs`). Verification pass fixed two latent defects before sign-off: the
+> calibration side-by-side crashed on the report's scalar summary keys with full band coverage,
+> and the CLI passed the `TrajectoryDataset` wrapper instead of the trajectory list to the
+> screening-agreement path — both fixed and locked by `tests/test_uq_compare.py` (identity
+> comparison with full band coverage, CLI run incl. `--trajectories`, manifest input checksums).
 
 - **Why:** with persistence + sequential updates, the operational question becomes "is model B
   (updated/retrained) safe to promote over model A?" — industrial registries answer this with a
@@ -318,7 +326,13 @@ N10 → N12 → N13 → N11 → N15 → N16 → N14 → N17, but any can be pick
   Spearman 1.0); comparing pre/post `update_error` shows the expected n_train/noise deltas;
   schema locked by tests. **Effort:** M. *(Soft synergy: a UI "Compare" tab later.)*
 
-### N13 — IAC evidence pack: one-command paper bundle
+### ~~N13 — IAC evidence pack: one-command paper bundle~~ **(DONE)**
+
+> Implemented: `scripts/build_iac_pack.py` (full mode reruns the benchmark suite;
+> `--collect-only` assembles existing outputs) producing `EVIDENCE.md` with a 9-claim map
+> (incl. the N10 null diagnostic and the N11 second-band evidence), a checksummed manifest with
+> the collected files as `inputs`, and a zip honoring `--out-dir`. CI smoke now builds the pack
+> on the smoke config and asserts the core evidence files exist.
 
 - **Why:** the IAC deliverable ultimately needs figures + tables; today they are scattered
   across per-benchmark run dirs. Reproducible-paper practice: one command regenerates the whole
@@ -331,7 +345,13 @@ N10 → N12 → N13 → N11 → N15 → N16 → N14 → N17, but any can be pick
 - **Acceptance:** one command produces the pack on the smoke config in CI; each table/figure
   traceable to a run manifest. **Effort:** M.
 
-### N14 — GPU verification + float32 screening benchmark (skip-guarded)
+### ~~N14 — GPU verification + float32 screening benchmark (skip-guarded)~~ **(DONE)**
+
+> Implemented: `tests/test_uq_gpu_parity.py` (CUDA-marked, skip cleanly on CPU-only machines;
+> float64 parity at 1e-12) + `scripts/benchmark_gpu.py` + `benchmarks/gpu_verification.md` with
+> the policy that headline numbers stay float64/CPU. Verification pass replaced the float32
+> test's vacuous `rtol=1.0` tolerance with a real contract (relative-L2 < 5e-2 on
+> mean-error/sigma + >90% risk-rank agreement — float32 is a ranking/throughput proxy only).
 
 - **Why:** `device`/`dtype` knobs exist but are unverified on CUDA; screening throughput is a
   reported KPI and an easy 10-50x may be available where a GPU exists.
@@ -342,7 +362,12 @@ N10 → N12 → N13 → N11 → N15 → N16 → N14 → N17, but any can be pick
 - **Acceptance:** suite stays green on CPU-only machines (all GPU tests skip); benchmark doc
   reports measured numbers from at least one environment. **Effort:** S-M.
 
-### N15 — Property-based invariant tests (hypothesis)
+### ~~N15 — Property-based invariant tests (hypothesis)~~ **(DONE)**
+
+> Implemented: `tests/test_uq_properties.py` on a fixed `ci` hypothesis profile — threshold and
+> top-k flag-count invariants for `select_reruns`, finite-sample conformal level bound,
+> conformal-scale nonnegativity, aggregator monotonicity (`mean/p95 <= max`), and linear
+> sigma-scaling of the mean score. `hypothesis` added to the dev extra and the CI install.
 
 - **Why:** the scoring/selection/threshold layer is the safety-critical surface; example-based
   tests pin known cases, property tests pin the *invariants* (e.g. flag-count bounds, threshold
@@ -353,25 +378,23 @@ N10 → N12 → N13 → N11 → N15 → N16 → N14 → N17, but any can be pick
 - **Acceptance:** properties run deterministically in CI (fixed profiles/seeds); any
   discovered edge case fixed or documented. **Effort:** S-M.
 
-### N16 — Release engineering: CHANGELOG + v0.2.0 + CI wheel + `--version`
+### ~~N16 — Release engineering: CHANGELOG + v0.2.0 + CI wheel + `--version`~~ **(DONE)**
 
-- **Why:** the package is consumed as a repo; versioned artifacts + a changelog are the
-  industrial baseline (and the N7/N8 surface deserves a version bump).
-- **Deliverables:** `CHANGELOG.md` (retro N1→N9), version 0.2.0 in `pyproject.toml`,
-  `--version` on the `vesp.uq.run`/`vesp.uq.screen` CLIs (via `importlib.metadata`), a CI job
-  building wheel+sdist and uploading them as workflow artifacts.
-- **Acceptance:** `pip install` of the built wheel passes the smoke commands in a clean venv
-  job. **Effort:** S.
+> Implemented: `CHANGELOG.md` (0.1.0 baseline + the full 0.2.0 entry covering N7–N17),
+> `pyproject.toml` bumped to 0.2.0, `--version` on both CLIs via
+> `vesp.common.version.package_version()` (importlib.metadata with a `0.0.0+source` sentinel),
+> and a CI `package` job: `python -m build` → install the wheel in a clean venv → run
+> `--version` + the train→serve smoke from the wheel → upload `dist/` as a workflow artifact.
 
-### N17 — Mission Console: Propagation page
+### ~~N17 — Mission Console: Propagation page~~ **(DONE)**
 
-- **Why:** MC/STM covariance propagation is the one CLI family not yet reachable from the UI.
-- **Deliverables:** a "Propagate" page running `run_propagation.py` / `run_linear_propagation.py`
-  as subprocesses (model/config pickers, duration/samples knobs, live log), plotting
-  position-sigma growth from the emitted CSV, with the exploratory-not-validated framing shown
-  in-page; import-safety tests in `tests/test_vespuq_ui.py` style.
-- **Acceptance:** page drives both scripts on the smoke config; plot renders from the CSV;
-  UI shell stays heavy-import-free. **Effort:** M.
+> Implemented: `src/vesp/ui/pages/propagate.py` — config picker, STM/MC mode toggle, duration
+> knob; runs `run_linear_propagation.py` (with `--out-dir` into a timestamped UI run dir) or
+> `run_propagation.py` as cancellable subprocesses with live logs; plots position/velocity
+> sigma growth from `linear_propagation_states.csv` (MC mode is log-only by design — the
+> sampler writes no files); the exploratory-not-validated caveat is shown in-page. Registered
+> in the nav rail; import-safety + heavy-import contracts extended in
+> `tests/test_vespuq_ui.py`.
 
 ### Backlog (deliberately not scheduled)
 

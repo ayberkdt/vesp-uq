@@ -101,25 +101,55 @@ def test_gpu_score_ensemble_parity_float64(base_config):
 
 
 
+def _rel_l2(a32: torch.Tensor, a64: torch.Tensor) -> float:
+    diff = a32.cpu().to(torch.float64) - a64
+    return float(torch.linalg.norm(diff) / torch.linalg.norm(a64).clamp_min(1e-300))
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-def test_gpu_fit_parity_float32(base_config):
-    """Verify float32 fit on GPU against float64 CPU baseline.
-    Tolerance is relaxed because float32 inversion/SVD differs slightly.
+def test_gpu_float32_scoring_proxy_contract(base_config):
+    """The SUPPORTED float32 path: fit in float64, CAST the fitted posterior to float32 for
+    GPU screening (exactly what `scripts/benchmark_gpu.py` measures). The proxy contract:
+    predictions stay within a few percent and the risk RANKING agrees with float64.
+
+    Fitting directly in float32 is NOT a supported contract -- the Gram solve at small
+    lambda is too ill-conditioned for float32 (measured ~O(1) deviations) -- which is exactly
+    why the headline policy keeps all fitting/calibration in float64.
     """
+
     sources_cpu, pos_cpu, err_cpu = _build_dataset(device="cpu", dtype=torch.float64)
     plugin_cpu = VESPUQPlugin(sources_cpu, **base_config)
     plugin_cpu.fit_error(pos_cpu, err_cpu)
+
+    state_f32 = plugin_cpu.state_dict()
+    state_f32["options"]["dtype"] = "float32"
+    plugin_gpu = VESPUQPlugin.from_state_dict(state_f32, device="cuda")
+
+    test_pos_cpu = _query_shell(50, 1.1, 1.5, seed=42, dtype=torch.float64)
+    out_cpu = plugin_cpu.predict_uncertainty(test_pos_cpu)
+    out_gpu = plugin_gpu.predict_uncertainty(test_pos_cpu.to("cuda", dtype=torch.float32))
+
+    assert _rel_l2(out_gpu.mean_error, out_cpu.mean_error) < 5.0e-2
+    assert _rel_l2(out_gpu.sigma, out_cpu.sigma) < 5.0e-2
+    # ranking agreement is the use case float32 is allowed for (bulk screening / prioritization)
+    order_cpu = torch.argsort(out_cpu.risk_score)
+    order_gpu = torch.argsort(out_gpu.risk_score.cpu().to(torch.float64))
+    agreement = float((order_cpu == order_gpu).float().mean())
+    assert agreement > 0.9
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_gpu_float32_fit_runs_but_carries_no_parity_claim(base_config):
+    """Fitting directly in float32 on GPU must at least run and produce finite, positive
+    uncertainties -- but parity with float64 is deliberately NOT asserted (unsupported path;
+    the Gram matrix at lambda ~ 1e-8 exceeds float32 conditioning)."""
 
     sources_gpu, pos_gpu, err_gpu = _build_dataset(device="cuda", dtype=torch.float32)
     plugin_gpu = VESPUQPlugin(sources_gpu, **base_config)
     plugin_gpu.fit_error(pos_gpu, err_gpu)
 
-    test_pos_cpu = _query_shell(50, 1.1, 1.5, seed=42, dtype=torch.float64)
-    test_pos_gpu = test_pos_cpu.to("cuda", dtype=torch.float32)
-
-    out_cpu = plugin_cpu.predict_uncertainty(test_pos_cpu)
-    out_gpu = plugin_gpu.predict_uncertainty(test_pos_gpu)
-
-    # float32 has much lower precision (~1e-7 relative error on single ops, and we're doing SVDs/inversions)
-    # We tolerate 1e-2 to 5e-2 relative differences, ensuring it's a valid proxy but float64 is standard.
-    torch.testing.assert_close(out_gpu.mean_error.cpu().to(torch.float64), out_cpu.mean_error, rtol=1.0, atol=1.0)
+    test_pos = _query_shell(50, 1.1, 1.5, seed=42, dtype=torch.float64).to("cuda", dtype=torch.float32)
+    out = plugin_gpu.predict_uncertainty(test_pos)
+    assert bool(torch.isfinite(out.mean_error).all())
+    assert bool(torch.isfinite(out.sigma).all())
+    assert bool((out.sigma > 0).all())

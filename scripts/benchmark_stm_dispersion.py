@@ -7,6 +7,7 @@ linearized STM propagator to score trajectories by their predicted
 position-dispersion scalar (`max(position_sigma)`).
 """
 
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,7 @@ import torch
 import yaml
 
 from vesp.uq.data import load_uq_samples_from_csv
+from vesp.uq.io.run_artifacts import write_run_artifacts
 from vesp.uq.linear_propagation import score_stm_dispersion
 from vesp.uq.plugin import VESPUQPlugin
 from vesp.uq.selection import _spearman, select_reruns
@@ -52,16 +54,33 @@ def kepler_to_cartesian(a_norm, e, inc_deg, raan_deg, argp_deg, ta_deg, mu=1.0):
     return r_vec, v_vec
 
 
-def main():
-    cfg_path = "configs/vespuq/vespuq_real_lunar.yaml"
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="N10: STM-dispersion vs ST-LRPS position-error diagnostic.")
+    parser.add_argument("--config", default="configs/vespuq/vespuq_real_lunar.yaml")
+    parser.add_argument("--data", default="data/lunar_grail_gl0420a_L60_residual.csv")
+    parser.add_argument("--scenarios-dir", default="data/test_512", help="dir with scenarios.csv + metrics/")
+    parser.add_argument("--out-dir", default="outputs/stm_dispersion")
+    args = parser.parse_args(argv)
+
+    cfg_path = args.config
     with open(cfg_path) as f:
         cfg = yaml.safe_load(f)
+
+    scenarios_dir = Path(args.scenarios_dir)
+    scenarios_csv = scenarios_dir / "scenarios.csv"
+    metrics_csv = scenarios_dir / "metrics" / "gpu_batch_per_scenario_metrics.csv"
+    if not scenarios_csv.is_file() or not metrics_csv.is_file():
+        raise SystemExit(
+            f"missing ST-LRPS diagnostic data: expected {scenarios_csv} and {metrics_csv} "
+            "(this diagnostic needs the precomputed 512-scenario set; see "
+            "benchmarks/position_error_diagnostic.md)"
+        )
 
     device = torch.device(cfg.get("device", "cpu"))
     dtype = torch.float64
 
     print("Loading test data & fitting VESP-UQ...")
-    samples = load_uq_samples_from_csv("data/lunar_grail_gl0420a_L60_residual.csv")
+    samples = load_uq_samples_from_csv(args.data)
     DU_km = 1738.0
     GM_km3_s2 = 4902.800066
     ACCEL_REF_KM_S2 = GM_km3_s2 / (DU_km**2)
@@ -74,8 +93,8 @@ def main():
     plugin.fit_error(train_pos, train_err_norm)
 
     print("Loading 512 LUNAR test scenarios...")
-    scenarios = pd.read_csv("data/test_512/scenarios.csv")
-    metrics = pd.read_csv("data/test_512/metrics/gpu_batch_per_scenario_metrics.csv")
+    scenarios = pd.read_csv(scenarios_csv)
+    metrics = pd.read_csv(metrics_csv)
 
     st_lrps_metrics = metrics[metrics['model'] == 'ST_LRPS_DT60'].copy()
     if len(st_lrps_metrics) == 0:
@@ -193,11 +212,43 @@ def main():
     ]
 
     out_md = "\n".join(md_lines)
-    out_dir = Path("benchmarks")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_file = out_dir / "stm_dispersion_diagnostic.md"
-    out_file.write_text(out_md, encoding="utf-8")
-    print(f"\nWrote benchmark diagnostic to {out_file}")
+
+    # Route the run outputs through the provenance/artifact layer (N1 convention): JSON results
+    # + Markdown + run_manifest.json with checksums, inputs included. The curated copy under
+    # benchmarks/stm_dispersion_diagnostic.md is a committed snapshot of these numbers.
+    results = {
+        "diagnostic": "stm_dispersion_vs_stlrps_position_error",
+        "is_position_error_benchmark": False,
+        "note": (
+            "exploratory diagnostic: rank agreement between the STM position-dispersion score "
+            "and precomputed ST-LRPS position error; NOT a position-error prediction claim"
+        ),
+        "n_trajectories": n,
+        "rerun_fraction": rerun_fraction,
+        "spearman": float(spearman_corr),
+        "capture_rate": capture_rate,
+        "precision": precision,
+        "lift_over_random": lift,
+        "mean_true_error_flagged_km": mean_err_flagged,
+        "mean_true_error_accepted_km": mean_err_accepted,
+        "error_ratio_flagged_to_accepted": ratio,
+        "random_baseline_capture_mean": float(rand_caps.mean()),
+        "random_baseline_capture_std": float(rand_caps.std()),
+    }
+    write_run_artifacts(
+        out_dir=args.out_dir,
+        tool="benchmark_stm_dispersion",
+        json_files={"stm_dispersion_diagnostic.json": results},
+        text_files={"stm_dispersion_diagnostic.md": out_md},
+        config={"_config_path": cfg_path, **cfg},
+        inputs={
+            "calibration_data": args.data,
+            "scenarios_csv": scenarios_csv,
+            "metrics_csv": metrics_csv,
+        },
+        seed=cfg.get("seed"),
+    )
+    print(f"\nWrote benchmark diagnostic artifacts to {args.out_dir}")
 
 if __name__ == '__main__':
     main()

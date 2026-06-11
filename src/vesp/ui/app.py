@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 
 from vesp.ui.pages.dashboard import DashboardPage
 from vesp.ui.pages.model import ModelPage
+from vesp.ui.pages.propagate import PropagatePage
 from vesp.ui.pages.runs import RunsPage
 from vesp.ui.pages.screen import ScreenPage
 from vesp.ui.pages.train import TrainPage
@@ -34,6 +35,7 @@ NAV_ITEMS = (
     ("dashboard", "⌂  Dashboard"),
     ("train", "⚙  Train"),
     ("screen", "\U0001f6f0  Screen"),
+    ("propagate", "\U0001f4c8  Propagate"),
     ("model", "\U0001f4e6  Model"),
     ("update", "↻  Update"),
     ("runs", "\U0001f5c2  Runs"),
@@ -73,6 +75,7 @@ class MissionConsole(QMainWindow):
             "dashboard": DashboardPage(self.navigate),
             "train": TrainPage(),
             "screen": ScreenPage(),
+            "propagate": PropagatePage(),
             "model": ModelPage(),
             "update": UpdatePage(),
             "runs": RunsPage(),

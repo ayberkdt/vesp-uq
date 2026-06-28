@@ -12,6 +12,7 @@ import torch
 
 from vesp.core.operators import build_acceleration_operator
 from vesp.core.sources import make_shell_sources
+from vesp.extensions.probabilistic import BinnedAltitudeNoiseModel
 from vesp.uq import VESPUQPlugin
 from vesp.uq.correction import CorrectedForceField
 from vesp.uq.plugin import PLUGIN_STATE_VERSION, PREDICTIVE_CONFORMAL_MODES
@@ -25,7 +26,15 @@ def _query_shell(n: int, r_lo: float, r_hi: float, seed: int = 0) -> torch.Tenso
     return dirs * radii
 
 
-def _fitted_plugin(*, conformal_apply: bool = False, conformal_by_band: bool = False) -> VESPUQPlugin:
+def _fitted_plugin(
+    *,
+    conformal_apply: bool = False,
+    conformal_by_band: bool = False,
+    conformal_by_region: bool = False,
+    conformal_mode: str = "norm",
+    noise_model: str = "heteroscedastic",
+    calibrate_supervisor: bool = False,
+) -> VESPUQPlugin:
     sources = make_shell_sources([0.75, 0.9], [24, 32], dtype=torch.float64)
     sigma_true = 0.02 * torch.randn(
         sources.n_sources, generator=torch.Generator().manual_seed(3), dtype=torch.float64
@@ -37,14 +46,19 @@ def _fitted_plugin(*, conformal_apply: bool = False, conformal_by_band: bool = F
         sources,
         reg_method="fixed",
         lambda_l2=1.0e-8,
-        noise_model="heteroscedastic",
+        noise_model=noise_model,
+        altitude_noise_bins=5,
         val_fraction=0.25,
         risk_scoring="supervisor_rel",
         domain_support=True,
         conformal_apply=conformal_apply,
+        conformal_mode=conformal_mode,
         conformal_by_band=conformal_by_band,
+        conformal_by_region=conformal_by_region,
         conformal_bands={"low": [1.05, 1.325], "high": [1.325, 1.60]},
         conformal_min_band_n=5,
+        conformal_min_region_n=5,
+        calibrate_supervisor=calibrate_supervisor,
         seed=0,
     )
     plugin.fit_error(positions, error)
@@ -122,6 +136,19 @@ def test_operational_conformal_scales_uncertainty_not_mean():
     assert torch.allclose(cb.covariance, ca.covariance * (scale * scale), rtol=1.0e-12, atol=0.0)
 
 
+def test_operational_mahalanobis_conformal_scales_covariance():
+    raw = _fitted_plugin()
+    calibrated = _fitted_plugin(conformal_apply=True, conformal_mode="mahalanobis")
+    assert calibrated.conformal_calibration["mode"] == "mahalanobis"
+    scale = calibrated.conformal_calibration["global"]["scale"]
+    queries = _query_shell(32, 1.05, 1.6, seed=23)
+
+    ca = raw.predict_covariance_3x3(queries)
+    cb = calibrated.predict_covariance_3x3(queries)
+    assert torch.allclose(cb.mean_error, ca.mean_error, rtol=1.0e-12, atol=0.0)
+    assert torch.allclose(cb.covariance, ca.covariance * (scale * scale), rtol=1.0e-12, atol=0.0)
+
+
 def test_conformal_per_band_uses_band_scales_with_global_fallback():
     plugin = _fitted_plugin(conformal_apply=True, conformal_by_band=True)
     cal = plugin.conformal_calibration
@@ -137,6 +164,55 @@ def test_conformal_per_band_uses_band_scales_with_global_fallback():
     if "high" in band_lookup:
         assert scales[1].item() == pytest.approx(band_lookup["high"])
     assert scales[2].item() == pytest.approx(cal["global"]["scale"])
+
+
+def test_conformal_by_region_uses_region_scales_with_global_fallback():
+    plugin = _fitted_plugin(conformal_apply=True, conformal_by_region=True)
+    cal = plugin.conformal_calibration
+    assert cal["scope"] == "per_region"
+    used = [r for r in cal["regions"] if r.get("used")]
+    assert used
+
+    region = used[0]
+    signs = torch.tensor(region["signs"], dtype=torch.float64)
+    pos = signs.reshape(1, 3) / torch.linalg.norm(signs)
+    pos = pos * 1.25
+    scale = plugin._conformal_scale_for_query(torch.linalg.norm(pos, dim=-1), pos)
+    assert scale[0].item() == pytest.approx(region["scale"])
+
+
+def test_altitude_binned_noise_model_round_trips(tmp_path):
+    plugin = _fitted_plugin(noise_model="altitude_binned")
+    assert isinstance(plugin.altitude_noise, BinnedAltitudeNoiseModel)
+    assert plugin.fit_info["altitude_noise_type"] == "altitude_binned"
+
+    path = tmp_path / "binned_noise_plugin.pt"
+    plugin.save(path)
+    loaded = VESPUQPlugin.load(path)
+    assert isinstance(loaded.altitude_noise, BinnedAltitudeNoiseModel)
+    assert loaded.altitude_noise.n_bins == plugin.altitude_noise.n_bins
+
+    queries = _query_shell(32, 1.05, 1.6, seed=29)
+    a = plugin.predict_uncertainty(queries)
+    b = loaded.predict_uncertainty(queries)
+    assert torch.allclose(b.sigma, a.sigma, rtol=1.0e-12, atol=0.0)
+
+
+def test_calibrated_supervisor_round_trip_scores_identically(tmp_path):
+    plugin = _fitted_plugin(calibrate_supervisor=True)
+    assert plugin.calibrated_supervisor is not None
+    assert plugin.calibrated_supervisor["enabled"] is True
+
+    path = tmp_path / "calibrated_supervisor_plugin.pt"
+    plugin.save(path)
+    loaded = VESPUQPlugin.load(path)
+    assert loaded.calibrated_supervisor == plugin.calibrated_supervisor
+
+    queries = _query_shell(32, 1.05, 1.6, seed=37)
+    a = plugin.score_trajectory(queries, scoring="calibrated_supervisor_p95")
+    b = loaded.score_trajectory(queries, scoring="calibrated_supervisor_p95")
+    assert b.risk_score == pytest.approx(a.risk_score, rel=1.0e-12)
+    assert not torch.isnan(torch.tensor(a.risk_score))
 
 
 def test_conformal_save_load_round_trip_predicts_identically(tmp_path):

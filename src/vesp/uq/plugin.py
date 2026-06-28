@@ -38,6 +38,7 @@ from vesp.core.regularization import lcurve_lambda
 from vesp.core.sources import SourceSet, make_shell_sources
 from vesp.extensions.probabilistic import (
     AltitudeNoiseModel,
+    BinnedAltitudeNoiseModel,
     LinearGaussianPosterior,
     _safe_cholesky,
     calibration_metrics,
@@ -51,7 +52,7 @@ from vesp.uq.domain_support import (
     median_angular_scale,
     median_knn_scale,
 )
-from vesp.uq.metrics import vector_calibration_metrics
+from vesp.uq.metrics import mahalanobis_squared, vector_calibration_metrics
 from vesp.uq.scoring import (
     TrajectoryScore,
     score_sigma_profile,
@@ -61,11 +62,12 @@ from vesp.uq.scoring import (
 )
 
 COVARIANCE_MODES = ("exact", "diagonal", "lowrank")
-PREDICTIVE_CONFORMAL_MODES = ("norm", "component_max")
+NOISE_MODELS = ("homoscedastic", "heteroscedastic", "altitude_binned")
+PREDICTIVE_CONFORMAL_MODES = ("norm", "component_max", "mahalanobis")
 
 # Versioned on-disk format for a fitted plugin (see VESPUQPlugin.save / .load).
 PLUGIN_STATE_FORMAT = "vesp.uq.plugin"
-PLUGIN_STATE_VERSION = 2
+PLUGIN_STATE_VERSION = 3
 
 
 @dataclass
@@ -133,6 +135,7 @@ class VESPUQPlugin:
         reg_method: str = "lcurve",
         lambda_l2: float = 30.0,
         noise_model: str = "heteroscedastic",
+        altitude_noise_bins: int = 8,
         covariance_mode: str = "exact",
         lowrank_rank: int = 64,
         val_fraction: float = 0.25,
@@ -142,10 +145,14 @@ class VESPUQPlugin:
         conformal_by_band: bool = False,
         conformal_bands: dict | None = None,
         conformal_min_band_n: int = 30,
+        conformal_by_region: bool = False,
+        conformal_min_region_n: int = 30,
         low_altitude_radius: float = 1.15,
         risk_scoring: str = "max",
         sigma_threshold: float | None = None,
         altitude_reference_h: float | None = None,
+        calibrate_supervisor: bool = False,
+        calibrated_supervisor_grid: dict | None = None,
         domain_support: bool = False,
         domain_k: int = 8,
         domain_weight: float = 1.0,
@@ -159,8 +166,13 @@ class VESPUQPlugin:
     ) -> None:
         if reg_method not in {"lcurve", "evidence", "fixed"}:
             raise ValueError("reg_method must be 'lcurve', 'evidence', or 'fixed'")
-        if noise_model not in {"homoscedastic", "heteroscedastic"}:
-            raise ValueError("noise_model must be 'homoscedastic' or 'heteroscedastic'")
+        noise_model = str(noise_model).lower()
+        if noise_model in {"binned", "altitude_bins", "binned_heteroscedastic"}:
+            noise_model = "altitude_binned"
+        if noise_model not in NOISE_MODELS:
+            raise ValueError(f"noise_model must be one of {NOISE_MODELS}")
+        if int(altitude_noise_bins) <= 0:
+            raise ValueError("altitude_noise_bins must be positive")
         if covariance_mode not in COVARIANCE_MODES:
             raise ValueError(f"covariance_mode must be one of {COVARIANCE_MODES}")
         if query_chunk_size is not None and int(query_chunk_size) <= 0:
@@ -172,6 +184,8 @@ class VESPUQPlugin:
             raise ValueError("conformal_alpha must be in (0, 1)")
         if int(conformal_min_band_n) <= 0:
             raise ValueError("conformal_min_band_n must be positive")
+        if int(conformal_min_region_n) <= 0:
+            raise ValueError("conformal_min_region_n must be positive")
         self.covariance_mode = covariance_mode
         self.lowrank_rank = int(lowrank_rank)
         self._cov_eig: tuple[torch.Tensor, torch.Tensor] | None = None
@@ -185,6 +199,7 @@ class VESPUQPlugin:
         self.reg_method = reg_method
         self.lambda_l2 = float(lambda_l2)
         self.noise_model = noise_model
+        self.altitude_noise_bins = int(altitude_noise_bins)
         self.val_fraction = float(val_fraction)
         self.conformal_apply = bool(conformal_apply)
         self.conformal_alpha = float(conformal_alpha)
@@ -196,6 +211,8 @@ class VESPUQPlugin:
             if rng is not None
         }
         self.conformal_min_band_n = int(conformal_min_band_n)
+        self.conformal_by_region = bool(conformal_by_region)
+        self.conformal_min_region_n = int(conformal_min_region_n)
         self.conformal_calibration: dict | None = None
         self.low_altitude_radius = float(low_altitude_radius)
         self.risk_scoring = risk_scoring
@@ -203,6 +220,9 @@ class VESPUQPlugin:
         self.altitude_reference_h = (
             float(altitude_reference_h) if altitude_reference_h is not None else None
         )
+        self.calibrate_supervisor = bool(calibrate_supervisor)
+        self.calibrated_supervisor_grid = dict(calibrated_supervisor_grid or {})
+        self.calibrated_supervisor: dict | None = None
         self.domain_support = bool(domain_support)
         self.domain_k = int(domain_k)
         self.domain_weight = float(domain_weight)
@@ -213,7 +233,7 @@ class VESPUQPlugin:
         self.seed = int(seed)
 
         self.posterior: LinearGaussianPosterior | None = None
-        self.altitude_noise: AltitudeNoiseModel | None = None
+        self.altitude_noise: AltitudeNoiseModel | BinnedAltitudeNoiseModel | None = None
         self.fit_info: dict = {}
         # Free-form, JSON-safe metadata persisted with the model (e.g. the training run's
         # decision policy / provenance). Round-trips through save()/load(); never interpreted
@@ -268,6 +288,14 @@ class VESPUQPlugin:
         low_band = bands.get("low") or [1.03, 1.15]
         conformal = uq.get("conformal", {}) or {}
         conformal_bands = conformal.get("bands") or bands
+        noise_cfg = uq.get("noise", {}) or {}
+        supervisor_cfg = risk.get("calibrated_supervisor", risk.get("calibrate_supervisor", False))
+        if isinstance(supervisor_cfg, dict):
+            calibrate_supervisor = bool(supervisor_cfg.get("enabled", False))
+            calibrated_supervisor_grid = dict(supervisor_cfg)
+        else:
+            calibrate_supervisor = bool(supervisor_cfg)
+            calibrated_supervisor_grid = {}
         return cls(
             sources,
             eps=float(kernel.get("eps", kernel.get("softening", 0.0))),
@@ -277,6 +305,7 @@ class VESPUQPlugin:
             reg_method=reg_method,
             lambda_l2=lambda_l2,
             noise_model=str(uq.get("noise_model", "heteroscedastic")).lower(),
+            altitude_noise_bins=int(noise_cfg.get("altitude_bins", uq.get("altitude_noise_bins", 8))),
             covariance_mode=str(uq.get("covariance_mode", "exact")).lower(),
             lowrank_rank=int(uq.get("lowrank_rank", 64)),
             val_fraction=float(uq.get("val_fraction", 0.25)),
@@ -286,12 +315,16 @@ class VESPUQPlugin:
             conformal_by_band=bool(conformal.get("by_band", conformal.get("per_band", False))),
             conformal_bands=conformal_bands,
             conformal_min_band_n=int(conformal.get("min_band_n", 30)),
+            conformal_by_region=bool(conformal.get("by_region", conformal.get("per_region", False))),
+            conformal_min_region_n=int(conformal.get("min_region_n", 30)),
             low_altitude_radius=float(risk.get("low_altitude_radius", low_band[1])),
             risk_scoring=str(risk.get("scoring", "max")).lower(),
             sigma_threshold=risk.get("sigma_threshold"),
             altitude_reference_h=(
                 float(risk["altitude_reference_h"]) if risk.get("altitude_reference_h") is not None else None
             ),
+            calibrate_supervisor=calibrate_supervisor,
+            calibrated_supervisor_grid=calibrated_supervisor_grid,
             domain_support=bool(risk.get("domain_support", False)),
             domain_k=int(risk.get("domain_k", 8)),
             domain_weight=float(risk.get("domain_weight", 1.0)),
@@ -384,8 +417,317 @@ class VESPUQPlugin:
             return [(0, n)]
         return [(start, min(start + size, n)) for start in range(0, n, size)]
 
-    def _conformal_scale_for_radius(self, radius: torch.Tensor) -> torch.Tensor | None:
-        """Per-query predictive-std scale, or ``None`` when operational conformal is off."""
+    def _fit_altitude_noise_model(
+        self,
+        radii: torch.Tensor,
+        residuals: torch.Tensor,
+        epistemic_var: torch.Tensor,
+    ) -> AltitudeNoiseModel | BinnedAltitudeNoiseModel | None:
+        """Fit the configured held-out altitude-noise law."""
+
+        if self.noise_model == "heteroscedastic":
+            return AltitudeNoiseModel.fit(radii, residuals, epistemic_var)
+        if self.noise_model == "altitude_binned":
+            return BinnedAltitudeNoiseModel.fit(
+                radii,
+                residuals,
+                epistemic_var,
+                n_bins=self.altitude_noise_bins,
+            )
+        return None
+
+    def _record_altitude_noise_fit_info(self) -> None:
+        """Attach altitude-noise provenance to ``fit_info`` without assuming a model type."""
+
+        noise = self.altitude_noise
+        if noise is None:
+            return
+        if isinstance(noise, BinnedAltitudeNoiseModel):
+            self.fit_info["altitude_noise_type"] = "altitude_binned"
+            self.fit_info["altitude_noise_bins"] = int(noise.n_bins)
+            self.fit_info["altitude_noise_radius_min"] = float(noise.radii.min().detach().cpu())
+            self.fit_info["altitude_noise_radius_max"] = float(noise.radii.max().detach().cpu())
+        else:
+            self.fit_info["altitude_noise_type"] = "power_law"
+            self.fit_info["altitude_noise_a"] = noise.a
+            self.fit_info["altitude_noise_b"] = noise.b
+
+    def _altitude_noise_state(self, cpu_fn) -> dict | None:
+        noise = self.altitude_noise
+        if noise is None:
+            return None
+        if isinstance(noise, BinnedAltitudeNoiseModel):
+            return {
+                "type": "altitude_binned",
+                "radii": cpu_fn(noise.radii),
+                "log_variance": cpu_fn(noise.log_variance),
+                "h_floor": float(noise.h_floor),
+            }
+        return {
+            "type": "power_law",
+            "log_a": noise.log_a,
+            "b": noise.b,
+            "h_floor": noise.h_floor,
+        }
+
+    @staticmethod
+    def _spearman_rank_corr(a: torch.Tensor, b: torch.Tensor) -> float:
+        """Spearman rank correlation with average ranks for ties."""
+
+        x = torch.as_tensor(a, dtype=torch.float64).reshape(-1)
+        y = torch.as_tensor(b, dtype=torch.float64).reshape(-1)
+        if x.numel() != y.numel():
+            raise ValueError("Spearman inputs must have the same length")
+        if x.numel() < 2 or not bool(torch.isfinite(x).all()) or not bool(torch.isfinite(y).all()):
+            return float("nan")
+
+        def _rank(v: torch.Tensor) -> torch.Tensor:
+            _, inverse, counts = torch.unique(v, sorted=True, return_inverse=True, return_counts=True)
+            counts = counts.to(dtype=torch.float64)
+            starts = torch.cumsum(counts, dim=0) - counts
+            avg = starts + (counts - 1.0) / 2.0
+            return avg[inverse]
+
+        rx = _rank(x)
+        ry = _rank(y)
+        rx = rx - rx.mean()
+        ry = ry - ry.mean()
+        denom = torch.sqrt((rx * rx).sum() * (ry * ry).sum())
+        if float(denom) <= 0.0:
+            return float("nan")
+        return float((rx * ry).sum() / denom)
+
+    @staticmethod
+    def _fit_altitude_expected_curve_from_points(
+        radius: torch.Tensor,
+        expected_error: torch.Tensor,
+        *,
+        n_bins: int = 8,
+    ) -> dict:
+        """Fit a small monotone-free altitude curve for calibrated supervisor residuals."""
+
+        r = radius.detach().reshape(-1).to(torch.float64)
+        ee = expected_error.detach().reshape(-1).to(torch.float64)
+        if r.numel() != ee.numel():
+            raise ValueError("radius and expected_error must have the same length")
+        if r.numel() == 0:
+            raise ValueError("cannot fit an altitude curve with no samples")
+        tiny = torch.finfo(ee.dtype).tiny
+        order = torch.argsort(r)
+        chunks = torch.chunk(order, max(1, min(int(n_bins), int(order.numel()))))
+        centers: list[float] = []
+        values: list[float] = []
+        for idx in chunks:
+            if idx.numel() == 0:
+                continue
+            centers.append(float(torch.median(r[idx]).detach().cpu()))
+            values.append(float(torch.median(ee[idx].clamp_min(tiny)).detach().cpu()))
+        return {"radii": centers, "expected_error": values}
+
+    @staticmethod
+    def _predict_altitude_expected_from_curve(radius: torch.Tensor, curve: dict) -> torch.Tensor:
+        if not curve or "radii" not in curve or "expected_error" not in curve:
+            return torch.ones_like(radius)
+        centers = torch.as_tensor(curve["radii"], dtype=radius.dtype, device=radius.device).reshape(-1)
+        values = torch.as_tensor(curve["expected_error"], dtype=radius.dtype, device=radius.device).reshape(-1)
+        if centers.numel() == 0:
+            return torch.ones_like(radius)
+        if centers.numel() == 1:
+            return values[0].expand_as(radius)
+        lo = float(centers[0].detach().cpu())
+        hi = float(centers[-1].detach().cpu())
+        x = radius.reshape(-1).clamp(min=lo, max=hi)
+        idx_hi = torch.searchsorted(centers, x, right=False).clamp(1, centers.numel() - 1)
+        idx_lo = idx_hi - 1
+        x0, x1 = centers[idx_lo], centers[idx_hi]
+        y0 = torch.log(values[idx_lo].clamp_min(torch.finfo(radius.dtype).tiny))
+        y1 = torch.log(values[idx_hi].clamp_min(torch.finfo(radius.dtype).tiny))
+        denom = (x1 - x0).clamp_min(torch.finfo(radius.dtype).eps)
+        t = (x - x0) / denom
+        return torch.exp(y0 + t * (y1 - y0)).reshape_as(radius)
+
+    def _calibrated_supervisor_point_risk(
+        self,
+        pred: UncertaintyPrediction,
+        domain_risk: torch.Tensor | None,
+        *,
+        state: dict | None = None,
+    ) -> torch.Tensor | None:
+        """Learned point-risk formula used by ``calibrated_supervisor`` scoring modes."""
+
+        cal = self.calibrated_supervisor if state is None else state
+        if not cal or not cal.get("enabled", False):
+            return None
+        weights = cal["weights"]
+        tiny = torch.finfo(pred.expected_error.dtype).tiny
+        expected = pred.expected_error.clamp_min(tiny)
+        altitude_curve = cal.get("altitude_expected_curve") or {}
+        altitude_expected = self._predict_altitude_expected_from_curve(pred.radius, altitude_curve).clamp_min(tiny)
+        altitude_residual = (expected / altitude_expected).clamp_min(tiny)
+        epi_factor = 1.0 + float(weights.get("epistemic_weight", 0.0)) * pred.epistemic_fraction.clamp_min(0.0)
+        if domain_risk is not None and float(weights.get("domain_weight", 0.0)) > 0.0:
+            domain_factor = 1.0 + float(weights["domain_weight"]) * domain_risk.clamp_min(0.0)
+        else:
+            domain_factor = torch.ones_like(expected)
+        return (
+            expected.pow(float(weights.get("expected_power", 1.0)))
+            * altitude_residual.pow(float(weights.get("altitude_residual_power", 0.0)))
+            * epi_factor
+            * domain_factor
+        )
+
+    @staticmethod
+    def _grid_values(config: dict, key: str, default: list[float]) -> list[float]:
+        raw = config.get(key, default)
+        if raw is None:
+            raw = default
+        if isinstance(raw, (int, float)):
+            return [float(raw)]
+        return [float(v) for v in raw]
+
+    def fit_calibrated_supervisor(self, positions, error) -> dict:
+        """Calibrate a learned supervisor point-risk formula on held-out samples."""
+
+        self._require_fitted()
+        positions = self._prep_positions(positions)
+        error = self._prep_positions(error)
+        if positions.shape != error.shape:
+            raise ValueError("positions and error must have the same (N, 3) shape")
+        if positions.shape[0] < 3:
+            self.calibrated_supervisor = {
+                "enabled": False,
+                "reason": "n_calibration < 3",
+                "n_calibration": int(positions.shape[0]),
+            }
+            self.fit_info["calibrated_supervisor_enabled"] = False
+            return self.calibrated_supervisor
+
+        pred = self.predict_uncertainty(positions)
+        domain_risk = self.domain_support_score(positions) if self.domain_support else None
+        target = torch.linalg.norm(error, dim=-1).to(dtype=torch.float64)
+        curve_bins = int(self.calibrated_supervisor_grid.get("altitude_bins", 8))
+        curve = self._fit_altitude_expected_curve_from_points(
+            pred.radius,
+            pred.expected_error,
+            n_bins=curve_bins,
+        )
+        base_state = {"enabled": True, "altitude_expected_curve": curve, "weights": {}}
+
+        expected_grid = self._grid_values(
+            self.calibrated_supervisor_grid,
+            "expected_power",
+            [0.75, 1.0, 1.25],
+        )
+        altitude_grid = self._grid_values(
+            self.calibrated_supervisor_grid,
+            "altitude_residual_power",
+            [0.0, 0.5, 1.0],
+        )
+        epistemic_grid = self._grid_values(
+            self.calibrated_supervisor_grid,
+            "epistemic_weight",
+            [0.0, 0.5, 1.0],
+        )
+        domain_grid = (
+            self._grid_values(self.calibrated_supervisor_grid, "domain_weight", [0.0, 0.5, 1.0])
+            if domain_risk is not None
+            else [0.0]
+        )
+
+        best_score = float("-inf")
+        best_weights: dict[str, float] | None = None
+        best_risk: torch.Tensor | None = None
+        for expected_power in expected_grid:
+            for altitude_power in altitude_grid:
+                for epistemic_weight in epistemic_grid:
+                    for domain_weight in domain_grid:
+                        weights = {
+                            "expected_power": float(expected_power),
+                            "altitude_residual_power": float(altitude_power),
+                            "epistemic_weight": float(epistemic_weight),
+                            "domain_weight": float(domain_weight),
+                        }
+                        state = {**base_state, "weights": weights}
+                        risk = self._calibrated_supervisor_point_risk(
+                            pred,
+                            domain_risk,
+                            state=state,
+                        )
+                        if risk is None:
+                            continue
+                        rho = self._spearman_rank_corr(risk.detach().cpu(), target.detach().cpu())
+                        if not bool(torch.isfinite(torch.tensor(rho))):
+                            continue
+                        tie_breaks_domain_off = (
+                            best_weights is not None
+                            and abs(rho - best_score) <= 1.0e-12
+                            and float(domain_weight) < float(best_weights.get("domain_weight", 0.0))
+                        )
+                        if rho > best_score + 1.0e-12 or tie_breaks_domain_off:
+                            best_score = float(rho)
+                            best_weights = weights
+                            best_risk = risk
+
+        if best_weights is None or best_risk is None:
+            self.calibrated_supervisor = {
+                "enabled": False,
+                "reason": "no finite calibration objective",
+                "n_calibration": int(positions.shape[0]),
+            }
+            self.fit_info["calibrated_supervisor_enabled"] = False
+            return self.calibrated_supervisor
+
+        self.calibrated_supervisor = {
+            "enabled": True,
+            "objective": "spearman_pointwise_true_error_magnitude",
+            "n_calibration": int(positions.shape[0]),
+            "spearman": best_score,
+            "weights": best_weights,
+            "altitude_expected_curve": curve,
+            "domain_disabled": float(best_weights.get("domain_weight", 0.0)) <= 0.0,
+            "grid": {
+                "expected_power": expected_grid,
+                "altitude_residual_power": altitude_grid,
+                "epistemic_weight": epistemic_grid,
+                "domain_weight": domain_grid,
+            },
+            "mean_point_risk": float(best_risk.mean().detach().cpu()),
+        }
+        self.fit_info.update(
+            {
+                "calibrated_supervisor_enabled": True,
+                "calibrated_supervisor_spearman": best_score,
+                "calibrated_supervisor_expected_power": best_weights["expected_power"],
+                "calibrated_supervisor_altitude_residual_power": best_weights["altitude_residual_power"],
+                "calibrated_supervisor_epistemic_weight": best_weights["epistemic_weight"],
+                "calibrated_supervisor_domain_weight": best_weights["domain_weight"],
+                "calibrated_supervisor_domain_disabled": self.calibrated_supervisor["domain_disabled"],
+                "calibrated_supervisor_stale_after_update": False,
+            }
+        )
+        return self.calibrated_supervisor
+
+    @staticmethod
+    def _conformal_region_ids(positions: torch.Tensor) -> torch.Tensor:
+        """Eight angular octants encoded as 0..7 from the signs of x/y/z."""
+
+        signs = (positions >= 0.0).to(torch.int64)
+        return signs[:, 0] * 4 + signs[:, 1] * 2 + signs[:, 2]
+
+    @staticmethod
+    def _conformal_region_signs(region_id: int) -> list[int]:
+        return [
+            1 if (int(region_id) & 4) else -1,
+            1 if (int(region_id) & 2) else -1,
+            1 if (int(region_id) & 1) else -1,
+        ]
+
+    def _conformal_scale_for_query(
+        self,
+        radius: torch.Tensor,
+        positions: torch.Tensor | None = None,
+    ) -> torch.Tensor | None:
+        """Per-query predictive-std scale, optionally refined by angular region."""
 
         cal = self.conformal_calibration
         if not cal or not cal.get("enabled", False):
@@ -398,25 +740,44 @@ class VESPUQPlugin:
             mask = (radius >= lo) & (radius <= hi)
             if bool(mask.any()):
                 scale[mask] = float(band["scale"])
+        if positions is not None:
+            region_ids = self._conformal_region_ids(positions)
+            for region in cal.get("regions", []):
+                if not region.get("used", True) or "scale" not in region:
+                    continue
+                mask = region_ids == int(region["region_id"])
+                if bool(mask.any()):
+                    scale[mask] = float(region["scale"])
         return scale
+
+    def _conformal_scale_for_radius(self, radius: torch.Tensor) -> torch.Tensor | None:
+        """Per-query predictive-std scale, or ``None`` when operational conformal is off."""
+
+        return self._conformal_scale_for_query(radius)
 
     def _apply_conformal_to_std(
         self,
         std_components: torch.Tensor,
         sigma: torch.Tensor,
         radius: torch.Tensor,
+        positions: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Scale predictive standard deviations when operational conformal is enabled."""
 
-        scale = self._conformal_scale_for_radius(radius)
+        scale = self._conformal_scale_for_query(radius, positions)
         if scale is None:
             return std_components, sigma
         return std_components * scale.unsqueeze(-1), sigma * scale
 
-    def _apply_conformal_to_covariance(self, covariance: torch.Tensor, radius: torch.Tensor) -> torch.Tensor:
+    def _apply_conformal_to_covariance(
+        self,
+        covariance: torch.Tensor,
+        radius: torch.Tensor,
+        positions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Scale predictive covariance by ``scale^2`` when operational conformal is enabled."""
 
-        scale = self._conformal_scale_for_radius(radius)
+        scale = self._conformal_scale_for_query(radius, positions)
         if scale is None:
             return covariance
         return covariance * scale.square().reshape(-1, 1, 1)
@@ -450,10 +811,15 @@ class VESPUQPlugin:
             raise
 
         residual = error - cov.mean_error
-        predicted = cov.std_components if self.conformal_mode == "component_max" else cov.sigma
+        if self.conformal_mode == "mahalanobis":
+            true_for_conformal = torch.sqrt(mahalanobis_squared(residual, cov.covariance).clamp_min(0.0))
+            predicted = torch.ones_like(true_for_conformal)
+        else:
+            true_for_conformal = residual
+            predicted = cov.std_components if self.conformal_mode == "component_max" else cov.sigma
         global_cal = fit_conformal_scale(
             predicted,
-            residual,
+            true_for_conformal,
             alpha=self.conformal_alpha,
             mode=self.conformal_mode,
         )
@@ -478,10 +844,10 @@ class VESPUQPlugin:
                     )
                     continue
                 band_predicted = predicted[mask]
-                band_residual = residual[mask]
+                band_true = true_for_conformal[mask]
                 band_cal = fit_conformal_scale(
                     band_predicted,
-                    band_residual,
+                    band_true,
                     alpha=self.conformal_alpha,
                     mode=self.conformal_mode,
                 )
@@ -495,16 +861,60 @@ class VESPUQPlugin:
                 )
                 bands_out.append(band_dict)
 
+        regions_out: list[dict] = []
+        if self.conformal_by_region:
+            region_ids = self._conformal_region_ids(positions)
+            for region_id in range(8):
+                mask = region_ids == region_id
+                n_region = int(mask.sum().detach().cpu())
+                if n_region < self.conformal_min_region_n:
+                    regions_out.append(
+                        {
+                            "region_id": int(region_id),
+                            "signs": self._conformal_region_signs(region_id),
+                            "n_calibration": n_region,
+                            "used": False,
+                            "reason": f"n < min_region_n ({self.conformal_min_region_n})",
+                        }
+                    )
+                    continue
+                region_cal = fit_conformal_scale(
+                    predicted[mask],
+                    true_for_conformal[mask],
+                    alpha=self.conformal_alpha,
+                    mode=self.conformal_mode,
+                )
+                region_dict = region_cal.to_dict()
+                region_dict.update(
+                    {
+                        "region_id": int(region_id),
+                        "signs": self._conformal_region_signs(region_id),
+                        "used": True,
+                    }
+                )
+                regions_out.append(region_dict)
+
+        scope_parts = []
+        if self.conformal_by_band:
+            scope_parts.append("per_band")
+        if self.conformal_by_region:
+            scope_parts.append("per_region")
+        scope = "+".join(scope_parts) if scope_parts else "global"
         self.conformal_calibration = {
             "enabled": True,
             "apply": True,
             "alpha": self.conformal_alpha,
             "mode": self.conformal_mode,
-            "scope": "per_band" if self.conformal_by_band else "global",
+            "scope": scope,
             "min_band_n": self.conformal_min_band_n,
+            "min_region_n": self.conformal_min_region_n,
             "global": global_cal.to_dict(),
             "bands": bands_out,
-            "extrapolation_rule": "queries outside a fitted band use the global conformal scale",
+            "regions": regions_out,
+            "extrapolation_rule": (
+                "queries outside a fitted band/region use the global conformal scale; "
+                "region scales override band scales when both apply"
+            ),
         }
         self.fit_info.update(
             {
@@ -521,6 +931,10 @@ class VESPUQPlugin:
         if bands_out:
             self.fit_info["conformal_band_scales"] = {
                 b["name"]: b.get("scale") for b in bands_out if b.get("used")
+            }
+        if regions_out:
+            self.fit_info["conformal_region_scales"] = {
+                str(b["region_id"]): b.get("scale") for b in regions_out if b.get("used")
             }
         return self.conformal_calibration
 
@@ -568,6 +982,7 @@ class VESPUQPlugin:
         positions = self._prep_positions(positions)
         error = self._prep_positions(error)
         self.conformal_calibration = None
+        self.calibrated_supervisor = None
 
         if (val_positions is None) != (val_error is None):
             raise ValueError("supply both val_positions and val_error (or neither)")
@@ -628,14 +1043,16 @@ class VESPUQPlugin:
 
         # --- Step 5: altitude-dependent heteroscedastic recalibration on held-out residuals ---
         self.altitude_noise = None
-        if self.noise_model == "heteroscedastic" and val_pos is not None:
+        if self.noise_model in {"heteroscedastic", "altitude_binned"} and val_pos is not None:
             assert val_err is not None
             val_op = self._operator(val_pos)
             val_pred = posterior.predict(val_op, include_noise=False)
             val_resid = val_pred["mean"] - _flatten_acc(val_err)
             val_row_radii = torch.linalg.norm(val_pos, dim=-1).repeat(3)
-            self.altitude_noise = AltitudeNoiseModel.fit(
-                val_row_radii, val_resid, val_pred["epistemic_variance"] + posterior.noise_var
+            self.altitude_noise = self._fit_altitude_noise_model(
+                val_row_radii,
+                val_resid,
+                val_pred["epistemic_variance"] + posterior.noise_var,
             )
 
         self.fit_info = {
@@ -664,15 +1081,17 @@ class VESPUQPlugin:
             self.fit_info["domain_scale"] = float(self._domain_nn_scale(self.domain_k))
             if self.domain_angular_weight > 0.0:
                 self.fit_info["domain_angular_scale"] = float(self._domain_angular_nn_scale(self.domain_k))
-        if self.altitude_noise is not None:
-            self.fit_info["altitude_noise_a"] = self.altitude_noise.a
-            self.fit_info["altitude_noise_b"] = self.altitude_noise.b
+        self._record_altitude_noise_fit_info()
         if lcurve_points is not None:
             self.fit_info["lcurve"] = lcurve_points
         if self.conformal_apply:
             if val_pos is None or val_err is None:
                 raise ValueError("conformal_apply=True requires held-out validation samples")
             self.fit_conformal_calibration(val_pos, val_err)
+        if self.calibrate_supervisor:
+            if val_pos is None or val_err is None:
+                raise ValueError("calibrate_supervisor=True requires held-out validation samples")
+            self.fit_calibrated_supervisor(val_pos, val_err)
         return self
 
     # ------------------------------------------------------------------ sequential update
@@ -757,11 +1176,11 @@ class VESPUQPlugin:
             assert val_err is not None
             self.val_positions = val_pos.detach()
             self.val_radii = torch.linalg.norm(val_pos, dim=-1).detach()
-            if self.noise_model == "heteroscedastic":
+            if self.noise_model in {"heteroscedastic", "altitude_binned"}:
                 val_op = self._operator(val_pos)
                 val_pred = self.posterior.predict(val_op, include_noise=False)
                 val_resid = val_pred["mean"] - _flatten_acc(val_err)
-                self.altitude_noise = AltitudeNoiseModel.fit(
+                self.altitude_noise = self._fit_altitude_noise_model(
                     torch.linalg.norm(val_pos, dim=-1).repeat(3),
                     val_resid,
                     val_pred["epistemic_variance"] + noise_var,
@@ -776,14 +1195,19 @@ class VESPUQPlugin:
         self.fit_info["train_radius_max"] = float(self.train_radii.max())
         if val_pos is not None:
             self.fit_info["n_val"] = int(val_pos.shape[0])
-            if self.altitude_noise is not None:
-                self.fit_info["altitude_noise_a"] = self.altitude_noise.a
-                self.fit_info["altitude_noise_b"] = self.altitude_noise.b
+            self._record_altitude_noise_fit_info()
             if self.conformal_apply:
                 self.fit_conformal_calibration(val_pos, val_err)
+            if self.calibrate_supervisor:
+                self.fit_calibrated_supervisor(val_pos, val_err)
         elif self.conformal_apply and self.conformal_calibration:
             self.fit_info["conformal_stale_after_update"] = True
             self.fit_info["conformal_stale_reason"] = "update_error called without fresh validation data"
+        if val_pos is None and self.calibrated_supervisor:
+            self.fit_info["calibrated_supervisor_stale_after_update"] = True
+            self.fit_info["calibrated_supervisor_stale_reason"] = (
+                "update_error called without fresh validation data"
+            )
         return self
 
     # ------------------------------------------------------------------ prediction
@@ -832,7 +1256,7 @@ class VESPUQPlugin:
         std3 = torch.sqrt(var3.clamp_min(0.0))
         sigma = torch.sqrt(var3.sum(dim=1).clamp_min(0.0))
         epistemic_sigma = torch.sqrt(epi3.sum(dim=1).clamp_min(0.0))
-        std3, sigma = self._apply_conformal_to_std(std3, sigma, radius)
+        std3, sigma = self._apply_conformal_to_std(std3, sigma, radius, positions)
 
         # Posterior-mean residual magnitude (expected surrogate bias) and the combined
         # expected-error point estimate sqrt(bias^2 + spread^2). These feed the stronger
@@ -931,7 +1355,7 @@ class VESPUQPlugin:
         cov[:, 0, 1] = cov[:, 1, 0] = cxy
         cov[:, 0, 2] = cov[:, 2, 0] = cxz
         cov[:, 1, 2] = cov[:, 2, 1] = cyz
-        cov = self._apply_conformal_to_covariance(cov, radius)
+        cov = self._apply_conformal_to_covariance(cov, radius, positions)
 
         mean3 = (op @ posterior.mean).reshape(3, n).transpose(0, 1)
         diag = torch.diagonal(cov, dim1=-2, dim2=-1)  # (N, 3)
@@ -1037,6 +1461,7 @@ class VESPUQPlugin:
     ) -> TrajectoryScore:
         """Aggregate one trajectory's per-point profile with the plugin's scoring settings."""
 
+        calibrated_point_risk = self._calibrated_supervisor_point_risk(pred, domain_risk)
         return score_sigma_profile(
             pred.sigma,
             pred.radius,
@@ -1049,6 +1474,7 @@ class VESPUQPlugin:
             mean_error_magnitude=pred.mean_error_magnitude,
             domain_risk=domain_risk,
             domain_weight=self.domain_weight,
+            calibrated_point_risk=calibrated_point_risk,
             weights=weights,
         )
 
@@ -1311,6 +1737,7 @@ class VESPUQPlugin:
                 "reg_method": self.reg_method,
                 "lambda_l2": self.lambda_l2,
                 "noise_model": self.noise_model,
+                "altitude_noise_bins": self.altitude_noise_bins,
                 "covariance_mode": self.covariance_mode,
                 "lowrank_rank": self.lowrank_rank,
                 "val_fraction": self.val_fraction,
@@ -1320,10 +1747,14 @@ class VESPUQPlugin:
                 "conformal_by_band": self.conformal_by_band,
                 "conformal_bands": dict(self.conformal_bands),
                 "conformal_min_band_n": self.conformal_min_band_n,
+                "conformal_by_region": self.conformal_by_region,
+                "conformal_min_region_n": self.conformal_min_region_n,
                 "low_altitude_radius": self.low_altitude_radius,
                 "risk_scoring": self.risk_scoring,
                 "sigma_threshold": self.sigma_threshold,
                 "altitude_reference_h": self.altitude_reference_h,
+                "calibrate_supervisor": self.calibrate_supervisor,
+                "calibrated_supervisor_grid": json_safe(dict(self.calibrated_supervisor_grid)),
                 "domain_support": self.domain_support,
                 "domain_k": self.domain_k,
                 "domain_weight": self.domain_weight,
@@ -1340,15 +1771,7 @@ class VESPUQPlugin:
                 "noise_var": float(posterior.noise_var),
                 "lambda_l2": posterior.lambda_l2,
             },
-            "altitude_noise": (
-                {
-                    "log_a": self.altitude_noise.log_a,
-                    "b": self.altitude_noise.b,
-                    "h_floor": self.altitude_noise.h_floor,
-                }
-                if self.altitude_noise is not None
-                else None
-            ),
+            "altitude_noise": self._altitude_noise_state(_cpu),
             "domain_state": {
                 "train_positions": _cpu(self.train_positions),
                 "train_radii": _cpu(self.train_radii),
@@ -1360,6 +1783,7 @@ class VESPUQPlugin:
             },
             "fit_info": dict(self.fit_info),
             "conformal_calibration": json_safe(self.conformal_calibration),
+            "calibrated_supervisor": json_safe(self.calibrated_supervisor),
             # JSON-safe passthrough block (decision policy / provenance from the training run).
             "user_metadata": json_safe(dict(self.user_metadata)),
         }
@@ -1416,13 +1840,22 @@ class VESPUQPlugin:
             lambda_l2=post["lambda_l2"],
         )
         noise = state.get("altitude_noise")
-        plugin.altitude_noise = (
-            AltitudeNoiseModel(
-                log_a=float(noise["log_a"]), b=float(noise["b"]), h_floor=float(noise["h_floor"])
-            )
-            if noise is not None
-            else None
-        )
+        if noise is None:
+            plugin.altitude_noise = None
+        else:
+            noise_type = str(noise.get("type", "power_law")).lower()
+            if noise_type in {"altitude_binned", "binned"}:
+                plugin.altitude_noise = BinnedAltitudeNoiseModel(
+                    radii=_required_tensor(noise.get("radii"), "altitude_noise.radii"),
+                    log_variance=_required_tensor(noise.get("log_variance"), "altitude_noise.log_variance"),
+                    h_floor=float(noise.get("h_floor", 1.0e-3)),
+                )
+            else:
+                plugin.altitude_noise = AltitudeNoiseModel(
+                    log_a=float(noise["log_a"]),
+                    b=float(noise["b"]),
+                    h_floor=float(noise["h_floor"]),
+                )
         domain = state.get("domain_state", {})
         plugin.train_positions = _dev(domain.get("train_positions"))
         plugin.train_radii = _dev(domain.get("train_radii"))
@@ -1433,6 +1866,7 @@ class VESPUQPlugin:
         plugin._domain_angular_scale = domain.get("domain_angular_scale")
         plugin.fit_info = dict(state.get("fit_info", {}))
         plugin.conformal_calibration = state.get("conformal_calibration")
+        plugin.calibrated_supervisor = state.get("calibrated_supervisor")
         plugin.user_metadata = dict(state.get("user_metadata", {}))
         return plugin
 

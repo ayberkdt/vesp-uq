@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from vesp.uq.scoring import (  # noqa: F401
     _CANONICAL_ALIASES,
+    _CALIBRATED_SUPERVISOR_MODES,
     _EXPECTED_MODES,
     _EXPECTED_ONLY_MODES,
     _SIGMA_MODES,

@@ -19,6 +19,7 @@ Each selector produces one scalar score per trajectory (higher = higher risk). T
 | `uncertainty_only` | mean predictive sigma (no bias / altitude / OOD weighting) |
 | `altitude_residual_expected_ratio` | p95 of `expected_error / f_alt(radius)`, where `f_alt` is an altitude-only expected-error curve fit on plugin calibration geometry |
 | `altitude_residual_expected_delta` | p95 of `expected_error - f_alt(radius)` |
+| `calibrated_supervisor` | optional validation-calibrated supervisor (`calibrated_supervisor_p95`) when `uq.risk.calibrated_supervisor.enabled: true` |
 | `supervisor` | full VESP-UQ supervisor (`supervisor_rel_p95`: expected error × altitude × domain) |
 
 Reported per selector: Spearman vs true force error, capture rate, precision, lift over random,
@@ -61,6 +62,11 @@ minimum radius, within-altitude-bin Spearman, bootstrap confidence intervals, an
 rerun-fraction sweep. The altitude-residual scores above are the P1 diagnostic: they ask whether
 VESP-UQ expected error still ranks force error after the altitude-only expected-error trend is
 removed.
+
+When calibrated supervisor is enabled, the plugin also writes/uses a learned point-risk formula:
+`expected_error^w * altitude_residual^w * (1 + w_epistemic * epistemic_fraction) *
+(1 + w_domain * domain_risk)`. The small held-out grid includes `w_domain = 0`, so the domain
+term is automatically disabled when it does not improve validation Spearman.
 
 ## How to interpret
 

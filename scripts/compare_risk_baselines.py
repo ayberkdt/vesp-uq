@@ -249,6 +249,12 @@ def baseline_scores_for(config: dict, plugin, trajectories, train_positions, *, 
         ),
         "supervisor": vespuq_scores(plugin, trajectories, _SUPERVISOR_SCORING),
     }
+    if (getattr(plugin, "calibrated_supervisor", None) or {}).get("enabled", False):
+        scores["calibrated_supervisor"] = vespuq_scores(
+            plugin,
+            trajectories,
+            "calibrated_supervisor_p95",
+        )
     if getattr(plugin, "domain_support", False):
         scores["domain_support"] = domain_support_scores(plugin, trajectories)
     return scores

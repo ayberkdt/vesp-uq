@@ -415,6 +415,36 @@ def test_score_stores_both_relative_and_absolute_point_risk():
     assert s.risk_score == pytest.approx(s.mean_point_risk_abs)
 
 
+def test_calibrated_supervisor_uses_supplied_point_risk():
+    sig = torch.full((4,), 0.01)
+    rad = torch.full((4,), 1.2)
+    cal = torch.tensor([1.0, 2.0, 3.0, 10.0])
+    mean_score = score_sigma_profile(
+        sig,
+        rad,
+        scoring="calibrated_supervisor",
+        calibrated_point_risk=cal,
+    )
+    p95_score = score_sigma_profile(
+        sig,
+        rad,
+        scoring="calibrated_supervisor_p95",
+        calibrated_point_risk=cal,
+    )
+    assert mean_score.risk_score == pytest.approx(float(cal.mean()))
+    assert p95_score.risk_score == pytest.approx(float(torch.quantile(cal.to(torch.float64), 0.95)))
+    assert mean_score.mean_calibrated_point_risk == pytest.approx(float(cal.mean()))
+
+
+def test_calibrated_supervisor_requires_calibrated_profile():
+    with pytest.raises(ValueError, match="calibrated_point_risk"):
+        score_sigma_profile(
+            torch.ones(3),
+            torch.full((3,), 1.2),
+            scoring="calibrated_supervisor",
+        )
+
+
 # ---- P4: time weighting (kepler_r2 ~ r^2) ----
 
 def test_kepler_time_weighting_changes_mean_for_eccentric():
@@ -470,12 +500,26 @@ def test_canonical_scoring_name_resolves_aliases():
     assert canonical_scoring_name("supervisor") == "supervisor_rel"
     assert canonical_scoring_name("supervisor_p95") == "supervisor_rel_p95"
     # canonical names and non-aliased modes map to themselves
-    for name in ("expected_abs", "supervisor_rel", "supervisor_abs", "supervisor_abs_p95", "max"):
+    for name in (
+        "expected_abs",
+        "supervisor_rel",
+        "supervisor_abs",
+        "supervisor_abs_p95",
+        "calibrated_supervisor",
+        "max",
+    ):
         assert canonical_scoring_name(name) == name
 
 
 def test_relative_vs_absolute_classification():
-    for name in ("supervisor", "supervisor_rel", "supervisor_p95", "supervisor_rel_p95"):
+    for name in (
+        "supervisor",
+        "supervisor_rel",
+        "supervisor_p95",
+        "supervisor_rel_p95",
+        "calibrated_supervisor",
+        "calibrated_supervisor_p95",
+    ):
         assert is_relative_scoring(name) is True
         assert is_absolute_scoring(name) is False
     for name in ("expected", "expected_abs", "expected_p95", "expected_abs_p95",

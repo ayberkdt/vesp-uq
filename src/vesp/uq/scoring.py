@@ -35,6 +35,10 @@ _EXPECTED_ONLY_MODES = (
     "expected_abs_p95",
     "expected_low_alt",
 )
+_CALIBRATED_SUPERVISOR_MODES = (
+    "calibrated_supervisor",
+    "calibrated_supervisor_p95",
+)
 _SUPERVISOR_MODES = (
     "supervisor",
     "supervisor_rel",
@@ -42,7 +46,7 @@ _SUPERVISOR_MODES = (
     "supervisor_rel_p95",
     "supervisor_abs",
     "supervisor_abs_p95",
-)
+) + _CALIBRATED_SUPERVISOR_MODES
 SCORING_FUNCTIONS = _SIGMA_MODES + _EXPECTED_ONLY_MODES + _SUPERVISOR_MODES
 
 # Modes that need a per-point ``expected_error`` profile (and so cannot run on sigma alone).
@@ -56,7 +60,14 @@ TRUE_ERROR_AGGREGATORS = ("max", "mean", "p95")
 # cross-trajectory absolute thresholds). ABSOLUTE / absolute-like modes are on a fixed
 # expected-force-error scale, so a single physical budget means the same for every trajectory.
 _RELATIVE_SCORINGS = frozenset(
-    {"supervisor", "supervisor_rel", "supervisor_p95", "supervisor_rel_p95"}
+    {
+        "supervisor",
+        "supervisor_rel",
+        "supervisor_p95",
+        "supervisor_rel_p95",
+        "calibrated_supervisor",
+        "calibrated_supervisor_p95",
+    }
 )
 _ABSOLUTE_SCORINGS = frozenset(
     {
@@ -154,6 +165,9 @@ class TrajectoryScore:
     # absolute supervisor point risk (fixed altitude reference)
     mean_point_risk_abs: float = float("nan")
     p95_point_risk_abs: float = float("nan")
+    # validation-calibrated supervisor point risk
+    mean_calibrated_point_risk: float = float("nan")
+    p95_calibrated_point_risk: float = float("nan")
     # --- domain-support metrics (only when domain support is supplied) ---
     max_domain_risk: float = float("nan")
     time_outside_support: float = float("nan")
@@ -299,6 +313,7 @@ def score_sigma_profile(
     mean_error_magnitude: torch.Tensor | None = None,
     domain_risk: torch.Tensor | None = None,
     domain_weight: float = 1.0,
+    calibrated_point_risk: torch.Tensor | None = None,
     weights: torch.Tensor | None = None,
 ) -> TrajectoryScore:
     """Aggregate a per-output-point profile into a :class:`TrajectoryScore`.
@@ -338,10 +353,15 @@ def score_sigma_profile(
     n = int(sigma.numel())
     if n == 0:
         raise ValueError("cannot score an empty trajectory")
-    if scoring in _EXPECTED_MODES and expected_error is None:
+    if scoring in _EXPECTED_MODES and scoring not in _CALIBRATED_SUPERVISOR_MODES and expected_error is None:
         raise ValueError(
             f"scoring={scoring!r} requires an expected_error profile; score via "
             "VESPUQPlugin.score_trajectory or pass expected_error explicitly"
+        )
+    if scoring in _CALIBRATED_SUPERVISOR_MODES and calibrated_point_risk is None:
+        raise ValueError(
+            f"scoring={scoring!r} requires a calibrated_point_risk profile; fit VESPUQPlugin "
+            "with risk.calibrated_supervisor.enabled=true or pass calibrated_point_risk explicitly"
         )
 
     reference_h = (
@@ -380,6 +400,7 @@ def score_sigma_profile(
     max_ee = mean_ee = p95_ee = low_alt_ee = float("nan")
     mean_pr_rel = p95_pr_rel = float("nan")
     mean_pr_abs = p95_pr_abs = float("nan")
+    mean_cal_pr = p95_cal_pr = float("nan")
     if expected_error is not None:
         ee = _as_1d(expected_error, n, "expected_error")
         max_ee = float(ee.max())
@@ -405,6 +426,11 @@ def score_sigma_profile(
         point_risk_abs = ee * abs_alt * domain_factor
         mean_pr_abs = _wmean(point_risk_abs, w)
         p95_pr_abs = _weighted_quantile(point_risk_abs, 0.95, w)
+
+    if calibrated_point_risk is not None:
+        cal_pr = _as_1d(calibrated_point_risk, n, "calibrated_point_risk")
+        mean_cal_pr = _wmean(cal_pr, w)
+        p95_cal_pr = _weighted_quantile(cal_pr, 0.95, w)
 
     max_mem = mean_mem = float("nan")
     if mean_error_magnitude is not None:
@@ -439,6 +465,9 @@ def score_sigma_profile(
         # absolute supervisor (thresholds)
         "supervisor_abs": mean_pr_abs,
         "supervisor_abs_p95": p95_pr_abs,
+        # validation-calibrated supervisor (ranking)
+        "calibrated_supervisor": mean_cal_pr,
+        "calibrated_supervisor_p95": p95_cal_pr,
     }
 
     return TrajectoryScore(
@@ -463,6 +492,8 @@ def score_sigma_profile(
         p95_point_risk=p95_pr_rel,
         mean_point_risk_abs=mean_pr_abs,
         p95_point_risk_abs=p95_pr_abs,
+        mean_calibrated_point_risk=mean_cal_pr,
+        p95_calibrated_point_risk=p95_cal_pr,
         max_domain_risk=max_domain_risk,
         time_outside_support=time_outside_support,
     )

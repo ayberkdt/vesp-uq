@@ -115,3 +115,26 @@ def test_from_config_builds_multishell_sources():
     assert plugin.sources.n_sources == 80
     assert plugin.reg_method == "lcurve"
     assert plugin.noise_model == "heteroscedastic"
+
+
+def test_from_config_accepts_binned_noise_and_calibrated_supervisor_options():
+    cfg = {
+        "model": {"n_source": 16},
+        "uq": {
+            "regularization": {"method": "fixed", "lambda_l2": 1.0e-4},
+            "noise_model": "altitude_binned",
+            "noise": {"altitude_bins": 6},
+            "risk": {
+                "scoring": "calibrated_supervisor_p95",
+                "calibrated_supervisor": {"enabled": True, "domain_weight": [0.0]},
+            },
+            "conformal": {"by_region": True, "min_region_n": 4},
+        },
+    }
+    plugin = VESPUQPlugin.from_config(cfg)
+    assert plugin.noise_model == "altitude_binned"
+    assert plugin.altitude_noise_bins == 6
+    assert plugin.calibrate_supervisor is True
+    assert plugin.risk_scoring == "calibrated_supervisor_p95"
+    assert plugin.conformal_by_region is True
+    assert plugin.conformal_min_region_n == 4

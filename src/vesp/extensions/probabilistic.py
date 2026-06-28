@@ -243,6 +243,80 @@ class AltitudeNoiseModel:
         return math.exp(self.log_a)
 
 
+@dataclass
+class BinnedAltitudeNoiseModel:
+    """Altitude-binned excess predictive noise.
+
+    This is a less parametric alternative to :class:`AltitudeNoiseModel`. It estimates the
+    held-out excess residual variance inside radius quantile bins and interpolates the log
+    variance between bin centers. The bins still extrapolate conservatively by clamping to the
+    nearest fitted edge.
+    """
+
+    radii: torch.Tensor
+    log_variance: torch.Tensor
+    h_floor: float = 1.0e-3
+
+    def variance(self, radii: torch.Tensor) -> torch.Tensor:
+        centers = self.radii.to(dtype=radii.dtype, device=radii.device).reshape(-1)
+        logv = self.log_variance.to(dtype=radii.dtype, device=radii.device).reshape(-1)
+        if centers.numel() == 0:
+            return torch.zeros_like(radii)
+        if centers.numel() == 1:
+            return torch.exp(logv[0]).expand_as(radii)
+
+        lo = float(centers[0].detach().cpu())
+        hi = float(centers[-1].detach().cpu())
+        x = radii.reshape(-1).clamp(min=lo, max=hi)
+        idx_hi = torch.searchsorted(centers, x, right=False).clamp(1, centers.numel() - 1)
+        idx_lo = idx_hi - 1
+        x0, x1 = centers[idx_lo], centers[idx_hi]
+        y0, y1 = logv[idx_lo], logv[idx_hi]
+        denom = (x1 - x0).clamp_min(torch.finfo(radii.dtype).eps)
+        t = (x - x0) / denom
+        out = y0 + t * (y1 - y0)
+        return torch.exp(out).reshape_as(radii)
+
+    @classmethod
+    def fit(
+        cls,
+        radii: torch.Tensor,
+        residuals: torch.Tensor,
+        epistemic_var: torch.Tensor,
+        *,
+        n_bins: int = 8,
+        h_floor: float = 1.0e-3,
+        min_variance: float = 1.0e-12,
+    ) -> BinnedAltitudeNoiseModel:
+        radii = radii.detach().reshape(-1)
+        res2 = residuals.detach().reshape(-1) ** 2
+        epistemic_var = epistemic_var.detach().reshape(-1)
+        if not (radii.numel() == res2.numel() == epistemic_var.numel()):
+            raise ValueError("radii, residuals, and epistemic_var must have the same length")
+        if radii.numel() == 0:
+            raise ValueError("cannot fit altitude-binned noise with no samples")
+
+        excess = (res2 - epistemic_var).clamp_min(float(min_variance))
+        order = torch.argsort(radii)
+        chunks = torch.chunk(order, max(1, min(int(n_bins), int(order.numel()))))
+        centers: list[torch.Tensor] = []
+        variances: list[torch.Tensor] = []
+        for idx in chunks:
+            if idx.numel() == 0:
+                continue
+            centers.append(torch.median(radii[idx]))
+            variances.append(torch.median(excess[idx]).clamp_min(float(min_variance)))
+        return cls(
+            radii=torch.stack(centers).detach(),
+            log_variance=torch.log(torch.stack(variances).detach()),
+            h_floor=float(h_floor),
+        )
+
+    @property
+    def n_bins(self) -> int:
+        return int(self.radii.numel())
+
+
 def _safe_cholesky(matrix: torch.Tensor, *, jitter: float) -> torch.Tensor:
     """Cholesky with escalating diagonal jitter for near-singular Gram matrices."""
 

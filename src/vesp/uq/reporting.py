@@ -379,6 +379,7 @@ def _iac_summary_md(report: dict) -> list[str]:
             f"{'Yes' if s.get('screen_concentrates_error') else 'No'} "
             f"({fmt(sc.get('error_ratio_flagged_to_accepted'), '.2f')}x the accepted-set error)."
         )
+    noise_kind = fit.get("altitude_noise_type") or fit.get("noise_model", "heteroscedastic")
     return [
         "",
         "## IAC claim summary",
@@ -386,8 +387,8 @@ def _iac_summary_md(report: dict) -> list[str]:
         f"- **What was fitted?** An interior equivalent-source posterior over the residual-force "
         f"error `e_a = a_reference - a_surrogate` ({fit['n_sources']} sources, "
         f"{fit['reg_method']} regularization).",
-        "- **What was calibrated?** Altitude-dependent predictive uncertainty (post-hoc "
-        "heteroscedastic recalibration) on held-out validation residuals; the posterior mean equals "
+        f"- **What was calibrated?** Altitude-dependent predictive uncertainty (post-hoc "
+        f"{noise_kind} recalibration) on held-out validation residuals; the posterior mean equals "
         "the ridge point estimate.",
         f"- **Did low-altitude uncertainty increase?** "
         f"{'Yes' if s.get('epistemic_grows_at_low_altitude') else 'No'} "
@@ -423,6 +424,20 @@ def build_model_card(report: dict, *, model_filename: str, metadata: dict) -> st
     policy = metadata.get("decision_policy", {})
     provenance = metadata.get("provenance", {})
     conformal = metadata.get("conformal_prediction") or report.get("conformal_calibration") or {}
+    altitude_noise_type = fit.get("altitude_noise_type")
+    if altitude_noise_type == "altitude_binned":
+        altitude_noise_summary = (
+            f"  |  altitude-binned noise: {fit.get('altitude_noise_bins', 'n/a')} bins "
+            f"(r={fmt(fit.get('altitude_noise_radius_min'), '.3f')}.."
+            f"{fmt(fit.get('altitude_noise_radius_max'), '.3f')})"
+        )
+    elif fit.get("altitude_noise_b") is not None:
+        altitude_noise_summary = (
+            f"  |  altitude noise sigma^2(h) = a*h^(-b): a = {fmt(fit.get('altitude_noise_a'), '.3e')}, "
+            f"b = {fmt(fit.get('altitude_noise_b'), '.3f')}"
+        )
+    else:
+        altitude_noise_summary = ""
 
     lines = [
         f"# Model card - `{model_filename}`",
@@ -450,13 +465,7 @@ def build_model_card(report: dict, *, model_filename: str, metadata: dict) -> st
         "",
         f"- sources: {fit.get('n_sources')}  |  regularization: {fit.get('reg_method')} "
         f"(lambda_l2 = {fmt(fit.get('lambda_l2'))})  |  noise model: {fit.get('noise_model')}",
-        f"- global noise std: {fmt(fit.get('noise_std'), '.3e')}"
-        + (
-            f"  |  altitude noise sigma^2(h) = a*h^(-b): a = {fmt(fit.get('altitude_noise_a'), '.3e')}, "
-            f"b = {fmt(fit.get('altitude_noise_b'), '.3f')}"
-            if fit.get("altitude_noise_b") is not None
-            else ""
-        ),
+        f"- global noise std: {fmt(fit.get('noise_std'), '.3e')}" + altitude_noise_summary,
         f"- domain support: {'on' if fit.get('domain_support_enabled') else 'off'} "
         f"(k = {fit.get('domain_k')}, backend = {fit.get('domain_backend')})",
         f"- operational conformal prediction scale: {_conformal_prediction_summary(conformal)}",

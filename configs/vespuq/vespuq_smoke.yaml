@@ -43,7 +43,9 @@ evaluation:
 uq:
   regularization:
     method: lcurve
-  noise_model: heteroscedastic
+  noise_model: heteroscedastic     # homoscedastic | heteroscedastic | altitude_binned
+  noise:
+    altitude_bins: 8               # used only when noise_model: altitude_binned
   covariance_mode: exact
   # query_chunk_size: 8192      # positions per dense prediction block (null = no chunking);
   #                             # bounds operator memory for large query sets / ensembles
@@ -65,6 +67,13 @@ uq:
     domain_radial_weight: 1.0     # weight on the radial extrapolation component
     domain_angular_weight: 0.0    # optional nearest-direction angular component (off by default)
     domain_backend: torch         # torch (default) | kdtree (scipy cKDTree; falls back to torch)
+    calibrated_supervisor:
+      enabled: false              # true -> validation grid search for calibrated_supervisor(_p95)
+      altitude_bins: 8            # altitude expected-error curve bins for residualized risk
+      expected_power: [0.75, 1.0, 1.25]
+      altitude_residual_power: [0.0, 0.5, 1.0]
+      epistemic_weight: [0.0, 0.5, 1.0]
+      domain_weight: [0.0, 0.5, 1.0]  # 0 lets calibration auto-disable harmful domain contribution
   # --- Optional physical acceleration-error budget (scripts/run_physical_budget_screening.py) ---
   # Flags trajectories whose estimated force-risk exceeds a user-defined acceleration-error
   # tolerance. Requires an absolute scoring mode (expected_abs / expected_abs_p95 / supervisor_abs /
@@ -91,6 +100,8 @@ uq:
     mode: norm                   # norm | component_max | mahalanobis  (force-error reduction)
     by_band: false               # true -> fit per-altitude-band scales, with global fallback
     min_band_n: 30
+    by_region: false             # true -> fit angular octant scales, with global fallback
+    min_region_n: 30
   audit:
     enabled: true
     audit_fraction: 0.02         # sentinel sample as a fraction of the accepted (low-risk) set

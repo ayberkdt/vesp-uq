@@ -44,12 +44,13 @@ from vesp.ui.widgets import (
 CONFIG_DEFAULT = "(config default)"
 SCORING_MODES = (
     CONFIG_DEFAULT,
+    "calibrated_supervisor", "calibrated_supervisor_p95",
     "supervisor_rel", "supervisor_rel_p95", "supervisor_abs", "supervisor_abs_p95",
     "expected_abs", "expected_abs_p95", "expected_low_alt",
     "max", "mean", "low_alt_integral", "combined",
 )
 COVARIANCE_MODES = (CONFIG_DEFAULT, "exact", "diagonal", "lowrank")
-NOISE_MODES = (CONFIG_DEFAULT, "heteroscedastic", "homoscedastic")
+NOISE_MODES = (CONFIG_DEFAULT, "heteroscedastic", "altitude_binned", "homoscedastic")
 TRISTATE = (CONFIG_DEFAULT, "on", "off")
 
 CAL_BAND_COLUMNS = ("band", "n", "z_std", "picp_90", "ellipsoid_picp_90", "nll")

@@ -207,8 +207,12 @@ def run_screen(
     if residuals is not None:
         true_error = torch.tensor(
             [
-                aggregate_trajectory_error(torch.linalg.norm(res.to(torch.float64), dim=-1), "p95")
-                for res in residuals
+                aggregate_trajectory_error(
+                    torch.linalg.norm(res.to(torch.float64), dim=-1),
+                    "p95",
+                    weights=None if weights is None else weights[i],
+                )
+                for i, res in enumerate(residuals)
             ],
             dtype=torch.float64,
         )

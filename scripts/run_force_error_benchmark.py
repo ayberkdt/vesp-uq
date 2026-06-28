@@ -25,9 +25,8 @@ import torch
 
 from vesp.common.config import get_dtype, load_config
 from vesp.uq.data import split_uq_samples
-from vesp.uq.ensemble import generate_orbit_ensemble, nearest_neighbor_error_magnitude
-from vesp.uq.experiment import _load_samples
-from vesp.uq.io import load_trajectory_csv
+from vesp.uq.ensemble import nearest_neighbor_error_magnitude
+from vesp.uq.experiment import _build_trajectories, _load_samples, _resolve_time_weighting, _time_weights
 from vesp.uq.io.run_artifacts import write_run_artifacts
 from vesp.uq.plugin import VESPUQPlugin
 from vesp.uq.scoring import aggregate_trajectory_error
@@ -62,24 +61,13 @@ def force_error_benchmark(
     scoring = scoring or "supervisor_rel_p95"
     aggregator = str(screen_cfg.get("true_error_aggregator", "p95")).lower()
 
-    # trajectory ensemble: external CSV if requested, else generated Keplerian orbits
-    residuals = None
-    if str(screen_cfg.get("trajectory_source", "generated")).lower() == "csv" and screen_cfg.get("trajectory_path"):
-        ds = load_trajectory_csv(screen_cfg["trajectory_path"], dtype=dtype)
-        trajectories = ds.trajectories
-        residuals = ds.residual_accelerations
-    else:
-        ens = generate_orbit_ensemble(
-            n_orbits=int(screen_cfg.get("n_orbits", 200)),
-            n_points=int(screen_cfg.get("n_points", 48)),
-            r_peri_range=tuple(screen_cfg.get("r_peri_range", (1.02, 1.30))),
-            r_apo_range=tuple(screen_cfg.get("r_apo_range", (1.30, 1.60))),
-            seed=seed,
-            dtype=dtype,
-        )
-        trajectories = ens.trajectories
+    traj_info = _build_trajectories(screen_cfg, seed=seed, dtype=dtype, config=config)
+    trajectories = traj_info["trajectories"]
+    residuals = traj_info["residuals"]
+    time_weighting = _resolve_time_weighting(screen_cfg)
+    weights = [_time_weights(t) for t in trajectories] if time_weighting == "kepler_r2" else None
 
-    scores = plugin.score_ensemble(trajectories, scoring=scoring)
+    scores = plugin.score_ensemble(trajectories, scoring=scoring, weights=weights)
     risk = torch.tensor([s.risk_score for s in scores], dtype=torch.float64)
 
     # TRUE force error per trajectory (NOT position error): direct residual if available, else
@@ -88,12 +76,20 @@ def force_error_benchmark(
     if residuals is not None:
         true_error_mode = "residual_csv"
         for i, res in enumerate(residuals):
-            true_fe[i] = aggregate_trajectory_error(torch.linalg.norm(res.to(torch.float64), dim=-1), aggregator)
+            true_fe[i] = aggregate_trajectory_error(
+                torch.linalg.norm(res.to(torch.float64), dim=-1),
+                aggregator,
+                weights=None if weights is None else weights[i],
+            )
     else:
         true_error_mode = "nn_oracle_heldout"
         for i, traj in enumerate(trajectories):
             nn = nearest_neighbor_error_magnitude(traj.to(dtype), held.positions, held.error)
-            true_fe[i] = aggregate_trajectory_error(nn.to(torch.float64), aggregator)
+            true_fe[i] = aggregate_trajectory_error(
+                nn.to(torch.float64),
+                aggregator,
+                weights=None if weights is None else weights[i],
+            )
 
     rep = select_reruns(risk, rerun_fraction=rerun_fraction, true_error=true_fe)
     lift = (rep.capture_rate / rep.rerun_fraction) if rep.rerun_fraction else float("nan")
@@ -103,6 +99,7 @@ def force_error_benchmark(
         "is_position_error_benchmark": False,
         "scoring": scoring,
         "true_force_error_aggregator": aggregator,
+        "time_weighting": time_weighting,
         "true_error_mode": true_error_mode,
         "n_trajectories": len(trajectories),
         "rerun_fraction": rerun_fraction,
@@ -133,7 +130,7 @@ def _benchmark_md(n: dict) -> str:
         "VESP-UQ force-risk score ranks the surrogate's true force-model error along a trajectory.",
         "",
         f"- scoring: `{n['scoring']}`  |  true force error: `{n['true_error_mode']}` "
-        f"(aggregator `{n['true_force_error_aggregator']}`)",
+        f"(aggregator `{n['true_force_error_aggregator']}`, time weighting `{n.get('time_weighting', 'none')}`)",
         f"- trajectories: {n['n_trajectories']}  |  top fraction flagged: {n['rerun_fraction']:.0%}",
         "",
         f"- **Spearman(force-risk, true force error): {f(n['spearman_force_risk_vs_true_force_error'])}**",

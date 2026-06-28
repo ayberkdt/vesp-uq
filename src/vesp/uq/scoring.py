@@ -223,13 +223,14 @@ def _weighted_quantile(x: torch.Tensor, q: float, w: torch.Tensor | None) -> flo
     return float(xs[idx])
 
 
-def aggregate_trajectory_error(values, mode: str = "p95") -> float:
+def aggregate_trajectory_error(values, mode: str = "p95", weights=None) -> float:
     """Collapse a per-point error profile into one trajectory scalar (``max`` / ``mean`` / ``p95``).
 
     Shared by the nearest-neighbour oracle and the report so that risk and true error are
     aggregated consistently. ``p95`` (the default) is robust to a single nearest-neighbour
     spike while still rewarding a sustained high-error pass, unlike ``max`` (spike-dominated)
-    or ``mean`` (washes the pass out).
+    or ``mean`` (washes the pass out). Optional ``weights`` apply the same time-weighting
+    convention as trajectory risk scoring; ``max`` is unchanged by weights.
     """
 
     if mode not in TRUE_ERROR_AGGREGATORS:
@@ -237,11 +238,12 @@ def aggregate_trajectory_error(values, mode: str = "p95") -> float:
     v = _as_1d(values)
     if v.numel() == 0:
         return float("nan")
+    w = _normalize_weights(weights, int(v.numel()))
     if mode == "max":
         return float(v.max())
     if mode == "mean":
-        return float(v.mean())
-    return float(torch.quantile(v, 0.95))
+        return _wmean(v, w)
+    return _weighted_quantile(v, 0.95, w)
 
 
 def calibrate_risk_threshold(values, quantile: float = 0.95, multiplier: float = 1.0) -> float:

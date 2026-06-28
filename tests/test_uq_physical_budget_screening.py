@@ -160,6 +160,25 @@ def test_script_runs_on_tiny_synthetic_config(tmp_path):
     assert len(csv_lines) == 1 + result["n_trajectories"]
 
 
+def test_main_run_uses_physical_budget_scoring_from_config():
+    from vesp.uq.experiment import run_vespuq
+
+    cfg = _tiny_screening_config()
+    cfg["uq"]["risk"]["scoring"] = "supervisor_rel"  # relative default would be invalid for budget
+    cfg["uq"]["physical_budget"] = {
+        "enabled": True,
+        "value": 1.0e-8,
+        "units": "m/s^2",
+        "scoring": "expected_abs_p95",
+        "max_rerun_fraction": None,
+    }
+    report = run_vespuq(cfg)
+    screen = report["experiment_3_screening"]
+    assert screen["scoring"] == "expected_abs_p95"
+    assert screen["threshold_source"] == "physical_budget"
+    assert screen["threshold_model_units"] == pytest.approx(1.0e-2)
+
+
 def test_script_rejects_relative_scoring(tmp_path):
     cfg = _tiny_screening_config()
     args = pbs.argparse.Namespace(

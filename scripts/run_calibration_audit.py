@@ -36,6 +36,7 @@ from vesp.uq.ensemble import nearest_neighbor_error_magnitude
 from vesp.uq.experiment import (
     _build_trajectories,
     _load_samples,
+    _resolve_screening_scoring,
     _resolve_time_weighting,
     _time_weights,
 )
@@ -92,13 +93,13 @@ def screen_trajectories(plugin: VESPUQPlugin, config: dict, samples, held, dtype
     """
 
     screen_cfg = config.get("uq", {}).get("screening", {})
-    traj_info = _build_trajectories(screen_cfg, seed=seed, dtype=dtype)
+    traj_info = _build_trajectories(screen_cfg, seed=seed, dtype=dtype, config=config)
     trajectories = traj_info["trajectories"]
-    scoring = plugin.risk_scoring
+    scoring = _resolve_screening_scoring(config, plugin, screen_cfg)
 
     time_weighting = _resolve_time_weighting(screen_cfg)
     weights = [_time_weights(t) for t in trajectories] if time_weighting == "kepler_r2" else None
-    scores = plugin.score_ensemble(trajectories, weights=weights)
+    scores = plugin.score_ensemble(trajectories, scoring=scoring, weights=weights)
     risk_scores = torch.tensor([s.risk_score for s in scores], dtype=torch.float64)
 
     # True force error per trajectory (NOT position error): direct residual if a CSV supplied accel
@@ -115,16 +116,26 @@ def screen_trajectories(plugin: VESPUQPlugin, config: dict, samples, held, dtype
     if use_residual:
         for i, res in enumerate(traj_info["residuals"]):
             mag = torch.linalg.norm(res.to(torch.float64), dim=-1)
-            true_error[i] = aggregate_trajectory_error(mag, aggregator)
+            true_error[i] = aggregate_trajectory_error(
+                mag,
+                aggregator,
+                weights=None if weights is None else weights[i],
+            )
     else:
         for i, traj in enumerate(trajectories):
             nn = nearest_neighbor_error_magnitude(traj.to(dtype), oracle.positions, oracle.error)
-            true_error[i] = aggregate_trajectory_error(nn.to(torch.float64), aggregator)
+            true_error[i] = aggregate_trajectory_error(
+                nn.to(torch.float64),
+                aggregator,
+                weights=None if weights is None else weights[i],
+            )
 
     max_rerun_fraction = screen_cfg.get("max_rerun_fraction")
     rerun_fraction = float(screen_cfg.get("rerun_fraction", 0.20))
     fraction_policy = str(screen_cfg.get("fraction_policy", "topk")).lower()
-    threshold, threshold_meta = resolve_threshold(screen_cfg, plugin, held, scoring, dtype=dtype, seed=seed)
+    threshold, threshold_meta = resolve_threshold(screen_cfg, plugin, held, scoring, dtype=dtype, seed=seed, config=config)
+    if max_rerun_fraction is None and threshold_meta["threshold_source"] == "physical_budget":
+        max_rerun_fraction = config.get("uq", {}).get("physical_budget", {}).get("max_rerun_fraction")
     if threshold is not None:
         screening = select_reruns(
             risk_scores,

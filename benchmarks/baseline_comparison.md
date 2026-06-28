@@ -25,6 +25,13 @@ Each selector produces one scalar score per trajectory (higher = higher risk). T
 Reported per selector: Spearman vs true force error, capture rate, precision, lift over random,
 mean true force error of flagged vs accepted trajectories, and their ratio.
 
+If `uq.screening.time_weighting: kepler_r2` is enabled, the comparison applies the same
+approximately time-proportional weights (`dt ~ r^2`) used by the main VESP-UQ trajectory scoring
+to low-altitude exposure, VESP-UQ score reductions, altitude-residual p95/mean reductions, domain
+support means, and the trajectory-level true force-error aggregation. This keeps the baseline
+ranking target aligned with the main screening run when generated orbits are sampled uniformly in
+true anomaly.
+
 ## Why minimum altitude is a strong simple baseline
 
 Force-model error from a band-limited / truncated gravity surrogate typically grows toward low

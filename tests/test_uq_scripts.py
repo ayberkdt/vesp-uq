@@ -55,7 +55,7 @@ def test_force_error_benchmark_schema_and_csv(tmp_path):
     data = _read_json(tmp_path / "force_error_benchmark.json")
     expected = {
         "benchmark", "claim", "is_position_error_benchmark", "scoring",
-        "true_force_error_aggregator", "true_error_mode", "n_trajectories", "rerun_fraction",
+        "true_force_error_aggregator", "time_weighting", "true_error_mode", "n_trajectories", "rerun_fraction",
         "spearman_force_risk_vs_true_force_error", "capture_rate", "precision", "lift_over_random",
         "mean_true_force_error_flagged", "mean_true_force_error_accepted",
         "force_error_ratio_flagged_to_accepted",
@@ -77,15 +77,17 @@ def test_force_error_benchmark_schema_and_csv(tmp_path):
 # --------------------------------------------------------------------------- baseline comparison
 def test_baseline_comparison_schema_and_csv(tmp_path):
     config = _tiny_config()
+    config["uq"]["screening"]["time_weighting"] = "kepler_r2"
     payload = crb.run_baseline_comparison(config, rerun_fraction=0.25)
     crb.write_outputs(payload, tmp_path, config=config)
 
     expected = {
         "config_dataset", "n_trajectories", "trajectory_source", "true_force_error_source",
-        "true_force_error_aggregator", "rerun_fraction", "uncertainty_scoring", "supervisor_scoring",
-        "baselines", "best_by_spearman", "best_by_lift", "altitude_incremental_value",
+        "true_force_error_aggregator", "time_weighting", "rerun_fraction", "uncertainty_scoring",
+        "supervisor_scoring", "baselines", "best_by_spearman", "best_by_lift", "altitude_incremental_value",
     }
     assert expected <= set(payload)
+    assert payload["time_weighting"] == "kepler_r2"
     # the always-present baselines (domain_support is off in this config)
     assert {
         "random",

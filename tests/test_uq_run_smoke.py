@@ -23,6 +23,7 @@ def test_run_smoke_writes_all_artifacts(tmp_path):
         "calibration_by_band.csv",
         "trajectory_scores.csv",
         "flagged_trajectories.csv",
+        "sentinel_audit.csv",
         "fit_summary.json",
     ):
         assert (run_dir / fname).exists(), f"missing artifact {fname}"
@@ -30,8 +31,11 @@ def test_run_smoke_writes_all_artifacts(tmp_path):
     # report structure
     assert "experiment_1_calibration" in report
     assert "experiment_3_screening" in report
+    assert "sentinel_audit" in report
     assert "runtime" in report
     assert "summary" in report
+    assert report["sentinel_audit"]["enabled"] is True
+    assert report["sentinel_audit"]["n_sentinel"] >= 0
 
     screen = report["experiment_3_screening"]
     # regression: risk screening is evaluated at OUTPUT points only (no online-RHS assumption)
@@ -43,6 +47,7 @@ def test_run_smoke_writes_all_artifacts(tmp_path):
     md = (run_dir / "vespuq_report.md").read_text(encoding="utf-8")
     assert "IAC claim summary" in md
     assert "not inside every integrator RHS call" in md
+    assert "Accepted-set sentinel audit" in md
 
 
 def test_trajectory_scores_csv_has_expected_columns(tmp_path):
@@ -51,8 +56,31 @@ def test_trajectory_scores_csv_has_expected_columns(tmp_path):
     cfg["output"]["run_name"] = "smoke2"
     run(cfg)
     header = (tmp_path / "smoke2" / "trajectory_scores.csv").read_text(encoding="utf-8").splitlines()[0]
-    for col in ("trajectory_id", "risk_score", "max_sigma", "flagged_for_rerun", "true_error"):
+    for col in (
+        "trajectory_id",
+        "risk_score",
+        "max_sigma",
+        "mean_calibrated_point_risk",
+        "above_screening_threshold",
+        "flagged_for_rerun",
+        "true_error",
+    ):
         assert col in header
+
+
+def test_sentinel_audit_csv_has_expected_columns(tmp_path):
+    cfg = load_config(ROOT / "configs" / "vespuq" / "vespuq_smoke.yaml")
+    cfg["output"]["output_dir"] = str(tmp_path)
+    cfg["output"]["run_name"] = "smoke_audit"
+    run(cfg)
+    header = (tmp_path / "smoke_audit" / "sentinel_audit.csv").read_text(encoding="utf-8").splitlines()[0]
+    assert header.split(",") == [
+        "trajectory_id",
+        "risk_score",
+        "true_force_error",
+        "is_high_force_error",
+        "flagged",
+    ]
 
 
 def test_run_save_model_persists_loadable_plugin(tmp_path):

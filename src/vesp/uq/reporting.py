@@ -45,6 +45,8 @@ def expected_error_summary(scores, domain_support: bool) -> dict:
         "max_expected_error": _stat([s.max_expected_error for s in scores]),
         "p95_expected_error": _stat([s.p95_expected_error for s in scores]),
         "mean_point_risk": _stat([s.mean_point_risk for s in scores]),
+        "mean_calibrated_point_risk": _stat([s.mean_calibrated_point_risk for s in scores]),
+        "p95_calibrated_point_risk": _stat([s.p95_calibrated_point_risk for s in scores]),
     }
     if domain_support:
         out["max_domain_risk"] = _stat([s.max_domain_risk for s in scores])
@@ -54,7 +56,8 @@ def expected_error_summary(scores, domain_support: bool) -> dict:
 
 def build_summary(report: dict) -> dict:
     cal = report["experiment_1_calibration"]
-    screen = report["experiment_3_screening"]["screen"]
+    screen_meta = report["experiment_3_screening"]
+    screen = screen_meta["screen"]
     out: dict = {}
     if "low_high_epistemic_std_ratio" in cal:
         out["low_high_epistemic_std_ratio"] = cal["low_high_epistemic_std_ratio"]
@@ -74,6 +77,10 @@ def build_summary(report: dict) -> dict:
     out["capture_rate"] = screen.get("capture_rate")
     out["spearman_risk_vs_error"] = screen.get("spearman_risk_vs_error")
     out["error_ratio_flagged_to_accepted"] = screen.get("error_ratio_flagged_to_accepted")
+    out["threshold_source"] = screen_meta.get("threshold_source")
+    out["threshold_model_units"] = screen_meta.get("threshold_model_units")
+    out["threshold_physical_value"] = screen_meta.get("threshold_physical_value")
+    out["threshold_physical_units"] = screen_meta.get("threshold_physical_units")
     if screen.get("error_ratio_flagged_to_accepted"):
         out["screen_concentrates_error"] = screen["error_ratio_flagged_to_accepted"] > 1.0
     # Lift over a random screen: a random top-fraction selection captures ~rerun_fraction of the
@@ -82,6 +89,13 @@ def build_summary(report: dict) -> dict:
     rf = screen.get("rerun_fraction")
     if cap is not None and rf and float(rf) > 0.0 and not math.isnan(float(cap)):
         out["lift_over_random"] = float(cap) / float(rf)
+    audit = report.get("sentinel_audit") or {}
+    fn = audit.get("false_negatives") or {}
+    if audit.get("enabled"):
+        out["sentinel_n"] = audit.get("n_sentinel")
+        out["sentinel_false_negative_rate"] = fn.get("sentinel_false_negative_rate")
+        out["accepted_false_negative_rate"] = fn.get("accepted_false_negative_rate")
+        out["false_negative_rate"] = fn.get("false_negative_rate")
     return out
 
 
@@ -96,11 +110,15 @@ def build_tables(scores, screening, true_error, flagged_set) -> dict:
         "low_altitude_expected_error_integral", "max_mean_error_magnitude",
         "mean_mean_error_magnitude", "mean_point_risk", "p95_point_risk",
         "mean_point_risk_abs", "p95_point_risk_abs",
+        "mean_calibrated_point_risk", "p95_calibrated_point_risk",
         "max_domain_risk", "time_outside_support",
-        "flagged_for_rerun", "true_error",
+        "above_screening_threshold", "flagged_for_rerun", "true_error",
     ]
     traj_rows = []
+    threshold_mode = getattr(screening, "selection_mode", "fraction") != "fraction"
+    threshold = float(getattr(screening, "threshold", float("nan"))) if threshold_mode else None
     for i, s in enumerate(scores):
+        above_threshold = int(float(s.risk_score) >= threshold) if threshold is not None else ""
         traj_rows.append([
             i, s.risk_score, s.max_sigma, s.mean_sigma, s.low_altitude_sigma_integral,
             s.time_above_threshold, s.combined_altitude_risk, s.min_radius, s.mean_radius,
@@ -109,8 +127,9 @@ def build_tables(scores, screening, true_error, flagged_set) -> dict:
             s.low_altitude_expected_error_integral, s.max_mean_error_magnitude,
             s.mean_mean_error_magnitude, s.mean_point_risk, s.p95_point_risk,
             s.mean_point_risk_abs, s.p95_point_risk_abs,
+            s.mean_calibrated_point_risk, s.p95_calibrated_point_risk,
             s.max_domain_risk, s.time_outside_support,
-            int(i in flagged_set), float(true_error[i]),
+            above_threshold, int(i in flagged_set), float(true_error[i]),
         ])
     flag_col = traj_header.index("flagged_for_rerun")
     flagged_rows = [r for r in traj_rows if r[flag_col] == 1]
@@ -154,6 +173,29 @@ def _conformal_prediction_summary(conformal: dict) -> str:
         f"(mode `{conformal.get('mode')}`, scope `{conformal.get('scope')}`, "
         f"target coverage {fmt(global_cal.get('target_coverage'), '.2f')})"
     )
+
+
+def _sentinel_audit_md(report: dict) -> list[str]:
+    audit = report.get("sentinel_audit") or {}
+    if not audit.get("enabled"):
+        return []
+    fn = audit.get("false_negatives") or {}
+    return [
+        "",
+        "## Accepted-set sentinel audit",
+        "",
+        f"- accepted trajectories: {audit.get('n_accepted')}  |  sentinel sample: "
+        f"{audit.get('n_sentinel')} (fraction {fmt(audit.get('audit_fraction'), '.3f')}, "
+        f"min {audit.get('min_audit')}, seed {audit.get('seed')})",
+        f"- high-error tail: q={fmt(fn.get('high_error_quantile'), '.2f')}  |  threshold "
+        f"{fmt(fn.get('high_error_threshold'), '.3e')} true force-error units",
+        f"- false negatives among all accepted high-error trajectories: "
+        f"{fn.get('n_false_negatives')} / {fn.get('n_high_error')} "
+        f"(rate {fmt(fn.get('false_negative_rate'), '.3f')}; accepted-set rate "
+        f"{fmt(fn.get('accepted_false_negative_rate'), '.3f')})",
+        f"- sentinel high-error hits: {fn.get('n_sentinel_high_error')} / {fn.get('n_sentinel')} "
+        f"(sentinel estimate {fmt(fn.get('sentinel_false_negative_rate'), '.3f')})",
+    ]
 
 
 def build_report_md(report: dict) -> str:
@@ -271,6 +313,11 @@ def build_report_md(report: dict) -> str:
                 extra += f", calib scoring={screen['threshold_calibration_scoring']}"
             if screen.get("threshold_calibration_n") is not None:
                 extra += f", calib n={screen['threshold_calibration_n']}"
+            if screen.get("conformal_enabled"):
+                extra += (
+                    f", conformal x{fmt(screen.get('conformal_scale'), '.3g')}"
+                    f" ({screen.get('conformal_mode', 'norm')})"
+                )
             selection_line += f" [{extra}]"
         if sc.get("max_rerun_fraction") is not None:
             selection_line += f", max rerun fraction {fmt(sc.get('max_rerun_fraction'), '.2f')}"
@@ -325,6 +372,7 @@ def build_report_md(report: dict) -> str:
         f"max {fmt((ee.get('max_expected_error') or {}).get('max'), '.3e')} "
         f"({units.get('risk_score_units', 'normalized accel units') if units else 'normalized accel units'})",
         *validation_lines,
+        *_sentinel_audit_md(report),
         "",
         "### What these metrics mean",
         "",

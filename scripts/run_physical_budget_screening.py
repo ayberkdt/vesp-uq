@@ -140,6 +140,7 @@ def run_physical_budget_screening(config: dict) -> dict:
             "enabled": bool(screen.get("conformal_enabled")),
             "scale": screen.get("conformal_scale"),
             "alpha": screen.get("conformal_alpha"),
+            "mode": screen.get("conformal_mode"),
             "coverage_before": screen.get("conformal_coverage_before"),
             "coverage_after": screen.get("conformal_coverage_after"),
             "threshold_model_units_raw": screen.get("threshold_model_units_raw"),

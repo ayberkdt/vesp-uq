@@ -34,7 +34,7 @@ from vesp.uq.baselines import (
 from vesp.uq.benchmarking import METRIC_KEYS, _best_by, compare_baselines, evaluate_score_against_true_error
 from vesp.uq.data import split_uq_samples
 from vesp.uq.ensemble import nearest_neighbor_error_magnitude
-from vesp.uq.experiment import _build_trajectories, _load_samples
+from vesp.uq.experiment import _build_trajectories, _load_samples, _resolve_time_weighting, _time_weights
 from vesp.uq.io.run_artifacts import write_run_artifacts
 from vesp.uq.plugin import VESPUQPlugin
 from vesp.uq.scoring import aggregate_trajectory_error
@@ -205,22 +205,34 @@ def prepare(config: dict):
     return plugin, samples, train, held, dtype, seed
 
 
-def _true_force_error(trajectories, *, residuals, held, aggregator, dtype):
+def _true_force_error(trajectories, *, residuals, held, aggregator, dtype, weights=None):
     """Trajectory-level true FORCE error: direct residual pairs if present, else held-out NN oracle."""
 
+    if weights is not None:
+        weights = list(weights)
+        if len(weights) != len(trajectories):
+            raise ValueError("weights must be None or one weight vector per trajectory")
     true_error = torch.empty(len(trajectories), dtype=torch.float64)
     if residuals is not None:
         for i, res in enumerate(residuals):
             mag = torch.linalg.norm(torch.as_tensor(res, dtype=torch.float64), dim=-1)
-            true_error[i] = aggregate_trajectory_error(mag, aggregator)
+            true_error[i] = aggregate_trajectory_error(
+                mag,
+                aggregator,
+                weights=None if weights is None else weights[i],
+            )
         return true_error, "residual_csv"
     for i, traj in enumerate(trajectories):
         nn = nearest_neighbor_error_magnitude(traj.to(dtype), held.positions, held.error)
-        true_error[i] = aggregate_trajectory_error(nn.to(torch.float64), aggregator)
+        true_error[i] = aggregate_trajectory_error(
+            nn.to(torch.float64),
+            aggregator,
+            weights=None if weights is None else weights[i],
+        )
     return true_error, "nn_oracle_heldout"
 
 
-def baseline_scores_for(config: dict, plugin, trajectories, train_positions, *, seed: int):
+def baseline_scores_for(config: dict, plugin, trajectories, train_positions, *, seed: int, weights=None):
     """Assemble the baseline -> per-trajectory-score mapping for a fitted plugin + trajectories."""
 
     low_alt = float(config.get("uq", {}).get("risk", {}).get("low_altitude_radius", 1.15))
@@ -230,15 +242,20 @@ def baseline_scores_for(config: dict, plugin, trajectories, train_positions, *, 
     curve = fit_altitude_expected_curve(plugin, curve_positions)
     scores = {
         "min_altitude": min_altitude_scores(trajectories),
-        "low_altitude_exposure": low_altitude_exposure_scores(trajectories, low_altitude_radius=low_alt),
+        "low_altitude_exposure": low_altitude_exposure_scores(
+            trajectories,
+            low_altitude_radius=low_alt,
+            weights=weights,
+        ),
         "knn_p95": knn_p95_scores(train_positions, trajectories),
-        "uncertainty_only": vespuq_scores(plugin, trajectories, _UNCERTAINTY_SCORING),
+        "uncertainty_only": vespuq_scores(plugin, trajectories, _UNCERTAINTY_SCORING, weights=weights),
         "altitude_residual_expected_ratio": altitude_residual_expected_scores(
             plugin,
             trajectories,
             curve=curve,
             mode="ratio",
             aggregator=_ALTITUDE_RESIDUAL_AGGREGATOR,
+            weights=weights,
         ),
         "altitude_residual_expected_delta": altitude_residual_expected_scores(
             plugin,
@@ -246,17 +263,19 @@ def baseline_scores_for(config: dict, plugin, trajectories, train_positions, *, 
             curve=curve,
             mode="delta",
             aggregator=_ALTITUDE_RESIDUAL_AGGREGATOR,
+            weights=weights,
         ),
-        "supervisor": vespuq_scores(plugin, trajectories, _SUPERVISOR_SCORING),
+        "supervisor": vespuq_scores(plugin, trajectories, _SUPERVISOR_SCORING, weights=weights),
     }
     if (getattr(plugin, "calibrated_supervisor", None) or {}).get("enabled", False):
         scores["calibrated_supervisor"] = vespuq_scores(
             plugin,
             trajectories,
             "calibrated_supervisor_p95",
+            weights=weights,
         )
     if getattr(plugin, "domain_support", False):
-        scores["domain_support"] = domain_support_scores(plugin, trajectories)
+        scores["domain_support"] = domain_support_scores(plugin, trajectories, weights=weights)
     return scores
 
 
@@ -354,13 +373,20 @@ def run_baseline_comparison(
     screen_cfg = config.get("uq", {}).get("screening", {})
     aggregator = str(screen_cfg.get("true_error_aggregator", "p95")).lower()
 
-    traj_info = _build_trajectories(screen_cfg, seed=seed, dtype=dtype)
+    traj_info = _build_trajectories(screen_cfg, seed=seed, dtype=dtype, config=config)
     trajectories = traj_info["trajectories"]
+    time_weighting = _resolve_time_weighting(screen_cfg)
+    weights = [_time_weights(t) for t in trajectories] if time_weighting == "kepler_r2" else None
     true_error, te_source = _true_force_error(
-        trajectories, residuals=traj_info["residuals"], held=held, aggregator=aggregator, dtype=dtype
+        trajectories,
+        residuals=traj_info["residuals"],
+        held=held,
+        aggregator=aggregator,
+        dtype=dtype,
+        weights=weights,
     )
 
-    scores = baseline_scores_for(config, plugin, trajectories, train.positions, seed=seed)
+    scores = baseline_scores_for(config, plugin, trajectories, train.positions, seed=seed, weights=weights)
     results = compare_baselines(scores, true_error, rerun_fraction=rerun_fraction)
 
     # Run Random baseline 100 times
@@ -399,6 +425,7 @@ def run_baseline_comparison(
         "trajectory_source": traj_info["source"],
         "true_force_error_source": te_source,
         "true_force_error_aggregator": aggregator,
+        "time_weighting": time_weighting,
         "rerun_fraction": rerun_fraction,
         "uncertainty_scoring": _UNCERTAINTY_SCORING,
         "supervisor_scoring": _SUPERVISOR_SCORING,
@@ -453,6 +480,7 @@ def _comparison_md(p: dict) -> str:
         f"({p['trajectory_source']})",
         f"- true force error: `{p['true_force_error_source']}` "
         f"(aggregator `{p['true_force_error_aggregator']}`)  |  rerun fraction: {p['rerun_fraction']:.0%}",
+        f"- time weighting: `{p.get('time_weighting', 'none')}`",
         f"- uncertainty_only scoring = `{p['uncertainty_scoring']}`  |  supervisor scoring = `{p['supervisor_scoring']}`",
         "",
         "| baseline | " + " | ".join(short[c] for c in cols) + " |",

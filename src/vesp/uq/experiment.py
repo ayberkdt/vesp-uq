@@ -17,6 +17,7 @@ import torch
 
 from vesp.common.units import UnitConfig
 from vesp.data.dataset import load_csv_dataset
+from vesp.uq.audit import audit_summary_dict, evaluate_false_negatives, select_sentinel_audit
 from vesp.uq.data import (
     UQSamples,
     load_uq_samples_from_csv,
@@ -173,6 +174,58 @@ def _build_trajectories(screen_cfg: dict, *, seed: int, dtype: torch.dtype, conf
     raise ValueError("uq.screening.trajectory_source must be 'generated' or 'csv'")
 
 
+def _resolve_screening_scoring(config: dict, plugin: VESPUQPlugin, screen_cfg: dict) -> str:
+    """Resolve the score used for screening, including config-only physical-budget runs."""
+
+    scoring = plugin.risk_scoring
+    physical_cfg = (config.get("uq", {}) or {}).get("physical_budget", {}) or {}
+    threshold_source = screen_cfg.get("threshold_source")
+    physical_budget_active = bool(physical_cfg.get("enabled", False)) or (
+        threshold_source is not None and str(threshold_source).lower() == "physical_budget"
+    )
+    if physical_budget_active and physical_cfg.get("scoring"):
+        scoring = str(physical_cfg["scoring"])
+    return scoring
+
+
+def _sentinel_audit_from_screening(config: dict, screening, true_error, *, n_trajectories: int, seed: int) -> dict:
+    """Optional accepted-set sentinel audit for force-error false negatives."""
+
+    audit_cfg = (config.get("uq", {}) or {}).get("audit", {}) or {}
+    if not bool(audit_cfg.get("enabled", False)):
+        return {"enabled": False}
+
+    audit_fraction = float(audit_cfg.get("audit_fraction", 0.02))
+    min_audit = int(audit_cfg.get("min_audit", 5))
+    high_error_quantile = float(audit_cfg.get("high_error_quantile", 0.90))
+    audit_seed = int(audit_cfg.get("seed", seed))
+    sentinel = select_sentinel_audit(
+        screening.flagged_indices,
+        n_trajectories,
+        audit_fraction=audit_fraction,
+        min_audit=min_audit,
+        seed=audit_seed,
+    )
+    false_negatives = evaluate_false_negatives(
+        screening.flagged_indices,
+        sentinel,
+        true_error,
+        high_error_quantile=high_error_quantile,
+    )
+    audit = audit_summary_dict(
+        n_trajectories,
+        screening.flagged_indices,
+        sentinel,
+        false_negatives,
+        audit_fraction=audit_fraction,
+        min_audit=min_audit,
+        high_error_quantile=high_error_quantile,
+        seed=audit_seed,
+    )
+    audit["enabled"] = True
+    return audit
+
+
 def run_vespuq(config: dict, *, return_plugin: bool = False):
     """Run the fit / calibrate / score / screen pipeline; return the report dict.
 
@@ -203,7 +256,7 @@ def run_vespuq(config: dict, *, return_plugin: bool = False):
     screen_cfg = config.get("uq", {}).get("screening", {})
     traj_info = _build_trajectories(screen_cfg, seed=seed, dtype=dtype, config=config)
     trajectories = traj_info["trajectories"]
-    scoring = plugin.risk_scoring
+    scoring = _resolve_screening_scoring(config, plugin, screen_cfg)
     fraction_policy = str(screen_cfg.get("fraction_policy", "topk")).lower()
 
     # Time-weighting: orbits are sampled uniformly in true anomaly, which oversamples periapsis
@@ -212,7 +265,7 @@ def run_vespuq(config: dict, *, return_plugin: bool = False):
     weights = [_time_weights(t) for t in trajectories] if time_weighting == "kepler_r2" else None
 
     t0 = time.perf_counter()
-    scores = plugin.score_ensemble(trajectories, weights=weights)
+    scores = plugin.score_ensemble(trajectories, scoring=scoring, weights=weights)
     score_seconds = time.perf_counter() - t0
     risk_scores = torch.tensor([s.risk_score for s in scores], dtype=torch.float64)
 
@@ -233,12 +286,20 @@ def run_vespuq(config: dict, *, return_plugin: bool = False):
         true_error_mode = "residual_csv"
         for i, res in enumerate(traj_info["residuals"]):
             mag = torch.linalg.norm(res.to(torch.float64), dim=-1)
-            true_error[i] = aggregate_trajectory_error(mag, true_error_aggregator)
+            true_error[i] = aggregate_trajectory_error(
+                mag,
+                true_error_aggregator,
+                weights=None if weights is None else weights[i],
+            )
     else:
         true_error_mode = f"nn_oracle:{oracle_source}"
         for i, traj in enumerate(trajectories):
             nn = nearest_neighbor_error_magnitude(traj.to(dtype), oracle.positions, oracle.error)
-            true_error[i] = aggregate_trajectory_error(nn.to(torch.float64), true_error_aggregator)
+            true_error[i] = aggregate_trajectory_error(
+                nn.to(torch.float64),
+                true_error_aggregator,
+                weights=None if weights is None else weights[i],
+            )
 
     # Selection policy: an absolute force-risk budget (optionally capped) takes precedence over the
     # fixed top-fraction. Pointwise budgets are rejected for relative scoring (scale mismatch).
@@ -270,6 +331,13 @@ def run_vespuq(config: dict, *, return_plugin: bool = False):
     n_traj = len(trajectories)
     n_points_total = sum(int(t.shape[0]) for t in trajectories)
     flagged_set = set(screening.flagged_indices)
+    sentinel_audit = _sentinel_audit_from_screening(
+        config,
+        screening,
+        true_error,
+        n_trajectories=n_traj,
+        seed=seed,
+    )
     report = {
         "dataset": str(config.get("data", {}).get("path") or (samples.metadata or {}).get("mode", "synthetic")),
         "fit": plugin.fit_info,
@@ -314,12 +382,14 @@ def run_vespuq(config: dict, *, return_plugin: bool = False):
             "conformal_enabled": threshold_meta["conformal_enabled"],
             "conformal_scale": threshold_meta["conformal_scale"],
             "conformal_alpha": threshold_meta["conformal_alpha"],
+            "conformal_mode": threshold_meta["conformal_mode"],
             "conformal_coverage_before": threshold_meta["conformal_coverage_before"],
             "conformal_coverage_after": threshold_meta["conformal_coverage_after"],
             "threshold_model_units_raw": threshold_meta["threshold_model_units_raw"],
             "expected_error": expected_error_summary(scores, plugin.domain_support),
             "screen": screening.to_dict(),
         },
+        "sentinel_audit": sentinel_audit,
         "runtime": {
             "fit_seconds": fit_seconds,
             "calibration_eval_seconds": calibration_eval_seconds,

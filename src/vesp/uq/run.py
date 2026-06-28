@@ -41,6 +41,37 @@ __all__ = [
 ]
 
 
+def _sentinel_audit_table(report: dict, tables: dict) -> tuple[list[str], list[list]]:
+    """CSV rows for the accepted-set sentinel audit attached to the main run."""
+
+    audit = report.get("sentinel_audit") or {}
+    sentinel_ids = {int(i) for i in audit.get("sentinel_indices", [])}
+    false_negatives = audit.get("false_negatives") or {}
+    sentinel_high_ids = {int(i) for i in false_negatives.get("sentinel_high_error_indices", [])}
+    header = ["trajectory_id", "risk_score", "true_force_error", "is_high_force_error", "flagged"]
+    if not sentinel_ids:
+        return header, []
+
+    traj_header = tables["trajectory_header"]
+    i_id = traj_header.index("trajectory_id")
+    i_risk = traj_header.index("risk_score")
+    i_true = traj_header.index("true_error")
+    i_flag = traj_header.index("flagged_for_rerun")
+    rows = []
+    for row in tables["trajectory_rows"]:
+        trajectory_id = int(row[i_id])
+        if trajectory_id not in sentinel_ids:
+            continue
+        rows.append([
+            trajectory_id,
+            float(row[i_risk]),
+            float(row[i_true]),
+            int(trajectory_id in sentinel_high_ids),
+            int(row[i_flag]),
+        ])
+    return header, rows
+
+
 def run(config: dict) -> dict:
     report, plugin = run_vespuq(config, return_plugin=True)
     tables = report.pop("_tables")
@@ -63,6 +94,10 @@ def run(config: dict) -> dict:
     atomic_write_text(
         run_dir / "flagged_trajectories.csv", csv_text(tables["trajectory_header"], tables["flagged_rows"])
     )
+    audit = report.get("sentinel_audit") or {}
+    if audit.get("enabled"):
+        sentinel_header, sentinel_rows = _sentinel_audit_table(report, tables)
+        atomic_write_text(run_dir / "sentinel_audit.csv", csv_text(sentinel_header, sentinel_rows))
 
     artifacts = {
         "vespuq_report_json": run_dir / "vespuq_report.json",
@@ -72,6 +107,8 @@ def run(config: dict) -> dict:
         "trajectory_scores_csv": run_dir / "trajectory_scores.csv",
         "flagged_trajectories_csv": run_dir / "flagged_trajectories.csv",
     }
+    if audit.get("enabled"):
+        artifacts["sentinel_audit_csv"] = run_dir / "sentinel_audit.csv"
 
     # Inputs the run consumed (datasets, external trajectory CSVs) -- checksummed into the
     # manifest so a result is traceable to the exact input bytes, not just a path.
@@ -104,8 +141,17 @@ def run(config: dict) -> dict:
                 "threshold_quantile": screen.get("threshold_quantile"),
                 "threshold_multiplier": screen.get("threshold_multiplier"),
                 "threshold_model_units": screen.get("threshold_model_units"),
+                "threshold_model_units_raw": screen.get("threshold_model_units_raw"),
                 "threshold_physical_value": screen.get("threshold_physical_value"),
                 "threshold_physical_units": screen.get("threshold_physical_units"),
+                "threshold_conformal": {
+                    "enabled": bool(screen.get("conformal_enabled")),
+                    "scale": screen.get("conformal_scale"),
+                    "alpha": screen.get("conformal_alpha"),
+                    "mode": screen.get("conformal_mode"),
+                    "coverage_before": screen.get("conformal_coverage_before"),
+                    "coverage_after": screen.get("conformal_coverage_after"),
+                },
                 "rerun_fraction": screen["screen"].get("requested_rerun_fraction")
                 or screen["screen"].get("rerun_fraction"),
                 "fraction_policy": screen.get("fraction_policy"),

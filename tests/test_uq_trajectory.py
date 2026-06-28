@@ -463,6 +463,14 @@ def test_kepler_time_weighting_is_uniform_for_circular():
     assert weighted.mean_sigma == pytest.approx(uniform.mean_sigma)
 
 
+def test_aggregate_trajectory_error_honors_time_weights():
+    values = torch.tensor([10.0, 1.0, 1.0, 1.0])
+    weights = torch.tensor([0.1, 1.0, 1.0, 1.0])
+    assert aggregate_trajectory_error(values, "mean", weights=weights) < aggregate_trajectory_error(values, "mean")
+    assert aggregate_trajectory_error(values, "p95", weights=weights) < aggregate_trajectory_error(values, "p95")
+    assert aggregate_trajectory_error(values, "max", weights=weights) == pytest.approx(10.0)
+
+
 def test_run_time_weighting_resolver_maps_legacy_boolean():
     from vesp.uq.run import _resolve_time_weighting
 

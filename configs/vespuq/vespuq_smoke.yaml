@@ -91,8 +91,8 @@ uq:
       alpha: 0.10                # 1 - alpha is the target held-out force-error coverage
       mode: norm                 # norm | component_max
   # --- Optional post-hoc reliability layer ---
-  # enabled: true is read by scripts/run_calibration_audit.py. The main training run only changes
-  # prediction behavior when apply: true is set, preserving the historical audit-only default.
+  # enabled: true is read by scripts/run_calibration_audit.py; apply: true also changes/persists the
+  # prediction uncertainty scale in the main training run.
   conformal:
     enabled: true
     apply: false                  # true -> persist/apply a conformal predictive-std scale in the model
@@ -103,7 +103,7 @@ uq:
     by_region: false             # true -> fit angular octant scales, with global fallback
     min_region_n: 30
   audit:
-    enabled: true
+    enabled: true                   # main run writes sentinel_audit.csv + report summary when true
     audit_fraction: 0.02         # sentinel sample as a fraction of the accepted (low-risk) set
     min_audit: 5                 # minimum sentinel count when accepted set is large enough
     high_error_quantile: 0.90    # true force error at/above this quantile counts as high-error

@@ -87,24 +87,75 @@ def low_altitude_exposure_scores(
     return out
 
 
-def domain_support_scores(plugin, trajectories) -> torch.Tensor:
-    """Domain-support-only risk: mean per-point out-of-support (OOD) score along each trajectory.
+def _weighted_quantile(x: torch.Tensor, q: float, weights: torch.Tensor | None = None) -> float:
+    if x.numel() == 0:
+        return float("nan")
+    if weights is None:
+        return float(torch.quantile(x, float(q)))
+    w = torch.as_tensor(weights, dtype=torch.float64).reshape(-1)
+    if w.numel() != x.numel():
+        raise ValueError("weight vector length must match the trajectory length")
+    if bool((w < 0).any()):
+        raise ValueError("weights must be nonnegative")
+    total = float(w.sum())
+    if total <= 0.0:
+        raise ValueError("weights must sum to a positive value")
+    order = torch.argsort(x)
+    xs = x[order]
+    ws = (w / total)[order]
+    cum = torch.cumsum(ws, dim=0)
+    idx = int(torch.searchsorted(cum, torch.tensor(float(q), dtype=torch.float64)))
+    return float(xs[min(idx, xs.numel() - 1)])
+
+
+def _aggregate_profile(values: torch.Tensor, aggregator: str, weights=None) -> float:
+    v = torch.as_tensor(values, dtype=torch.float64).reshape(-1)
+    if aggregator == "max":
+        return float(v.max())
+    if aggregator == "mean":
+        if weights is None:
+            return float(v.mean())
+        w = torch.as_tensor(weights, dtype=torch.float64).reshape(-1)
+        if w.numel() != v.numel():
+            raise ValueError("weight vector length must match the trajectory length")
+        if bool((w < 0).any()):
+            raise ValueError("weights must be nonnegative")
+        total = float(w.sum())
+        if total <= 0.0:
+            raise ValueError("weights must sum to a positive value")
+        return float((v * (w / total)).sum())
+    if aggregator == "p95":
+        return _weighted_quantile(v, 0.95, weights)
+    raise ValueError("aggregator must be 'mean', 'p95', or 'max'")
+
+
+def domain_support_scores(plugin, trajectories, weights=None) -> torch.Tensor:
+    """Domain-support-only risk: (weighted) mean per-point out-of-support score along each trajectory.
 
     Requires a fitted ``plugin`` exposing ``domain_support_score(positions)`` (raises a clear error
-    otherwise). Higher = more of the trajectory lies outside the calibration support.
+    otherwise). Higher = more of the trajectory lies outside the calibration support. ``weights``
+    follows the same per-trajectory convention as ``score_ensemble``.
     """
 
     if not hasattr(plugin, "domain_support_score"):
         raise ValueError("plugin does not expose domain_support_score(...)")
     trajs = _as_traj_list(trajectories)
+    if weights is not None:
+        weights = list(weights)
+        if len(weights) != len(trajs):
+            raise ValueError("weights must be None or one weight vector per trajectory")
     out = torch.empty(len(trajs), dtype=torch.float64)
     for i, traj in enumerate(trajs):
         ds = plugin.domain_support_score(traj)  # per-point; raises if the plugin is not fitted
-        out[i] = float(torch.as_tensor(ds, dtype=torch.float64).mean())
+        out[i] = _aggregate_profile(
+            torch.as_tensor(ds, dtype=torch.float64),
+            "mean",
+            None if weights is None else weights[i],
+        )
     return out
 
 
-def vespuq_scores(plugin, trajectories, scoring: str) -> torch.Tensor:
+def vespuq_scores(plugin, trajectories, scoring: str, weights=None) -> torch.Tensor:
     """VESP-UQ trajectory risk scores for a given ``scoring`` mode (one scalar per trajectory).
 
     ``scoring`` must be a supported VESP-UQ mode (e.g. ``mean`` for an uncertainty-only baseline,
@@ -117,7 +168,7 @@ def vespuq_scores(plugin, trajectories, scoring: str) -> torch.Tensor:
         raise ValueError(f"unsupported scoring {scoring!r}; must be one of {SCORING_FUNCTIONS}")
     if not hasattr(plugin, "score_ensemble"):
         raise ValueError("plugin does not expose score_ensemble(...)")
-    scores = plugin.score_ensemble(list(trajectories), scoring=scoring)
+    scores = plugin.score_ensemble(list(trajectories), scoring=scoring, weights=weights)
     return torch.tensor([s.risk_score for s in scores], dtype=torch.float64)
 
 
@@ -203,15 +254,15 @@ def altitude_residual_expected_scores(
     mode: str = "ratio",
     aggregator: str = "p95",
     n_bins: int = 8,
+    weights=None,
 ) -> torch.Tensor:
     """Expected-error score after removing the altitude-only expected-error trend.
 
     ``mode="ratio"`` scores ``expected_error / f_alt(radius)``; ``mode="delta"`` scores
     ``expected_error - f_alt(radius)``. In both cases larger means the trajectory is riskier than
-    altitude alone would suggest. ``aggregator`` is the trajectory reduction (``mean``/``p95``/``max``).
+    altitude alone would suggest. ``aggregator`` is the trajectory reduction (``mean``/``p95``/``max``);
+    optional ``weights`` are per-trajectory time weights.
     """
-
-    from vesp.uq.scoring import aggregate_trajectory_error
 
     if mode not in {"ratio", "delta"}:
         raise ValueError("mode must be 'ratio' or 'delta'")
@@ -225,6 +276,10 @@ def altitude_residual_expected_scores(
         curve = fit_altitude_expected_curve(plugin, calibration_positions, n_bins=n_bins)
 
     trajs = _as_traj_list(trajectories)
+    if weights is not None:
+        weights = list(weights)
+        if len(weights) != len(trajs):
+            raise ValueError("weights must be None or one weight vector per trajectory")
     lengths = [int(torch.as_tensor(t).shape[0]) for t in trajs]
     all_positions = torch.cat([torch.as_tensor(t, dtype=torch.float64) for t in trajs], dim=0)
     pred = plugin.predict_uncertainty(all_positions)
@@ -235,7 +290,11 @@ def altitude_residual_expected_scores(
     out = torch.empty(len(trajs), dtype=torch.float64)
     offset = 0
     for i, n in enumerate(lengths):
-        out[i] = aggregate_trajectory_error(profile[offset : offset + n], aggregator)
+        out[i] = _aggregate_profile(
+            profile[offset : offset + n],
+            aggregator,
+            None if weights is None else weights[i],
+        )
         offset += n
     return out
 

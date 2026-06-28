@@ -16,8 +16,8 @@ working unchanged. Prefer importing from the focused modules in new code.
 from __future__ import annotations
 
 from vesp.uq.scoring import (  # noqa: F401
-    _CANONICAL_ALIASES,
     _CALIBRATED_SUPERVISOR_MODES,
+    _CANONICAL_ALIASES,
     _EXPECTED_MODES,
     _EXPECTED_ONLY_MODES,
     _SIGMA_MODES,

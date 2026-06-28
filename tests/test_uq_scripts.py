@@ -83,13 +83,20 @@ def test_baseline_comparison_schema_and_csv(tmp_path):
     expected = {
         "config_dataset", "n_trajectories", "trajectory_source", "true_force_error_source",
         "true_force_error_aggregator", "rerun_fraction", "uncertainty_scoring", "supervisor_scoring",
-        "baselines", "best_by_spearman", "best_by_lift",
+        "baselines", "best_by_spearman", "best_by_lift", "altitude_incremental_value",
     }
     assert expected <= set(payload)
-    # the five always-present baselines (domain_support is off in this config)
-    assert {"random", "min_altitude", "low_altitude_exposure", "uncertainty_only", "supervisor"} <= set(
-        payload["baselines"]
-    )
+    # the always-present baselines (domain_support is off in this config)
+    assert {
+        "random",
+        "min_altitude",
+        "low_altitude_exposure",
+        "knn_p95",
+        "uncertainty_only",
+        "altitude_residual_expected_ratio",
+        "altitude_residual_expected_delta",
+        "supervisor",
+    } <= set(payload["baselines"])
     for name, metrics in payload["baselines"].items():
         assert set(METRIC_KEYS) <= set(metrics), name
         assert metrics["n_flagged"] <= metrics["n_trajectories"]  # flagged subset of trajectories
@@ -101,6 +108,8 @@ def test_baseline_comparison_schema_and_csv(tmp_path):
     lines = (tmp_path / "baseline_comparison.csv").read_text(encoding="utf-8").strip().splitlines()
     assert lines[0].split(",") == ["baseline", *METRIC_KEYS]
     assert len(lines) - 1 == len(payload["baselines"])  # one row per baseline
+    assert (tmp_path / "altitude_incremental_value.csv").exists()
+    assert (tmp_path / "altitude_incremental_sweep.csv").exists()
 
 
 # --------------------------------------------------------------------------- calibration + audit

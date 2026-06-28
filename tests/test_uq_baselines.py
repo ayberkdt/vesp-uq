@@ -10,7 +10,9 @@ import torch
 from vesp.core.sources import make_shell_sources
 from vesp.uq import VESPUQPlugin, make_synthetic_uq_samples
 from vesp.uq.baselines import (
+    altitude_residual_expected_scores,
     domain_support_scores,
+    fit_altitude_expected_curve,
     low_altitude_exposure_scores,
     min_altitude_scores,
     random_scores,
@@ -108,6 +110,20 @@ def test_vespuq_scores_rejects_unsupported_mode():
     plugin = _fitted_plugin(domain_support=False)
     with pytest.raises(ValueError):
         vespuq_scores(plugin, [_circular_orbit(1.2)], "not_a_mode")
+
+
+# ---- altitude-residual expected error ----
+
+def test_altitude_residual_expected_scores_one_per_trajectory():
+    plugin = _fitted_plugin(domain_support=False)
+    trajs = [_circular_orbit(1.05), _circular_orbit(1.30), _circular_orbit(1.50)]
+    curve = fit_altitude_expected_curve(plugin, plugin.val_positions, n_bins=4)
+    ratio = altitude_residual_expected_scores(plugin, trajs, curve=curve, mode="ratio")
+    delta = altitude_residual_expected_scores(plugin, trajs, curve=curve, mode="delta")
+    assert ratio.shape == (3,)
+    assert delta.shape == (3,)
+    assert bool(torch.isfinite(ratio).all())
+    assert bool(torch.isfinite(delta).all())
 
 
 # ---- the target is force error, never position error ----

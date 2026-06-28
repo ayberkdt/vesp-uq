@@ -92,15 +92,33 @@ def test_compare_script_runs_and_writes_outputs(tmp_path):
     payload = crb.run_baseline_comparison(_tiny_config(), rerun_fraction=0.2)
     assert payload["n_trajectories"] == 30
     assert payload["true_force_error_source"] == "nn_oracle_heldout"
-    # all six baselines present (domain support enabled in the tiny config)
-    expected = {"random", "min_altitude", "low_altitude_exposure", "uncertainty_only",
-                "supervisor", "domain_support"}
+    # all baselines present (domain support enabled in the tiny config)
+    expected = {
+        "random",
+        "min_altitude",
+        "low_altitude_exposure",
+        "knn_p95",
+        "uncertainty_only",
+        "altitude_residual_expected_ratio",
+        "altitude_residual_expected_delta",
+        "supervisor",
+        "domain_support",
+    }
     assert set(payload["baselines"].keys()) == expected
     assert payload["best_by_spearman"] in expected
     assert payload["best_by_lift"] in expected
+    assert "altitude_incremental_value" in payload
+    assert expected - {"random"} <= set(payload["altitude_incremental_value"]["summary"])
 
     crb.write_outputs(payload, tmp_path)
-    for fname in ("baseline_comparison.json", "baseline_comparison.csv", "baseline_comparison.md"):
+    for fname in (
+        "baseline_comparison.json",
+        "baseline_comparison.csv",
+        "baseline_comparison_paper.csv",
+        "altitude_incremental_value.csv",
+        "altitude_incremental_sweep.csv",
+        "baseline_comparison.md",
+    ):
         assert (tmp_path / fname).exists()
     # markdown is force-error oriented and never claims position-error prediction
     md = (tmp_path / "baseline_comparison.md").read_text(encoding="utf-8")

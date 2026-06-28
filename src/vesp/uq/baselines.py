@@ -5,11 +5,13 @@ risk. The target these scores are compared against is always trajectory-level tr
 error (never position error) -- see :mod:`vesp.uq.benchmarking` and
 ``scripts/compare_risk_baselines.py``.
 
-The baselines are intentionally cheap and dependency-free (torch only) so a VESP-UQ supervisor
-score can be judged against trivial heuristics on the same target.
+The baselines are intentionally cheap so a VESP-UQ supervisor score can be judged against trivial
+heuristics on the same target. Most are torch-only; the optional kNN helper uses scipy.
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import torch
 
@@ -117,3 +119,149 @@ def vespuq_scores(plugin, trajectories, scoring: str) -> torch.Tensor:
         raise ValueError("plugin does not expose score_ensemble(...)")
     scores = plugin.score_ensemble(list(trajectories), scoring=scoring)
     return torch.tensor([s.risk_score for s in scores], dtype=torch.float64)
+
+
+@dataclass(frozen=True)
+class AltitudeExpectedCurve:
+    """Piecewise-linear altitude-only expected-error baseline.
+
+    The curve is fit from VESP-UQ's own expected-error profile on calibration positions, then used
+    to ask a narrower question: does a trajectory have more expected force error than altitude
+    alone would predict?
+    """
+
+    radii: torch.Tensor
+    expected_error: torch.Tensor
+
+    def predict(self, radius: torch.Tensor) -> torch.Tensor:
+        r = torch.as_tensor(radius, dtype=torch.float64).reshape(-1)
+        x = self.radii.to(dtype=torch.float64)
+        y = self.expected_error.to(dtype=torch.float64)
+        if x.numel() == 1:
+            return torch.full_like(r, float(y[0]))
+
+        idx = torch.searchsorted(x, r)
+        right = idx.clamp(1, x.numel() - 1)
+        left = right - 1
+        denom = (x[right] - x[left]).clamp_min(torch.finfo(torch.float64).tiny)
+        t = (r - x[left]) / denom
+        out = y[left] + t * (y[right] - y[left])
+        out = torch.where(r <= x[0], y[0], out)
+        out = torch.where(r >= x[-1], y[-1], out)
+        return out.clamp_min(torch.finfo(torch.float64).tiny)
+
+
+def fit_altitude_expected_curve(
+    plugin,
+    calibration_positions: torch.Tensor,
+    *,
+    n_bins: int = 8,
+    statistic: str = "median",
+) -> AltitudeExpectedCurve:
+    """Fit an altitude-only expected-error curve from calibration positions.
+
+    ``statistic`` is ``median`` by default so isolated noisy calibration points do not define the
+    whole altitude trend. The fitted curve is intentionally simple and monotonicity-free: it is a
+    diagnostic baseline, not a new learned uncertainty model.
+    """
+
+    if int(n_bins) <= 0:
+        raise ValueError("n_bins must be positive")
+    if statistic not in {"median", "mean"}:
+        raise ValueError("statistic must be 'median' or 'mean'")
+    pos = torch.as_tensor(calibration_positions, dtype=torch.float64).detach().cpu()
+    if pos.ndim != 2 or pos.shape[-1] != 3 or pos.shape[0] == 0:
+        raise ValueError("calibration_positions must have shape (N, 3) with N > 0")
+    pred = plugin.predict_uncertainty(pos)
+    radius = torch.linalg.norm(pos, dim=-1)
+    expected = torch.as_tensor(pred.expected_error.detach().cpu(), dtype=torch.float64)
+    order = torch.argsort(radius)
+    chunks = torch.chunk(order, min(int(n_bins), int(order.numel())))
+    centers: list[torch.Tensor] = []
+    values: list[torch.Tensor] = []
+    for idx in chunks:
+        if idx.numel() == 0:
+            continue
+        r_bin = radius[idx]
+        e_bin = expected[idx]
+        centers.append(torch.median(r_bin))
+        values.append(torch.median(e_bin) if statistic == "median" else e_bin.mean())
+    if not centers:
+        raise ValueError("could not fit an altitude expected-error curve")
+    x = torch.stack(centers).to(dtype=torch.float64)
+    y = torch.stack(values).to(dtype=torch.float64).clamp_min(torch.finfo(torch.float64).tiny)
+    order2 = torch.argsort(x)
+    return AltitudeExpectedCurve(radii=x[order2], expected_error=y[order2])
+
+
+def altitude_residual_expected_scores(
+    plugin,
+    trajectories,
+    *,
+    calibration_positions: torch.Tensor | None = None,
+    curve: AltitudeExpectedCurve | None = None,
+    mode: str = "ratio",
+    aggregator: str = "p95",
+    n_bins: int = 8,
+) -> torch.Tensor:
+    """Expected-error score after removing the altitude-only expected-error trend.
+
+    ``mode="ratio"`` scores ``expected_error / f_alt(radius)``; ``mode="delta"`` scores
+    ``expected_error - f_alt(radius)``. In both cases larger means the trajectory is riskier than
+    altitude alone would suggest. ``aggregator`` is the trajectory reduction (``mean``/``p95``/``max``).
+    """
+
+    from vesp.uq.scoring import aggregate_trajectory_error
+
+    if mode not in {"ratio", "delta"}:
+        raise ValueError("mode must be 'ratio' or 'delta'")
+    if curve is None:
+        if calibration_positions is None:
+            calibration_positions = getattr(plugin, "val_positions", None)
+        if calibration_positions is None:
+            calibration_positions = getattr(plugin, "train_positions", None)
+        if calibration_positions is None:
+            raise ValueError("calibration_positions are required when the plugin has no stored fit geometry")
+        curve = fit_altitude_expected_curve(plugin, calibration_positions, n_bins=n_bins)
+
+    trajs = _as_traj_list(trajectories)
+    lengths = [int(torch.as_tensor(t).shape[0]) for t in trajs]
+    all_positions = torch.cat([torch.as_tensor(t, dtype=torch.float64) for t in trajs], dim=0)
+    pred = plugin.predict_uncertainty(all_positions)
+    base = curve.predict(pred.radius.detach().cpu())
+    expected = torch.as_tensor(pred.expected_error.detach().cpu(), dtype=torch.float64)
+    profile = expected / base if mode == "ratio" else expected - base
+
+    out = torch.empty(len(trajs), dtype=torch.float64)
+    offset = 0
+    for i, n in enumerate(lengths):
+        out[i] = aggregate_trajectory_error(profile[offset : offset + n], aggregator)
+        offset += n
+    return out
+
+
+def knn_p95_scores(train_positions: torch.Tensor, trajectories, k: int = 8) -> torch.Tensor:
+    """kNN/OOD-distance-only heuristic: 95th percentile of k-NN distance.
+
+    Fits a nearest-neighbor model on `train_positions` (calibration set). For each trajectory,
+    computes the Euclidean distance to the k-nearest calibration points for every point,
+    averages over the k neighbors, and then takes the 95th percentile over the trajectory.
+    """
+
+    trajs = _as_traj_list(trajectories)
+    out = torch.empty(len(trajs), dtype=torch.float64)
+    train_pos = torch.as_tensor(train_positions, dtype=torch.float64).numpy()
+
+    import numpy as np
+    from scipy.spatial import cKDTree
+
+    tree = cKDTree(train_pos)
+
+    for i, traj in enumerate(trajs):
+        t = torch.as_tensor(traj, dtype=torch.float64).numpy()
+        dist, _ = tree.query(t, k=k)
+        mean_knn = dist.mean(axis=-1)
+        p95 = np.percentile(mean_knn, 95)
+        out[i] = float(p95)
+
+    return out

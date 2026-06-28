@@ -17,6 +17,8 @@ Each selector produces one scalar score per trajectory (higher = higher risk). T
 | `low_altitude_exposure` | fraction of points below `low_altitude_radius` |
 | `domain_support` | mean per-point out-of-support (OOD) score (only if domain support is enabled) |
 | `uncertainty_only` | mean predictive sigma (no bias / altitude / OOD weighting) |
+| `altitude_residual_expected_ratio` | p95 of `expected_error / f_alt(radius)`, where `f_alt` is an altitude-only expected-error curve fit on plugin calibration geometry |
+| `altitude_residual_expected_delta` | p95 of `expected_error - f_alt(radius)` |
 | `supervisor` | full VESP-UQ supervisor (`supervisor_rel_p95`: expected error × altitude × domain) |
 
 Reported per selector: Spearman vs true force error, capture rate, precision, lift over random,
@@ -46,10 +48,19 @@ python scripts/compare_risk_baselines.py --config configs/vespuq/vespuq_smoke.ya
 python scripts/compare_risk_baselines.py --config configs/vespuq/vespuq_real_lunar.yaml --rerun-fraction 0.10
 ```
 
-Writes `outputs/baselines/baseline_comparison.{json,csv,md}`. With an external trajectory CSV
+Writes `outputs/baselines/baseline_comparison.{json,csv,md}` plus
+`altitude_incremental_value.csv`, `altitude_incremental_sweep.csv`, and
+`baseline_comparison_paper.csv`. With an external trajectory CSV
 (`uq.screening.trajectory_source: csv`) carrying surrogate/reference acceleration pairs, the true
 force error is read directly from the residual; otherwise it uses the held-out nearest-neighbour
 force-error oracle (no leakage).
+
+The `altitude_incremental_value` block in the JSON/Markdown is the P0 diagnostic: for every score,
+it reports the delta versus `min_altitude` in Spearman/lift, partial correlation after removing
+minimum radius, within-altitude-bin Spearman, bootstrap confidence intervals, and a 5/10/20%
+rerun-fraction sweep. The altitude-residual scores above are the P1 diagnostic: they ask whether
+VESP-UQ expected error still ranks force error after the altitude-only expected-error trend is
+removed.
 
 ## How to interpret
 

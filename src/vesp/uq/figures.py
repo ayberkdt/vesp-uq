@@ -185,10 +185,12 @@ def _render_risk_vs_error(*, preferred_path: Path, fallback_path: Path, out_dir:
     flagged_y = [y for y, flag in zip(ys, flags, strict=True) if flag]
     ax.scatter(accepted_x, accepted_y, s=30, alpha=0.72, label="accepted", color=_COLORS["accepted"])
     ax.scatter(flagged_x, flagged_y, s=38, alpha=0.82, label="flagged", color=_COLORS["flagged"])
+    ax.set_xscale("log")
+    ax.set_yscale("log")
     ax.set_xlabel("VESP-UQ force-risk score")
     ax.set_ylabel("Supplied true force-error metric")
     ax.set_title("Risk ranking against held-out force error")
-    ax.grid(True, alpha=0.25)
+    ax.grid(True, which="both", alpha=0.25)
     ax.legend(frameon=False)
     return _save_figure(fig, out_dir, stem, status="ok", source=source, points=len(xs))
 
@@ -253,6 +255,7 @@ def _render_l60_l90_comparison(*, l60_path: Path, l90_path: Path, out_dir: Path)
     ax_z.bar([v + width / 2 for v in x], l90_z, width=width, label="L90", color=_COLORS["l90"])
     ax_z.axhline(1.0, color="#555555", linestyle="--", linewidth=1)
     ax_z.set_xticks(x, bands)
+    ax_z.set_ylim(0.0, 1.2)
     ax_z.set_ylabel("z_std")
     ax_z.set_title("Sharpness")
     ax_z.grid(True, axis="y", alpha=0.25)
@@ -392,4 +395,20 @@ def _plt() -> Any:
     matplotlib.use("Agg", force=True)
     from matplotlib import pyplot as plt
 
+    plt.rcParams.update({
+        "font.family": "serif",
+        "font.serif": ["Times New Roman", "Computer Modern Roman", "DejaVu Serif"],
+        "axes.grid": True,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "grid.alpha": 0.3,
+        "grid.linestyle": "--",
+        "axes.labelsize": 11,
+        "axes.titlesize": 12,
+        "xtick.labelsize": 10,
+        "ytick.labelsize": 10,
+        "legend.fontsize": 10,
+        "legend.frameon": False,
+        "figure.dpi": 300,
+    })
     return plt

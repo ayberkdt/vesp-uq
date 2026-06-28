@@ -1,8 +1,9 @@
 import argparse
 from pathlib import Path
-import pandas as pd
+
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import seaborn as sns
 
 
@@ -49,7 +50,7 @@ def main():
         "knn_p95": "kNN-only",
         "supervisor": "VESP-UQ"
     }
-    
+
     df = df[df["method"].isin(keep_methods)].copy()
     df["method"] = df["method"].map(method_labels)
     # Order methods
@@ -70,22 +71,22 @@ def main():
     for i, band in enumerate(bands):
         ax = axes[i]
         band_df = df[df["band"] == band]
-        
+
         # Plot Capture Rate
         cap_rates = band_df["capture_rate"].values
         cap_err = band_df["capture_rate_std"].replace(np.nan, 0).values
-        
-        rects1 = ax.bar(x - width/2, cap_rates, width, yerr=cap_err, 
+
+        ax.bar(x - width/2, cap_rates, width, yerr=cap_err,
                         label='Capture Rate', color=colors["Capture Rate"],
                         capsize=3)
-        
+
         # Plot Lift (on a secondary axis if it's very different, but since they are small, maybe we can normalize or use twinx)
         # Actually, Lift is around 1.0-5.0, Capture rate is 0.2-1.0. Twinx is better.
         ax2 = ax.twinx()
         lifts = band_df["lift"].values
         lift_err = band_df["lift_std"].replace(np.nan, 0).values
-        
-        rects2 = ax2.bar(x + width/2, lifts, width, yerr=lift_err, 
+
+        ax2.bar(x + width/2, lifts, width, yerr=lift_err,
                          label='Lift over Random', color=colors["Lift over Random"],
                          capsize=3)
 
@@ -97,10 +98,10 @@ def main():
 
         # Limits and formatting
         ax.set_ylim(0, 1.05)
-        
+
         # Optional: Add chance level for capture rate
         ax.axhline(y=0.10, color='gray', linestyle='--', linewidth=1, zorder=0, label='Chance (10%)')
-        
+
         # Legend (combine from both axes)
         if i == 0:
             lines1, labels1 = ax.get_legend_handles_labels()

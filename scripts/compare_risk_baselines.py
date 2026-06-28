@@ -519,8 +519,8 @@ def _baseline_csv(payload: dict) -> str:
 def _paper_csv(payload: dict) -> str:
     band = "L90" if "L90" in payload["config_dataset"] else "L60"
     cols = [
-        "band", "method", "flagged_fraction", "capture_rate", "capture_rate_std", 
-        "precision", "precision_std", "lift", "lift_std", "spearman", 
+        "band", "method", "flagged_fraction", "capture_rate", "capture_rate_std",
+        "precision", "precision_std", "lift", "lift_std", "spearman",
         "flagged_accepted_error_ratio", "flagged_accepted_error_ratio_std", "runtime_ms_per_traj"
     ]
     rows = [cols]

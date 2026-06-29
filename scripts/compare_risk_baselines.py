@@ -20,29 +20,25 @@ from pathlib import Path
 
 import torch
 
-from vesp.common.config import get_dtype, load_config
-from vesp.uq.baselines import (
-    altitude_residual_expected_scores,
-    domain_support_scores,
-    fit_altitude_expected_curve,
-    knn_p95_scores,
-    low_altitude_exposure_scores,
-    min_altitude_scores,
-    random_scores,
-    vespuq_scores,
-)
+from vesp.common.config import load_config
+from vesp.uq.baselines import random_scores
 from vesp.uq.benchmarking import METRIC_KEYS, _best_by, compare_baselines, evaluate_score_against_true_error
-from vesp.uq.data import split_uq_samples
-from vesp.uq.ensemble import nearest_neighbor_error_magnitude
-from vesp.uq.experiment import _build_trajectories, _load_samples, _resolve_time_weighting, _time_weights
+from vesp.uq.experiment import _build_trajectories, _resolve_time_weighting, _time_weights
 from vesp.uq.io.run_artifacts import write_run_artifacts
-from vesp.uq.plugin import VESPUQPlugin
-from vesp.uq.scoring import aggregate_trajectory_error
+from vesp.uq.risk_baselines import (
+    SUPERVISOR_SCORING as _SUPERVISOR_SCORING,
+)
+from vesp.uq.risk_baselines import (
+    UNCERTAINTY_SCORING as _UNCERTAINTY_SCORING,
+)
+from vesp.uq.risk_baselines import (
+    assemble_baseline_scores,
+    prepare,
+)
+from vesp.uq.risk_baselines import (
+    true_force_error as _true_force_error,
+)
 
-# Baseline scoring modes used for the two VESP-UQ entries.
-_UNCERTAINTY_SCORING = "mean"  # mean predictive sigma -- uncertainty-only (no bias / altitude)
-_SUPERVISOR_SCORING = "supervisor_rel_p95"  # full supervisor (expected error * altitude * domain)
-_ALTITUDE_RESIDUAL_AGGREGATOR = "p95"
 _ALTITUDE_INCREMENTAL_FRACTIONS = (0.05, 0.10, 0.20)
 _ALTITUDE_INCREMENTAL_BOOTSTRAP = 100
 _ALTITUDE_DELTA_SPEARMAN_GATE = 0.05
@@ -191,94 +187,6 @@ def _min_radius_scores(trajectories) -> torch.Tensor:
     return out
 
 
-def prepare(config: dict):
-    """Fit VESP-UQ on the train split; return (plugin, samples, train, held, dtype, seed)."""
-
-    dtype = get_dtype(config)
-    samples = _load_samples(config, dtype)
-    seed = int(config.get("seed", 0))
-    train, held = split_uq_samples(
-        samples, train_fraction=float(config.get("data", {}).get("train_fraction", 0.7)), seed=seed
-    )
-    plugin = VESPUQPlugin.from_config(config)
-    plugin.fit(train.positions, train.surrogate, train.reference)
-    return plugin, samples, train, held, dtype, seed
-
-
-def _true_force_error(trajectories, *, residuals, held, aggregator, dtype, weights=None):
-    """Trajectory-level true FORCE error: direct residual pairs if present, else held-out NN oracle."""
-
-    if weights is not None:
-        weights = list(weights)
-        if len(weights) != len(trajectories):
-            raise ValueError("weights must be None or one weight vector per trajectory")
-    true_error = torch.empty(len(trajectories), dtype=torch.float64)
-    if residuals is not None:
-        for i, res in enumerate(residuals):
-            mag = torch.linalg.norm(torch.as_tensor(res, dtype=torch.float64), dim=-1)
-            true_error[i] = aggregate_trajectory_error(
-                mag,
-                aggregator,
-                weights=None if weights is None else weights[i],
-            )
-        return true_error, "residual_csv"
-    for i, traj in enumerate(trajectories):
-        nn = nearest_neighbor_error_magnitude(traj.to(dtype), held.positions, held.error)
-        true_error[i] = aggregate_trajectory_error(
-            nn.to(torch.float64),
-            aggregator,
-            weights=None if weights is None else weights[i],
-        )
-    return true_error, "nn_oracle_heldout"
-
-
-def baseline_scores_for(config: dict, plugin, trajectories, train_positions, *, seed: int, weights=None):
-    """Assemble the baseline -> per-trajectory-score mapping for a fitted plugin + trajectories."""
-
-    low_alt = float(config.get("uq", {}).get("risk", {}).get("low_altitude_radius", 1.15))
-    curve_positions = getattr(plugin, "val_positions", None)
-    if curve_positions is None:
-        curve_positions = train_positions
-    curve = fit_altitude_expected_curve(plugin, curve_positions)
-    scores = {
-        "min_altitude": min_altitude_scores(trajectories),
-        "low_altitude_exposure": low_altitude_exposure_scores(
-            trajectories,
-            low_altitude_radius=low_alt,
-            weights=weights,
-        ),
-        "knn_p95": knn_p95_scores(train_positions, trajectories),
-        "uncertainty_only": vespuq_scores(plugin, trajectories, _UNCERTAINTY_SCORING, weights=weights),
-        "altitude_residual_expected_ratio": altitude_residual_expected_scores(
-            plugin,
-            trajectories,
-            curve=curve,
-            mode="ratio",
-            aggregator=_ALTITUDE_RESIDUAL_AGGREGATOR,
-            weights=weights,
-        ),
-        "altitude_residual_expected_delta": altitude_residual_expected_scores(
-            plugin,
-            trajectories,
-            curve=curve,
-            mode="delta",
-            aggregator=_ALTITUDE_RESIDUAL_AGGREGATOR,
-            weights=weights,
-        ),
-        "supervisor": vespuq_scores(plugin, trajectories, _SUPERVISOR_SCORING, weights=weights),
-    }
-    if (getattr(plugin, "calibrated_supervisor", None) or {}).get("enabled", False):
-        scores["calibrated_supervisor"] = vespuq_scores(
-            plugin,
-            trajectories,
-            "calibrated_supervisor_p95",
-            weights=weights,
-        )
-    if getattr(plugin, "domain_support", False):
-        scores["domain_support"] = domain_support_scores(plugin, trajectories, weights=weights)
-    return scores
-
-
 def altitude_incremental_value_report(
     scores: dict[str, torch.Tensor],
     true_error: torch.Tensor,
@@ -386,7 +294,7 @@ def run_baseline_comparison(
         weights=weights,
     )
 
-    scores = baseline_scores_for(config, plugin, trajectories, train.positions, seed=seed, weights=weights)
+    scores = assemble_baseline_scores(config, plugin, trajectories, train.positions, weights=weights)
     results = compare_baselines(scores, true_error, rerun_fraction=rerun_fraction)
 
     # Run Random baseline 100 times

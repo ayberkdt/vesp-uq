@@ -210,6 +210,54 @@ python scripts/run_physical_budget_screening.py --config configs/vespuq/vespuq_s
     --budget 1e-8 --units m/s^2 --scoring expected_abs_p95   # benchmarks/physical_budget_screening.md
 python scripts/run_calibration_audit.py --config configs/vespuq/vespuq_smoke.yaml   # benchmarks/calibration_audit.md
 ```
+model card, and the uncertainty-vs-altitude profile), **Update** (exact sequential update with
+the honesty warning surfaced in-page), and **Runs** (manifest/provenance browser). The heavy
+pipelines run as subprocesses of the documented CLIs (`python -m vesp.uq.run` / `vesp.uq.screen`
+/ the propagation scripts), so anything done in the UI is reproducible from the command line;
+results are read back from the artifact/manifest layer. The UI shell imports no
+torch/matplotlib at startup (lazy workers; pinned by `tests/test_vespuq_ui.py`).
+
+Prediction paths are query-chunked (`uq.query_chunk_size`, default 8192 positions per dense
+block) and `score_ensemble` scores the whole trajectory ensemble in batched passes — bounded
+memory on large ensembles, identical per-trajectory numbers to a `score_trajectory` loop
+(locked by `tests/test_uq_batched_scoring.py`).
+
+### VESP-UQ scoring modes
+
+`uq.risk.scoring` selects how the per-point risk profile is aggregated into one trajectory
+score. The scale of the score determines whether it can be used for absolute thresholds:
+
+| Mode | Alias? | Scale | Use |
+| --- | --- | --- | --- |
+| `expected_abs` | `expected` | absolute | mean expected force error |
+| `expected_abs_p95` | `expected_p95` | absolute | physical budget / robust threshold |
+| `supervisor_rel` | `supervisor` | relative | rerun prioritization |
+| `supervisor_rel_p95` | `supervisor_p95` | relative | robust rerun prioritization |
+| `supervisor_abs` | none | absolute | altitude-weighted force-risk budget |
+| `supervisor_abs_p95` | none | absolute | robust absolute alarm |
+
+- **Use relative modes for ranking** — which orbits to rerun first within one ensemble. Their
+  per-trajectory altitude normalization makes them *not* comparable across trajectories.
+- **Use absolute modes for threshold alarms** — whether any orbit exceeds a physical budget.
+- **Do not calibrate pointwise thresholds against relative trajectory scores.** A pointwise
+  `expected_error` budget (`threshold_source: pointwise_calibration_quantile`) is on the absolute
+  force-error scale; pair it only with `expected_abs*` / `supervisor_abs*`. To threshold a
+  *relative* score, use `threshold_source: trajectory_calibration_quantile`, which scores
+  calibration orbits with the same mode (the driver rejects the unsafe pairing automatically).
+
+Legacy sigma-only modes (`max | mean | low_alt_integral | time_above | combined`) remain
+available and unchanged.
+
+### Physical acceleration budgets and post-hoc auditing
+
+Two optional, post-hoc layers build on the absolute scoring modes (both keep model-normalized
+values and never invent physical units):
+
+```text
+python scripts/run_physical_budget_screening.py --config configs/vespuq/vespuq_smoke.yaml \
+    --budget 1e-8 --units m/s^2 --scoring expected_abs_p95   # benchmarks/physical_budget_screening.md
+python scripts/run_calibration_audit.py --config configs/vespuq/vespuq_smoke.yaml   # benchmarks/calibration_audit.md
+```
 
 - **Physical budget screening** converts a user-defined acceleration-error tolerance (e.g.
   `1e-8 m/s^2`) into model-score units via an explicit `body.acceleration_scale_m_s2` and flags
@@ -218,6 +266,60 @@ python scripts/run_calibration_audit.py --config configs/vespuq/vespuq_smoke.yam
 - **Conformal calibration + sentinel audit** measures held-out force-error coverage and audits
   accepted low-risk trajectories for false negatives. See
   [`benchmarks/calibration_audit.md`](benchmarks/calibration_audit.md).
+
+### Baseline Comparison for Risk Screening
+
+A core benchmark (`compare_risk_baselines.py`) compares the VESP-UQ trajectory risk scores against simple heuristics like minimum altitude or low-altitude exposure. This confirms that the VESP-UQ scores capture true force-model error better than trivial selectors.
+
+```text
+python scripts/compare_risk_baselines.py --config configs/vespuq/vespuq_smoke.yaml
+```
+
+See [`benchmarks/baseline_comparison.md`](benchmarks/baseline_comparison.md) for details on how VESP-UQ earns its place against simple baselines.
+
+### Journal validation suite (multi-seed, reproducible)
+
+The journal-readiness suite extends the single baseline comparison into a multi-seed,
+multi-fraction, multi-selector study with manifested outputs (git commit + SHA-256 checksums per
+file). It answers the reviewer question *"does VESP-UQ add useful information beyond simple
+altitude heuristics, and under what conditions?"* All scripts are deterministic given a seed and
+support `--quick` (fast wiring check) and `--dry-run` (print the run matrix). Plan and rationale:
+[`docs/VESP_UQ_JOURNAL_VALIDATION_PLAN.md`](docs/VESP_UQ_JOURNAL_VALIDATION_PLAN.md).
+
+```text
+# 1. Core suite: calibration (Table A) + ranking (Table B) + rerun-budget curves
+#    + altitude-controlled incremental value, mean +/- std across seeds.
+#    --n-orbits trades a little statistical power for speed (default uses the config's value).
+python scripts/run_vespuq_benchmark_suite.py \
+  --configs configs/vespuq/vespuq_real_lunar.yaml configs/vespuq/vespuq_real_lunar_L90.yaml \
+  --seeds 0 1 2 3 4 --rerun-fractions 0.01 0.02 0.05 0.10 0.15 0.20 0.30 0.40 \
+  --n-orbits 3000 --out outputs/benchmark_suite/
+
+# 2. Strengthening studies (each writes its own manifested CSV/MD/PNG):
+python scripts/run_expanded_baselines.py      --configs <L60> <L90> --seeds 0 1 2 3 4 --out outputs/expanded_baselines/
+python scripts/run_score_ablation.py          --configs <L60> <L90> --seeds 0 1 2 3 4 --out outputs/score_ablation/
+python scripts/run_calibration_reliability.py --configs <L60> <L90> --seeds 0 1 2 3 4 --out outputs/calibration_reliability/
+python scripts/run_source_sensitivity.py      --configs <L60> <L90> --seeds 0 1 2     --out outputs/sensitivity/
+python scripts/run_trajectory_families.py     --configs <L60> <L90> --seeds 0 1 2     --out outputs/trajectory_families/
+python scripts/run_drift_horizon.py           --configs <L60> <L90> --seeds 0 1 2     --out outputs/drift_horizon/
+python scripts/run_physical_budget_status.py  --configs <L60> <L90>                   --out outputs/physical_budget_status/
+
+# 3. Assemble the manuscript-ready report + LaTeX tables + claims table.
+#    Reads whatever study CSVs exist under --outputs; missing studies render as "pending".
+python scripts/run_journal_report.py --outputs outputs/ --out outputs/journal/
+```
+
+Quick end-to-end smoke (synthetic config, seconds):
+
+```text
+python scripts/run_vespuq_benchmark_suite.py --configs configs/vespuq/vespuq_smoke.yaml --quick
+```
+
+The report generator applies a fixed Phase-14 decision rule to the measured numbers (it never
+hand-enters a result): VESP-UQ is reported as adding *consistent*, *mixed*, or *altitude-dominated*
+value depending on the per-band supervisor-vs-altitude Spearman and the partial correlation given
+min-radius. The force-risk-vs-drift diagnostic is reported as a scope boundary (VESP-UQ ranks
+force-model risk, not long-horizon position error).
 
 ## Experimental Questions
 
@@ -273,8 +375,8 @@ src/vesp/
                    train_multishell.py / run_ablation.py / feasibility.py
                    evaluate.py       evaluation + artifact writing
     analysis/    analysis.py, advanced_analysis.py (reports / plots / PDF)
-    extensions/  Stage-3 scaffolds: entropy (Stage 3A, active), neural_density,
-                 probabilistic, force_model (not the full MaxEnt framework)
+    extensions/  Stage-3 scaffolds: entropy (Stage 3A, active), probabilistic (Stage 3C, active),
+                 neural_density, force_model (not the full MaxEnt framework)
     experiments/ experiment-first orchestration
                    registry.py   catalogue of core experiments E0-E5 / questions Q1-Q6
                    runner.py     load experiment YAML, expand sweeps, run trials
@@ -306,6 +408,7 @@ configs/         experiment YAML configs (single source of truth), grouped by pu
 scripts/         dataset builders, benchmarks, and orchestration helpers
                  run_experiment_suite.py / summarize_experiments.py / run_vespuq.py
                  compare_models.py / build_iac_pack.py / benchmark_gpu.py / benchmark_stm_dispersion.py
+                 compare_risk_baselines.py / run_force_error_benchmark.py
 benchmarks/      curated benchmark result docs (see benchmarks/README.md)
 docs/            SCIENTIFIC_CLAIMS.md + VESP_UQ_IAC_PLAN.md + VESP_UQ_LIMITATIONS.md
                  + VESP_UQ_NEXT_STEPS.md (implementation history + research backlog)
@@ -359,7 +462,7 @@ Delta a(x) = sum_j sum_i w_ji sigma_ji (s_ji - x) / ||x - s_ji||^3
 
 The remaining extension placeholders are reserved under `src/vesp/extensions/`
 (`neural_density.py` and `force_model.py`). `entropy.py` is now an
-active Stage 3A component, not a scaffold, and `probabilistic.py` capabilities are now integrated into the `vesp.uq` module.
+active Stage 3A component, and `probabilistic.py` is an active Stage 3C component providing the exact linear-Gaussian posterior.
 
 ## Mathematical Formulation
 
@@ -1047,59 +1150,6 @@ file exists. Missing files use `missing: true`; publication artifacts may also
 carry a machine-readable status such as `ok` or `missing_data`. This keeps
 training, screening, benchmark, comparison, and evidence-pack outputs traceable
 through the same contract.
-
-## Dense Operator Limit
-
-For `N_query = 8192` and `N_source = 20000`:
-
-```text
-Potential operator:     8192 x 20000
-Acceleration operator: 24576 x 20000
-Joint operator:        32768 x 20000
-```
-
-Dense ridge is intended for small-to-medium experiments. Use chunked
-matrix-free Adam or future iterative LSQR-style solvers for larger runs.
-
-## Known Limitations
-
-- Multi-shell does not automatically improve performance; it must be validated
-  with ablations.
-- Low-altitude stability can dominate the error budget.
-- Learned source maps are equivalent mathematical sources, not real interior
-  density.
-- Current real spherical-harmonic acceleration uses finite differences for
-  robustness; analytic gradients are a future speed improvement.
-
-## Extension Roadmap
-
-All Stage 3 scaffolds live under `src/vesp/extensions/`.
-
-`extensions/entropy.py` (**implemented, Stage 3A** — wired into `solver.type: maxent`
-via `vesp.training.maxent`):
-
-- signed positive-negative entropy
-- relative entropy / KL prior
-- shell-wise entropy and per-shell energy-balance entropy
-- effective source entropy
-
-`extensions/neural_density.py`:
-
-- Angular MLP
-- Angular SIREN
-- SH encoding + MLP
-
-`extensions/probabilistic.py` (Core ideas migrated to the `vesp.uq` package):
-
-- posterior over sigma (Implemented in `vesp.uq`)
-- acceleration covariance (Implemented in `vesp.uq`)
-- variational source distribution (Future)
-
-`extensions/force_model.py`:
-
-- `predict_residual_accel(x)`
-- `predict_residual_accel_with_uncertainty(x)`
-
 Do not start Stage 3 MaxEnt until deterministic Stage 1-2 checks pass on hard
 synthetic and small real residual datasets.
 

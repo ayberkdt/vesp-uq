@@ -22,6 +22,8 @@ from dataclasses import asdict, dataclass
 
 import torch
 
+from vesp.uq.metrics import local_radial_frame
+
 # Scoring functions that turn a per-position profile into one trajectory number.
 # Legacy sigma-only modes:
 _SIGMA_MODES = ("max", "mean", "low_alt_integral", "time_above", "combined")
@@ -47,10 +49,33 @@ _SUPERVISOR_MODES = (
     "supervisor_abs",
     "supervisor_abs_p95",
 ) + _CALIBRATED_SUPERVISOR_MODES
-SCORING_FUNCTIONS = _SIGMA_MODES + _EXPECTED_ONLY_MODES + _SUPERVISOR_MODES
+# Directional risk modes (M1): exploit the per-point 3x3 covariance geometry / bias direction to
+# rank force error *within* an altitude band -- value beyond the scalar altitude heuristic. All are
+# p95-aggregated per trajectory.
+#   radial_expected   -- |mean_error . r_hat| + sigma_radial  (bias projected onto the radial axis
+#                        plus the radial predictive spread; the radial component dominates the
+#                        altitude-dependent force-model error).
+#   anisotropy_gated  -- expected_error * (1 + kappa*(lambda_max/lambda_min - 1)); anisotropy as a
+#                        multiplier on the expected error (isotropic covariance -> factor 1).
+#   largest_eigenvalue-- sqrt(lambda_max(covariance)); the worst-direction predictive std.
+_DIRECTIONAL_MODES = ("radial_expected", "anisotropy_gated", "largest_eigenvalue")
+# Epistemic-targeted screening (M2): up-weight points whose uncertainty is reducible (epistemic)
+# rather than aleatoric -- where a high-fidelity rerun actually helps.
+#   expected_epistemic -- expected_error * epistemic_fraction**gamma, p95-aggregated.
+_EPISTEMIC_MODES = ("expected_epistemic",)
+# Subset of the directional modes that need the FULL 3x3 covariance (not just std_components).
+_COVARIANCE_MODES = frozenset({"anisotropy_gated", "largest_eigenvalue"})
+# Default anisotropy gate strength for ``anisotropy_gated``.
+ANISOTROPY_KAPPA_DEFAULT = 0.5
+
+SCORING_FUNCTIONS = (
+    _SIGMA_MODES + _EXPECTED_ONLY_MODES + _SUPERVISOR_MODES + _DIRECTIONAL_MODES + _EPISTEMIC_MODES
+)
 
 # Modes that need a per-point ``expected_error`` profile (and so cannot run on sigma alone).
 _EXPECTED_MODES = frozenset(_EXPECTED_ONLY_MODES + _SUPERVISOR_MODES)
+# Directional / epistemic modes also produce a stand-alone p95 risk profile (handled separately).
+_GEOMETRIC_MODES = frozenset(_DIRECTIONAL_MODES + _EPISTEMIC_MODES)
 
 # Aggregators for collapsing a per-point true-error profile into one trajectory scalar.
 TRUE_ERROR_AGGREGATORS = ("max", "mean", "p95")
@@ -79,6 +104,8 @@ _ABSOLUTE_SCORINGS = frozenset(
         "supervisor_abs",
         "supervisor_abs_p95",
     }
+    | set(_DIRECTIONAL_MODES)
+    | set(_EPISTEMIC_MODES)
 )
 _EXPECTED_ONLY_SCORINGS = frozenset(_EXPECTED_ONLY_MODES)
 # Canonical names for the backward-compatible aliases.
@@ -125,6 +152,87 @@ def is_expected_only_scoring(scoring: str) -> bool:
     """True for the pure expected-error modes (no altitude weighting at all)."""
 
     return _validate_scoring(scoring) in _EXPECTED_ONLY_SCORINGS
+
+
+def is_directional_scoring(scoring: str) -> bool:
+    """True for the M1 covariance-geometry / bias-direction risk modes."""
+
+    return _validate_scoring(scoring) in _DIRECTIONAL_MODES
+
+
+def needs_covariance(scoring: str) -> bool:
+    """True if ``scoring`` needs the full per-point 3x3 covariance (anisotropy / largest eigenvalue).
+
+    The plugin uses this to gate the extra :meth:`predict_covariance_3x3` build so default scoring
+    pays nothing -- ``radial_expected`` (diagonal projection) and the epistemic mode do not need it.
+    """
+
+    return _validate_scoring(scoring) in _COVARIANCE_MODES
+
+
+# --------------------------------------------------------------------------------------------- #
+# M1 -- directional / covariance-geometry per-point profile builders (pure functions on arrays)
+# --------------------------------------------------------------------------------------------- #
+def _as_matrix(x, n: int, cols: int, name: str) -> torch.Tensor:
+    t = torch.as_tensor(x).to(torch.float64)
+    if t.ndim != 2 or t.shape != (n, cols):
+        raise ValueError(f"{name} must have shape ({n}, {cols}), got {tuple(t.shape)}")
+    return t
+
+
+def radial_profile(
+    mean_error: torch.Tensor, std_components: torch.Tensor, positions: torch.Tensor
+) -> torch.Tensor:
+    """Per-point radial force-risk ``(N,)``: ``|mean_error . r_hat| + sigma_radial``.
+
+    ``mean_error`` ``(N, 3)`` is the predicted bias vector, ``std_components`` ``(N, 3)`` the per-axis
+    predictive std, ``positions`` ``(N, 3)`` the query points. The radial axis ``r_hat`` is taken
+    from :func:`vesp.uq.metrics.local_radial_frame`; ``sigma_radial`` is the predictive std along it
+    under the diagonal-covariance approximation (``sqrt(sum_k (r_hat_k * std_k)^2)``). The radial
+    component carries the altitude-dependent force-model error, so this isolates the part of the risk
+    that altitude alone cannot rank.
+    """
+
+    me = torch.as_tensor(mean_error).to(torch.float64)
+    if me.ndim != 2 or me.shape[-1] != 3:
+        raise ValueError("mean_error must have shape (N, 3)")
+    n = me.shape[0]
+    std = _as_matrix(std_components, n, 3, "std_components")
+    pos = _as_matrix(positions, n, 3, "positions")
+    r_hat = local_radial_frame(pos)[:, 0, :]  # (N, 3) radial axis
+    bias_radial = (me * r_hat).sum(dim=-1).abs()
+    var_radial = (std.clamp_min(0.0) ** 2 * r_hat**2).sum(dim=-1)
+    return bias_radial + var_radial.clamp_min(0.0).sqrt()
+
+
+def anisotropy_multiplier(covariance: torch.Tensor, kappa: float = ANISOTROPY_KAPPA_DEFAULT) -> torch.Tensor:
+    """Per-point anisotropy gate ``(N,) >= 1``: ``1 + kappa*(lambda_max/lambda_min - 1)``.
+
+    ``covariance`` is the ``(N, 3, 3)`` predictive covariance; eigenvalues are taken on the
+    symmetrized matrix and the smallest is floored to keep the ratio finite. An isotropic covariance
+    yields exactly ``1.0`` (no gating); a highly anisotropic one amplifies the score.
+    """
+
+    cov = torch.as_tensor(covariance).to(torch.float64)
+    if cov.ndim != 3 or cov.shape[-2:] != (3, 3):
+        raise ValueError("covariance must have shape (N, 3, 3)")
+    sym = 0.5 * (cov + cov.transpose(-1, -2))
+    eig = torch.linalg.eigvalsh(sym)  # ascending (N, 3)
+    tiny = torch.finfo(torch.float64).tiny
+    lam_min = eig[:, 0].clamp_min(tiny)
+    lam_max = eig[:, -1].clamp_min(tiny)
+    return 1.0 + float(kappa) * (lam_max / lam_min - 1.0)
+
+
+def largest_eigenvalue_profile(covariance: torch.Tensor) -> torch.Tensor:
+    """Per-point worst-direction predictive std ``(N,)``: ``sqrt(lambda_max(covariance))``."""
+
+    cov = torch.as_tensor(covariance).to(torch.float64)
+    if cov.ndim != 3 or cov.shape[-2:] != (3, 3):
+        raise ValueError("covariance must have shape (N, 3, 3)")
+    sym = 0.5 * (cov + cov.transpose(-1, -2))
+    eig = torch.linalg.eigvalsh(sym)
+    return eig[:, -1].clamp_min(0.0).sqrt()
 
 
 @dataclass
@@ -317,6 +425,14 @@ def score_sigma_profile(
     domain_weight: float = 1.0,
     calibrated_point_risk: torch.Tensor | None = None,
     weights: torch.Tensor | None = None,
+    # M1 (directional) / M2 (epistemic) inputs -- only consulted by the geometric/epistemic modes.
+    mean_error_vector: torch.Tensor | None = None,
+    std_components: torch.Tensor | None = None,
+    covariance: torch.Tensor | None = None,
+    positions: torch.Tensor | None = None,
+    epistemic_fraction: torch.Tensor | None = None,
+    epistemic_gamma: float = 1.0,
+    anisotropy_kappa: float = ANISOTROPY_KAPPA_DEFAULT,
 ) -> TrajectoryScore:
     """Aggregate a per-output-point profile into a :class:`TrajectoryScore`.
 
@@ -365,6 +481,18 @@ def score_sigma_profile(
             f"scoring={scoring!r} requires a calibrated_point_risk profile; fit VESPUQPlugin "
             "with risk.calibrated_supervisor.enabled=true or pass calibrated_point_risk explicitly"
         )
+    if scoring == "radial_expected" and (
+        mean_error_vector is None or std_components is None or positions is None
+    ):
+        raise ValueError(
+            "scoring='radial_expected' requires mean_error_vector, std_components and positions"
+        )
+    if scoring in _COVARIANCE_MODES and covariance is None:
+        raise ValueError(f"scoring={scoring!r} requires a per-point 3x3 covariance profile")
+    if scoring == "anisotropy_gated" and expected_error is None:
+        raise ValueError("scoring='anisotropy_gated' requires an expected_error profile")
+    if scoring == "expected_epistemic" and (expected_error is None or epistemic_fraction is None):
+        raise ValueError("scoring='expected_epistemic' requires expected_error and epistemic_fraction")
 
     reference_h = (
         float(altitude_reference_h)
@@ -403,6 +531,7 @@ def score_sigma_profile(
     mean_pr_rel = p95_pr_rel = float("nan")
     mean_pr_abs = p95_pr_abs = float("nan")
     mean_cal_pr = p95_cal_pr = float("nan")
+    ee = None
     if expected_error is not None:
         ee = _as_1d(expected_error, n, "expected_error")
         max_ee = float(ee.max())
@@ -447,6 +576,26 @@ def score_sigma_profile(
         outside = (dr > 1.0).to(torch.float64)
         time_outside_support = float(outside.mean()) if w is None else float((outside * w).sum())
 
+    # ---- M1 directional / M2 epistemic risk (per-point profile -> p95) ----
+    geometric_risk = float("nan")
+    if scoring in _GEOMETRIC_MODES:
+        # inputs are validated non-None above; assert to narrow the types for the builders.
+        if scoring == "radial_expected":
+            assert mean_error_vector is not None and std_components is not None and positions is not None
+            profile = radial_profile(mean_error_vector, std_components, positions)
+        elif scoring == "anisotropy_gated":
+            assert ee is not None and covariance is not None
+            profile = ee * anisotropy_multiplier(covariance, kappa=anisotropy_kappa)
+        elif scoring == "largest_eigenvalue":
+            assert covariance is not None
+            profile = largest_eigenvalue_profile(covariance)
+        else:  # expected_epistemic
+            assert ee is not None
+            ef = _as_1d(epistemic_fraction, n, "epistemic_fraction").clamp(0.0, 1.0)
+            gamma = float(epistemic_gamma)
+            profile = ee if gamma == 0.0 else ee * ef.pow(gamma)
+        geometric_risk = _weighted_quantile(_as_1d(profile, n, scoring), 0.95, w)
+
     table = {
         "max": max_sigma,
         "mean": mean_sigma,
@@ -470,6 +619,11 @@ def score_sigma_profile(
         # validation-calibrated supervisor (ranking)
         "calibrated_supervisor": mean_cal_pr,
         "calibrated_supervisor_p95": p95_cal_pr,
+        # M1 directional + M2 epistemic (p95 of the per-point geometric/epistemic risk profile)
+        "radial_expected": geometric_risk,
+        "anisotropy_gated": geometric_risk,
+        "largest_eigenvalue": geometric_risk,
+        "expected_epistemic": geometric_risk,
     }
 
     return TrajectoryScore(

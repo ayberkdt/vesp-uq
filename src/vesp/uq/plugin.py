@@ -59,6 +59,7 @@ from vesp.uq.metrics import (
 )
 from vesp.uq.scoring import (
     TrajectoryScore,
+    needs_covariance,
     score_sigma_profile,
 )
 from vesp.uq.scoring import (
@@ -1462,8 +1463,13 @@ class VESPUQPlugin:
         domain_risk: torch.Tensor | None,
         scoring: str | None,
         weights,
+        covariance: torch.Tensor | None = None,
     ) -> TrajectoryScore:
-        """Aggregate one trajectory's per-point profile with the plugin's scoring settings."""
+        """Aggregate one trajectory's per-point profile with the plugin's scoring settings.
+
+        ``covariance`` (the per-point ``3x3``) is supplied only for the directional modes that need
+        it (gated upstream via :func:`vesp.uq.scoring.needs_covariance`); it is ``None`` otherwise.
+        """
 
         calibrated_point_risk = self._calibrated_supervisor_point_risk(pred, domain_risk)
         return score_sigma_profile(
@@ -1480,6 +1486,12 @@ class VESPUQPlugin:
             domain_weight=self.domain_weight,
             calibrated_point_risk=calibrated_point_risk,
             weights=weights,
+            # M1 / M2 directional + epistemic inputs (consulted only by those modes)
+            mean_error_vector=pred.mean_error,
+            std_components=pred.std_components,
+            covariance=covariance,
+            positions=pred.positions,
+            epistemic_fraction=pred.epistemic_fraction,
         )
 
     def score_trajectory(
@@ -1495,7 +1507,12 @@ class VESPUQPlugin:
 
         pred = self.predict_uncertainty(positions_over_time)
         domain_risk = self.domain_support_score(pred.positions) if self.domain_support else None
-        return self._score_profile(pred, domain_risk=domain_risk, scoring=scoring, weights=weights)
+        covariance = (
+            self.predict_covariance_3x3(pred.positions).covariance
+            if needs_covariance(scoring or self.risk_scoring) else None
+        )
+        return self._score_profile(pred, domain_risk=domain_risk, scoring=scoring, weights=weights,
+                                   covariance=covariance)
 
     def score_ensemble(
         self, trajectories, *, scoring: str | None = None, weights=None
@@ -1525,8 +1542,15 @@ class VESPUQPlugin:
 
         prepped = [self._prep_positions(t) for t in traj_list]
         lengths = [int(t.shape[0]) for t in prepped]
-        pred = self.predict_uncertainty(torch.cat(prepped, dim=0))
+        all_positions = torch.cat(prepped, dim=0)
+        pred = self.predict_uncertainty(all_positions)
         domain_risk = self.domain_support_score(pred.positions) if self.domain_support else None
+        # M1: build the full 3x3 covariance once (gated) for the directional modes that need it,
+        # so default scoring pays nothing for the extra operator pass.
+        covariance = (
+            self.predict_covariance_3x3(all_positions).covariance
+            if needs_covariance(scoring or self.risk_scoring) else None
+        )
 
         scores: list[TrajectoryScore] = []
         offset = 0
@@ -1551,6 +1575,7 @@ class VESPUQPlugin:
                     domain_risk=domain_risk[sl] if domain_risk is not None else None,
                     scoring=scoring,
                     weights=w,
+                    covariance=covariance[sl] if covariance is not None else None,
                 )
             )
         return scores

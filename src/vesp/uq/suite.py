@@ -1130,6 +1130,44 @@ def run_suite(
                       f"{time.perf_counter() - t0:.0f}s) | elapsed {elapsed:.0f}s | eta {eta:.0f}s",
                       flush=True)
 
+    return aggregate_and_write(
+        runs,
+        configs=configs,
+        seeds=seeds,
+        rerun_fractions=rerun_fractions,
+        selectors=selectors,
+        primary_fraction=primary_fraction,
+        out_dir=out_dir,
+        make_plots=make_plots,
+    )
+
+
+def aggregate_and_write(
+    runs,
+    *,
+    configs,
+    seeds,
+    rerun_fractions,
+    selectors,
+    primary_fraction: float,
+    out_dir,
+    make_plots: bool = True,
+) -> dict:
+    """Aggregate a list of ``compute_run`` results and write every journal artifact under ``out_dir``.
+
+    Factored out of :func:`run_suite` so a resumable overnight driver can compute (and checkpoint)
+    each ``compute_run`` separately, then hand the reloaded set here for the identical aggregation,
+    placebo (G4) assertion, and artifact set. ``runs`` may be a partial set (e.g. only the seeds that
+    completed); every aggregation tolerates whatever runs are present. Requires at least one run.
+    """
+
+    if not runs:
+        raise ValueError("aggregate_and_write requires at least one completed run")
+    out_dir = Path(out_dir)
+    seeds = [int(s) for s in seeds]
+    rerun_fractions = sorted({round(float(f), 6) for f in rerun_fractions})
+    primary_fraction = _nearest_fraction(rerun_fractions, primary_fraction)
+
     ranking_rows = [row for r in runs for row in r["ranking_rows"]]
     decision_rows = [row for r in runs for row in r["decision_rows"]]
     calibration_rows = [row for r in runs for row in r["calibration_rows"]]
@@ -1217,3 +1255,41 @@ def run_suite(
         "significance": significance_rows,
         "placebo_checks": placebo_checks,
     }
+
+
+# --------------------------------------------------------------------------------------------- #
+# G5 -- determinism / reproducibility gate
+# --------------------------------------------------------------------------------------------- #
+def run_reproducibility_check(
+    configs,
+    *,
+    seeds=(0,),
+    rerun_fractions=(0.1, 0.2),
+    selectors=DEFAULT_SELECTORS,
+    out_root="outputs/reproducibility",
+    primary_fraction: float = 0.20,
+    n_orbits: int | None = None,
+) -> dict:
+    """Run the suite twice on the same inputs and assert the data tables are byte-identical (G5).
+
+    Both passes write under ``out_root`` (``run_a`` / ``run_b``); the canonical CSVs
+    (:data:`~vesp.uq.integrity.reproducibility.REPRO_FILES`) are compared after dropping timing
+    columns. Plots are skipped (PNG bytes are not part of the result). Returns the comparison report
+    (``ok`` is false if any normalized table differs -- forced nondeterminism such as an unseeded RNG
+    is caught there); callers wanting a hard failure can use
+    :func:`vesp.uq.integrity.reproducibility.assert_reproducible` on ``run_a`` / ``run_b``.
+    """
+
+    from vesp.uq.integrity.reproducibility import compare_outputs
+
+    out_root = Path(out_root)
+    dir_a, dir_b = out_root / "run_a", out_root / "run_b"
+    common = dict(seeds=seeds, rerun_fractions=rerun_fractions, selectors=selectors,
+                  primary_fraction=primary_fraction, make_plots=False, n_orbits=n_orbits,
+                  progress=False)
+    # deep-copy per pass: run_suite mutates configs in place (n_orbits override), and the two passes
+    # must start from identical inputs.
+    run_suite([copy.deepcopy(c) for c in configs], out_dir=dir_a, **common)
+    run_suite([copy.deepcopy(c) for c in configs], out_dir=dir_b, **common)
+    report = compare_outputs(dir_a, dir_b)
+    return {"out_root": str(out_root), "run_a": str(dir_a), "run_b": str(dir_b), **report}

@@ -34,6 +34,7 @@ from vesp.uq.suite import (
     DEFAULT_FRACTIONS,
     DEFAULT_SELECTORS,
     plan_matrix,
+    run_reproducibility_check,
     run_suite,
 )
 
@@ -70,6 +71,8 @@ def main(argv=None) -> None:
     parser.add_argument("--quick", action="store_true", help="2 seeds + capped n_orbits (wiring check)")
     parser.add_argument("--dry-run", action="store_true", help="print the run matrix and exit")
     parser.add_argument("--no-plots", action="store_true", help="skip PNG plots (CSV/MD only)")
+    parser.add_argument("--verify-reproducible", action="store_true",
+                        help="G5: run twice and assert byte-identical data tables, then exit")
     args = parser.parse_args(argv)
 
     seeds = list(_QUICK_SEEDS) if args.quick else args.seeds
@@ -79,6 +82,17 @@ def main(argv=None) -> None:
         plan = plan_matrix(configs, seeds, args.rerun_fractions, args.selectors)
         print(json.dumps({"n_runs": len(plan), "matrix": plan}, indent=2))
         return
+
+    if args.verify_reproducible:
+        report = run_reproducibility_check(
+            configs, seeds=seeds, rerun_fractions=args.rerun_fractions,
+            selectors=args.selectors, out_root=args.out, primary_fraction=args.primary_fraction,
+            n_orbits=args.n_orbits,
+        )
+        for name, info in report["files"].items():
+            print(f"  {name}: {info['status']}")
+        print(f"[reproducibility] {'OK -- byte-identical' if report['ok'] else 'FAILED'}")
+        raise SystemExit(0 if report["ok"] else 1)
 
     result = run_suite(
         configs,

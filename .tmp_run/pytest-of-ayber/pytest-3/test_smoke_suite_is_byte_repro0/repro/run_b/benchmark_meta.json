@@ -1,0 +1,66 @@
+{
+  "_provenance": {
+    "git_commit": "f668998b07f2add75a710a0f77415a195bdbc9dd",
+    "tool": "run_vespuq_benchmark_suite"
+  },
+  "meta": {
+    "bands": [
+      "vespuq_smoke"
+    ],
+    "git_commit": "f668998b07f2add75a710a0f77415a195bdbc9dd",
+    "missing_selectors": [],
+    "n_trajectories": 40,
+    "placebo_checks": [
+      {
+        "band": "vespuq_smoke",
+        "capture_rate": 0.0,
+        "ok": true,
+        "selector": "label_shuffled",
+        "spearman": 0.10927183550273534,
+        "tol": 0.5533985905294664
+      },
+      {
+        "band": "vespuq_smoke",
+        "capture_rate": 0.0,
+        "ok": true,
+        "selector": "random",
+        "spearman": -0.34211396219045476,
+        "tol": 0.5533985905294664
+      }
+    ],
+    "platform": "Windows-11-10.0.26200-SP0",
+    "primary_fraction": 0.2,
+    "python": "3.12.1",
+    "rerun_fractions": [
+      0.1,
+      0.2
+    ],
+    "seeds": [
+      0
+    ],
+    "selectors": [
+      "random",
+      "label_shuffled",
+      "min_altitude",
+      "low_altitude_exposure",
+      "uncertainty_only",
+      "domain_support",
+      "knn_p95",
+      "vespuq_supervisor"
+    ],
+    "torch": "2.5.1+cu121",
+    "true_force_error_aggregator": "p95",
+    "true_force_error_source": "nn_oracle_heldout"
+  },
+  "timings": [
+    {
+      "band": "vespuq_smoke",
+      "calibration_seconds": 0.014316799999505747,
+      "fit_seconds": 0.3347189000014623,
+      "runtime_ms_per_traj": 4.724270000042452,
+      "runtime_us_per_point": 131.22972222340144,
+      "score_seconds": 0.18897080000169808,
+      "seed": 0
+    }
+  ]
+}

@@ -31,13 +31,15 @@ METRIC_KEYS = (
 )
 
 
-def evaluate_score_against_true_error(scores, true_error, rerun_fraction: float = 0.10) -> dict:
+def evaluate_score_against_true_error(scores, true_error, rerun_fraction: float = 0.10,
+                                      *, high_quantile: float = 0.90) -> dict:
     """Evaluate one risk score against trajectory-level true force error.
 
     Flags the top ``rerun_fraction`` of trajectories by ``scores`` (exact top-k, tie-robust) and
     reports the Spearman correlation, capture rate / precision against the truly-high-error
-    trajectories, lift over a random screen, and the flagged-vs-accepted true-force-error split.
-    Safe for small arrays and ties (constant scores yield a ``nan`` Spearman, never a crash).
+    trajectories (the top ``1 - high_quantile`` by true error), lift over a random screen, and the
+    flagged-vs-accepted true-force-error split. Safe for small arrays and ties (constant scores yield
+    a ``nan`` Spearman, never a crash).
     """
 
     s = torch.as_tensor(scores, dtype=torch.float64).reshape(-1)
@@ -47,7 +49,8 @@ def evaluate_score_against_true_error(scores, true_error, rerun_fraction: float 
     if s.numel() != e.numel():
         raise ValueError(f"scores ({s.numel()}) and true_error ({e.numel()}) must have equal length")
 
-    report = select_reruns(s, rerun_fraction=float(rerun_fraction), true_error=e)
+    report = select_reruns(s, rerun_fraction=float(rerun_fraction), true_error=e,
+                           true_error_quantile=float(high_quantile))
     cap = report.capture_rate
     rf = report.rerun_fraction
     lift = (cap / rf) if (cap is not None and rf and not math.isnan(float(cap))) else float("nan")
@@ -199,7 +202,7 @@ def capture_auc(scores, true_error, fractions=(0.02, 0.05, 0.10, 0.15, 0.20, 0.3
 
     def _auc(score_vec: torch.Tensor) -> float:
         caps = [evaluate_score_against_true_error(
-            score_vec, e, rerun_fraction=f)["capture_rate"] for f in fracs]
+            score_vec, e, rerun_fraction=f, high_quantile=high_quantile)["capture_rate"] for f in fracs]
         caps = [c if (c is not None and not math.isnan(float(c))) else float("nan") for c in caps]
         if any(math.isnan(c) for c in caps):
             return float("nan")
@@ -229,9 +232,15 @@ def oracle_regret(scores, true_error, fraction: float = 0.20) -> dict:
     e = torch.as_tensor(true_error, dtype=torch.float64).reshape(-1)
     if s.numel() != e.numel():
         raise ValueError("scores and true_error must have equal length")
+    n = int(e.numel())
+    k = min(n, max(1, int(math.ceil(float(fraction) * n)))) if n else 0
     score_mass = _captured_error_mass(s, e, fraction)
     oracle_mass = _captured_error_mass(e, e, fraction)
-    random_mass = float(fraction) * float(e.sum())
+    # Expected mass a random screen captures over the SAME k flagged trajectories: (k / n), not the
+    # requested fraction. They differ when fraction * n is non-integer (k = ceil rounds up), and using
+    # the requested fraction there makes the normalization baseline inconsistent with the rounded
+    # top-k that score/oracle actually flag -- which can push regret outside [0, 1] before clamping.
+    random_mass = (k / n) * float(e.sum()) if n else 0.0
     denom = oracle_mass - random_mass
     regret = ((oracle_mass - score_mass) / denom) if abs(denom) > 0 else float("nan")
     if regret == regret:  # finite: clamp tiny numerical excursions outside [0, 1]

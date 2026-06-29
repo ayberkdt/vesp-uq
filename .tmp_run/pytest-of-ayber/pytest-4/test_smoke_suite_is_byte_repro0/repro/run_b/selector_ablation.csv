@@ -1,0 +1,9 @@
+band,selector,rerun_fraction,n_seeds,capture_rate_mean,capture_rate_std,lift_over_random_mean,lift_over_random_std,spearman_mean,spearman_std,force_error_ratio_flagged_to_accepted_mean,force_error_ratio_flagged_to_accepted_std
+vespuq_smoke,domain_support,0.2,1,0.0,0.0,0.0,0.0,-0.01467412100679432,0.0,0.8729552401966846,0.0
+vespuq_smoke,knn_p95,0.2,1,0.0,0.0,0.0,0.0,-0.009218358068370791,0.0,0.914660945561553,0.0
+vespuq_smoke,label_shuffled,0.2,1,0.0,0.0,0.0,0.0,0.10927183550273534,0.0,0.9389962622226534,0.0
+vespuq_smoke,low_altitude_exposure,0.2,1,0.5,0.0,2.5,0.0,0.30387118019302095,0.0,1.1749900122195036,0.0
+vespuq_smoke,min_altitude,0.2,1,0.5,0.0,2.5,0.0,0.34211396219045476,0.0,1.1749900122195036,0.0
+vespuq_smoke,random,0.2,1,0.0,0.0,0.0,0.0,-0.34211396219045476,0.0,0.8990771697524222,0.0
+vespuq_smoke,uncertainty_only,0.2,1,0.5,0.0,2.5,0.0,0.22961236780503164,0.0,1.1325410569097627,0.0
+vespuq_smoke,vespuq_supervisor,0.2,1,0.25,0.0,1.25,0.0,0.4433277711860361,0.0,1.0667553659855236,0.0

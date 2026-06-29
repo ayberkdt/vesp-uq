@@ -1,0 +1,5 @@
+band,selector,n_seeds,pearson_mean,spearman_mean,partial_pearson_given_min_radius_mean,partial_pearson_given_min_radius_std
+vespuq_smoke,domain_support,1,-0.08134783867602469,-0.01467412100679432,0.043212734842697144,0.0
+vespuq_smoke,min_altitude,1,0.31504738042647873,0.34211396219045476,0.05018981742768298,0.0
+vespuq_smoke,uncertainty_only,1,0.25350660314448437,0.22961236780503164,-0.016000772346809813,0.0
+vespuq_smoke,vespuq_supervisor,1,0.19495231881878455,0.4433277711860361,-0.06612945459854479,0.0

@@ -12,6 +12,7 @@ script-oriented API free of the training layout's ``checkpoints/`` side effect.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -19,11 +20,14 @@ from typing import Any
 from vesp.common.artifacts import (
     atomic_write_json,
     atomic_write_text,
+    compute_file_sha256,
     utc_now_iso,
     write_manifest,
 )
 
 MANIFEST_NAME = "run_manifest.json"
+# Manifest filenames a study dir may use (the suite writes the short form).
+_MANIFEST_CANDIDATES = ("manifest.json", MANIFEST_NAME)
 
 
 def write_run_artifacts(
@@ -100,3 +104,77 @@ def write_run_artifacts(
             "config_path": config_path,
         },
     )
+
+
+def _resolve_artifact_path(run_dir: Path, name: str, entry: Mapping[str, Any]) -> Path | None:
+    """Best-effort locate an artifact on disk from its manifest entry (absolute paths may have moved)."""
+
+    raw = entry.get("path")
+    candidates: list[Path] = []
+    if raw:
+        p = Path(str(raw))
+        candidates += [p, run_dir / p.name]
+    candidates.append(run_dir / name)
+    for cand in candidates:
+        if cand.exists() and cand.is_file():
+            return cand
+    if raw:  # fall back to a recursive search by basename (artifacts in figures/ etc.)
+        matches = list(run_dir.rglob(Path(str(raw)).name))
+        if matches:
+            return matches[0]
+    return None
+
+
+def verify_manifest(run_dir: str | Path, *, manifest_name: str | None = None) -> dict:
+    """G7 -- check every artifact a run manifest lists is present on disk with a matching SHA-256.
+
+    Recomputes the SHA-256 of each file in ``run_manifest.json["artifacts"]`` and classifies it as
+    ``verified`` / ``changed`` (checksum mismatch) / ``missing`` (absent or marked missing). Files on
+    disk that no manifest entry lists are reported as ``unlisted`` (informational -- a stray figure or
+    log is not a provenance failure). ``ok`` is true only when nothing is missing or changed.
+
+    ``manifest_name`` forces a specific manifest filename; otherwise ``manifest.json`` then
+    ``run_manifest.json`` is tried. A directory with no manifest returns ``ok=False`` with
+    ``manifest=None``.
+    """
+
+    run_dir = Path(run_dir)
+    names = [manifest_name] if manifest_name else list(_MANIFEST_CANDIDATES)
+    manifest_path = next((run_dir / n for n in names if (run_dir / n).exists()), None)
+    if manifest_path is None:
+        return {"dir": str(run_dir), "manifest": None, "ok": False, "verified": [],
+                "changed": [], "missing": [], "unlisted": [], "checked": 0}
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    artifacts: Mapping[str, Any] = manifest.get("artifacts") or {}
+    verified: list[str] = []
+    changed: list[str] = []
+    missing: list[str] = []
+    listed: set[Path] = set()
+    for name, entry in artifacts.items():
+        resolved = _resolve_artifact_path(run_dir, name, entry)
+        if entry.get("missing") or resolved is None:
+            missing.append(name)
+            continue
+        listed.add(resolved.resolve())
+        recorded = entry.get("sha256")
+        if recorded and compute_file_sha256(resolved) != recorded:
+            changed.append(name)
+        else:
+            verified.append(name)
+
+    manifest_files = {(run_dir / n).resolve() for n in _MANIFEST_CANDIDATES}
+    unlisted = sorted(
+        str(p) for p in run_dir.rglob("*")
+        if p.is_file() and p.resolve() not in listed and p.resolve() not in manifest_files
+    )
+    return {
+        "dir": str(run_dir),
+        "manifest": str(manifest_path),
+        "verified": verified,
+        "changed": changed,
+        "missing": missing,
+        "unlisted": unlisted,
+        "checked": len(artifacts),
+        "ok": not changed and not missing,
+    }

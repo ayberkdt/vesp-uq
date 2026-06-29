@@ -55,6 +55,28 @@ def test_oracle_regret_bounds():
     assert oracle_regret(-TRUE_ERROR, TRUE_ERROR, fraction=0.20)["oracle_regret"] == pytest.approx(1.0)
 
 
+def test_oracle_regret_random_baseline_matches_rounded_topk():
+    # n=14, fraction=0.20 -> 2.8 -> k=ceil=3, so the flagged top-k is 3/14, NOT the requested 0.20.
+    # The random baseline mass must use that same k/n, else the normalization is inconsistent.
+    e = torch.arange(1.0, 15.0, dtype=torch.float64)  # n = 14
+    n, k = int(e.numel()), 3
+    out = oracle_regret(e, e, fraction=0.20)
+    assert out["captured_mass_random"] == pytest.approx((k / n) * float(e.sum()))
+    assert out["oracle_regret"] == pytest.approx(0.0)  # perfect score is exactly the oracle
+    # worst case stays within [0, 1] without relying on the clamp masking an inconsistent baseline
+    assert 0.0 <= oracle_regret(-e, e, fraction=0.20)["oracle_regret"] <= 1.0
+
+
+def test_capture_auc_honors_high_quantile():
+    # The high-error positive class width is set by high_quantile; for a non-oracle score the capture
+    # curve must depend on it (guards against the param being silently ignored).
+    torch.manual_seed(0)
+    score = TRUE_ERROR + 5.0 * torch.randn(20, dtype=torch.float64)
+    wide = capture_auc(score, TRUE_ERROR, fractions=FRACTIONS, high_quantile=0.50)["capture_auc"]
+    narrow = capture_auc(score, TRUE_ERROR, fractions=FRACTIONS, high_quantile=0.90)["capture_auc"]
+    assert wide != pytest.approx(narrow)
+
+
 def test_decision_quality_metrics_has_all_keys_and_snaps_reference():
     out = decision_quality_metrics(TRUE_ERROR, TRUE_ERROR, fractions=FRACTIONS,
                                    reference_fraction=0.18)

@@ -321,6 +321,20 @@ value depending on the per-band supervisor-vs-altitude Spearman and the partial 
 min-radius. The force-risk-vs-drift diagnostic is reported as a scope boundary (VESP-UQ ranks
 force-model risk, not long-horizon position error).
 
+### Scientific Integrity and Validation Guardrails
+
+To ensure that VESP-UQ's results are scientifically rigorous and structurally immune to data leakage or metric fabrication, a comprehensive integrity architecture (`vesp.uq.integrity`) surrounds all benchmarks:
+
+- **No-Orphan-Number Auditor (G1)**: Ensures every numeric claim in the generated reports traces back directly to a manifested CSV, preventing hand-entered or fabricated numbers.
+- **Split-Leakage Guard (G2)**: Enforces strict separation of training/validation/test splits, throwing an error if a variant-selection code path attempts to access held-out true error.
+- **Metric-Range Invariants (G3)**: Asserts mathematical bounds for all computed metrics (e.g. `capture_rate` in [0, 1]), loudly aborting on invalid scores.
+- **Negative Controls / Placebos (G4)**: Runs label-shuffled score variants alongside real selectors, mandating that they score at chance level to rule out indirect leakage.
+- **Reproducibility Gate (G5)**: Validates that multiple executions with the same seed yield byte-identical outputs.
+- **Forbidden-Claim Linter (G6)**: Automatically scans reports for unproven, overconfident phrasing (e.g., "guaranteed risk bound").
+- **Provenance Completeness (G7)**: Re-hashes generated files against `run_manifest.json` checksums to detect modified or untracked outputs.
+
+See [`docs/VESP_UQ_METHOD_AND_INTEGRITY_PLAN.md`](docs/VESP_UQ_METHOD_AND_INTEGRITY_PLAN.md) for detailed design and operational status.
+
 ## Experimental Questions
 
 The point of the framework is to make the MaxEnt-VESP idea **falsifiable**. Each

@@ -25,6 +25,7 @@ from vesp.uq.baselines import (
 from vesp.uq.data import split_uq_samples
 from vesp.uq.ensemble import nearest_neighbor_error_magnitude
 from vesp.uq.experiment import _load_samples
+from vesp.uq.integrity.split_guard import forbid_oracle
 from vesp.uq.plugin import VESPUQPlugin
 from vesp.uq.scoring import aggregate_trajectory_error
 
@@ -95,6 +96,8 @@ def assemble_baseline_scores(config: dict, plugin, trajectories, train_positions
     (when enabled on the plugin) the calibrated supervisor and domain-support scores.
     """
 
+    # G2: assert the true-error oracle never reaches the score-assembly seam (untagged inputs pass).
+    forbid_oracle(trajectories, train_positions, weights)
     low_alt = float(config.get("uq", {}).get("risk", {}).get("low_altitude_radius", 1.15))
     curve_positions = getattr(plugin, "val_positions", None)
     if curve_positions is None:

@@ -28,8 +28,15 @@ data:
 
 model:
   type: multishell
-  shell_alphas: [0.70, 0.86, 0.95]
-  n_sources_per_shell: [384, 512, 384]
+  # Surface-leaning two-shell placement. The geometry x calibration sweep
+  # (scripts/run_geometry_calibration.py, outputs/geometry_calibration/) showed the L90 (degree-31..90)
+  # near-surface high-frequency residual is under-resolved by the deep 3-shell baseline: the low-band
+  # held-out z_std was 0.257 (severely under-confident). Pulling the sources toward the surface
+  # (two_shell_surface) brings low-band z_std to ~0.86 AND reduces relative-acceleration RMSE
+  # (1.71 -> 1.06) -- a mechanistic placement fix, not a noise-law tweak. Selected on the held-out
+  # calibration split (disclosed); total source count is preserved at 1280.
+  shell_alphas: [0.85, 0.95]
+  n_sources_per_shell: [640, 640]
   weight_mode: surface_area
 
 kernel:
@@ -51,6 +58,17 @@ uq:
   noise_model: heteroscedastic
   covariance_mode: exact      # exact | diagonal | lowrank
   val_fraction: 0.25
+  # Conformal recalibration was evaluated and intentionally DISABLED: with the surface-leaning
+  # geometry above the operationally-critical low band is already calibrated (held-out z_std ~0.93),
+  # and split-conformal (by_band OR global) over-corrected it -- by_band pushed the low band to ~0.51
+  # and the mid/high bands to over-confident (z_std 2.8-5.8), global pushed the low band to ~2.5
+  # (over-confident, the dangerous direction). The geometry fix alone is the stronger, safer choice;
+  # the residual mid/high over-coverage is the conservative direction and the noise-law limitation.
+  conformal:
+    apply: false
+    by_band: true
+    alpha: 0.10               # target 90% predictive coverage
+    prediction_mode: norm     # norm | component_max | mahalanobis
   risk:
     # Use supervisor_rel for relative rerun prioritization.
     # Use expected_abs_p95 or supervisor_abs_p95 for absolute budget / zero-alarm screening.

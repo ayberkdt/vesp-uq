@@ -73,7 +73,7 @@ def _aggregate(rows) -> dict:
     out = {}
     for key, rs in groups.items():
         agg = {m: mean_std([r.get(m) for r in rs]) for m in _RANK_METRICS}
-        agg["n_seeds"] = len(rs)
+        agg["n_seeds"] = len(rs)  # type: ignore[assignment]
         out[key] = agg
     return out
 
@@ -120,14 +120,15 @@ def _summary_csv(agg: dict, partial_agg: dict, descriptors: dict, primary: float
             (sup_partial.get("mean") is not None and sup_partial["mean"] > 0.05)
             or (sup_sp is not None and alt_sp is not None and sup_sp > alt_sp + 0.02)
         )
-        rows.append([
+        row_vals = [
             band, fam, d.get("n_trajectories"), d.get("min_radius_low"), d.get("min_radius_high"),
             d.get("inclination_deg_low"), d.get("inclination_deg_high"),
             d.get("eccentricity_low"), d.get("eccentricity_high"),
             sup_sp, sup.get("capture_rate", {}).get("mean") if sup else None,
             sup.get("lift_over_random", {}).get("mean") if sup else None,
             sup_partial.get("mean"), best, best_val, adds,
-        ])
+        ]
+        rows.append([str(v) if v is not None else "" for v in row_vals])
     return _csv(rows)
 
 

@@ -52,7 +52,11 @@ from vesp.uq.domain_support import (
     median_angular_scale,
     median_knn_scale,
 )
-from vesp.uq.metrics import mahalanobis_squared, vector_calibration_metrics
+from vesp.uq.metrics import (
+    component_calibration_metrics,
+    mahalanobis_squared,
+    vector_calibration_metrics,
+)
 from vesp.uq.scoring import (
     TrajectoryScore,
     score_sigma_profile,
@@ -1642,8 +1646,15 @@ class VESPUQPlugin:
             mean_parts.append(rows["mean"].reshape(3, nb))
             epi_parts.append(rows["epistemic_variance"].reshape(3, nb))
             cov_blk = self._predict_covariance_block(pos_blk, operator=op_blk)
-            std_parts.append(cov_blk.std_components.transpose(0, 1))
-            cov_parts.append(cov_blk.covariance)
+            std3, cov3 = cov_blk.std_components, cov_blk.covariance
+            # Reflect the operational (opt-in) conformal scaling so the reported calibration matches
+            # what predict_uncertainty / predict_covariance_3x3 actually serve. No-op when apply=False;
+            # the posterior mean is never scaled (conformal recalibrates spread only).
+            if self.conformal_apply and self.conformal_calibration:
+                std3, _ = self._apply_conformal_to_std(std3, cov_blk.sigma, radius[a:b], pos_blk)
+                cov3 = self._apply_conformal_to_covariance(cov3, radius[a:b], pos_blk)
+            std_parts.append(std3.transpose(0, 1))
+            cov_parts.append(cov3)
             mean3_parts.append(cov_blk.mean_error)
         mean = torch.cat(mean_parts, dim=1).reshape(-1)
         std = torch.cat(std_parts, dim=1).reshape(-1)
@@ -1669,6 +1680,11 @@ class VESPUQPlugin:
             if int(point_mask.sum()) >= 10:
                 m.update(
                     vector_calibration_metrics(residual_vec[point_mask], covariance[point_mask])
+                )
+                m.update(
+                    component_calibration_metrics(
+                        residual_vec[point_mask], covariance[point_mask], positions[point_mask]
+                    )
                 )
             return m
 

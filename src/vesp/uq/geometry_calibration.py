@@ -119,7 +119,7 @@ def _aggregate(rows) -> dict:
         if metric_keys is None:
             metric_keys = [k for k in rs[0] if k not in ("band", "geometry", "seed", "weight_mode")]
         agg = {m: mean_std([r.get(m) for r in rs]) for m in metric_keys}
-        agg["n_seeds"] = len(rs)
+        agg["n_seeds"] = len(rs)  # type: ignore[assignment]
         agg["weight_mode"] = rs[0]["weight_mode"]
         out[key] = agg
     return out

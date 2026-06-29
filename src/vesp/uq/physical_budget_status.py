@@ -93,7 +93,7 @@ def physical_budget_status_run(config: dict, *, seed: int, tolerance_m_s2: float
     return {
         "band": band, "activated": True, "seed": int(seed),
         "tolerance_m_s2": float(tolerance_m_s2),
-        "scale_m_s2_per_model_unit": float(scale.scale_m_s2),
+        "scale_m_s2_per_model_unit": float(scale.scale_m_s2) if scale.scale_m_s2 is not None else float("nan"),
         "threshold_model_units": thr_model,
         "n_trajectories": n, "n_flagged": n_flagged, "flagged_fraction": fraction,
         "true_positives": tp, "false_positives": fp, "false_negatives": fn,
@@ -151,7 +151,7 @@ def _status_csv(rows: list[dict]) -> str:
             "operationally_activated"]
     out = [cols]
     for r in rows:
-        out.append([r.get(c) for c in cols])
+        out.append([str(r.get(c)) if r.get(c) is not None else "" for c in cols])
     return _csv(out)
 
 

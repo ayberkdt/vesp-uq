@@ -27,6 +27,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import torch
 
@@ -36,11 +37,24 @@ from vesp.uq.altitude_controlled import (
     partial_correlations,
     within_altitude_bin_ranking,
 )
-from vesp.uq.baselines import random_scores
-from vesp.uq.benchmarking import compare_baselines
+from vesp.uq.baselines import label_shuffled_scores, random_scores
+from vesp.uq.benchmarking import (
+    DECISION_METRIC_KEYS,
+    compare_baselines,
+    decision_quality_metrics,
+)
 from vesp.uq.experiment import _build_trajectories, _resolve_time_weighting, _time_weights
+from vesp.uq.integrity.metric_invariants import validate_metric, validate_row
+from vesp.uq.integrity.split_guard import Split, assert_no_test_access, reveal, tag
 from vesp.uq.io.run_artifacts import write_run_artifacts
 from vesp.uq.risk_baselines import assemble_baseline_scores, prepare, true_force_error
+from vesp.uq.significance import (
+    metric_auroc,
+    metric_capture,
+    metric_spearman,
+    paired_bootstrap_ci,
+    seed_paired_test,
+)
 
 # Canonical CLI selector name -> internal score key from assemble_baseline_scores (+ "random").
 SELECTOR_ALIASES = {
@@ -55,9 +69,11 @@ SELECTOR_ALIASES = {
     "altitude_residual_expected_ratio": "altitude_residual_expected_ratio",
     "altitude_residual_expected_delta": "altitude_residual_expected_delta",
     "calibrated_supervisor": "calibrated_supervisor",
+    "label_shuffled": "label_shuffled",
 }
 DEFAULT_SELECTORS = (
     "random",
+    "label_shuffled",
     "min_altitude",
     "low_altitude_exposure",
     "uncertainty_only",
@@ -65,6 +81,9 @@ DEFAULT_SELECTORS = (
     "knn_p95",
     "vespuq_supervisor",
 )
+# Negative controls (G4): these MUST score at chance. A violation trips the suite's placebo
+# assertion -- a continuous, built-in leakage / fabrication detector.
+PLACEBO_SELECTORS = ("random", "label_shuffled")
 DEFAULT_FRACTIONS = (0.02, 0.05, 0.10, 0.15, 0.20, 0.30, 0.40)
 
 # Metrics aggregated mean +/- std across seeds.
@@ -92,11 +111,27 @@ CALIB_AGG_METRICS = (
     "mean_radius",
     "nll",
     "crps",
+    # component-wise (radial vs tangential) calibration (WP-C)
+    "radial_z_std",
+    "tangential_z_std",
+    "radial_picp_90",
+    "tangential_picp_90",
+    "radial_winkler_90",
+    "tangential_winkler_90",
+    "calibration_error_90",
 )
 CALIB_REGIONS = ("all", "low", "mid", "high")
 # Altitude-controlled diagnostics are reported for these (alias) selectors when present.
 ALTITUDE_CONTROL_SELECTORS = ("vespuq_supervisor", "uncertainty_only", "domain_support", "min_altitude")
 MATCHED_PAIR_SELECTORS = ("vespuq_supervisor", "uncertainty_only", "domain_support")
+
+# Decision-quality metrics (WP-B) aggregated mean +/- std across seeds.
+DECISION_AGG_METRICS = DECISION_METRIC_KEYS
+# Significance (WP-A): test each candidate selector against the strong altitude comparator.
+SIGNIFICANCE_COMPARATOR = "min_altitude"
+SIGNIFICANCE_CANDIDATES = ("vespuq_supervisor", "uncertainty_only")
+SIGNIFICANCE_METRICS = ("spearman", "capture", "auroc")
+HIGH_ERROR_QUANTILE = 0.90
 
 
 # --------------------------------------------------------------------------------------------- #
@@ -123,9 +158,9 @@ def band_label(config: dict) -> str:
     """Residual-band label (``L60`` / ``L90`` / dataset stem) from the config data path."""
 
     path = str(config.get("data", {}).get("path") or "")
-    for tag in ("L120", "L90", "L60"):
-        if tag in path:
-            return tag
+    for tag_name in ("L120", "L90", "L60"):
+        if tag_name in path:
+            return tag_name
     run_name = str(config.get("output", {}).get("run_name") or "")
     if "L90" in run_name:
         return "L90"
@@ -200,7 +235,8 @@ def _nearest_fraction(fractions, target: float) -> float:
 # --------------------------------------------------------------------------------------------- #
 # per-(config, seed) compute
 # --------------------------------------------------------------------------------------------- #
-def compute_run(config: dict, *, seed: int, rerun_fractions, selectors) -> dict:
+def compute_run(config: dict, *, seed: int, rerun_fractions, selectors,
+                reference_fraction: float = 0.20) -> dict:
     """Fit one VESP-UQ layer at ``seed`` and evaluate calibration, ranking, budget, altitude control."""
 
     cfg = copy.deepcopy(config)
@@ -228,12 +264,23 @@ def compute_run(config: dict, *, seed: int, rerun_fractions, selectors) -> dict:
         trajectories, residuals=traj_info["residuals"], held=held,
         aggregator=aggregator, dtype=dtype, weights=weights,
     )
+    # G2: tag the true-error oracle (the held-out TEST labels) so any read of it during the
+    # score-assembly region below trips a SplitLeakageError. Scores must rank trajectories WITHOUT
+    # consulting the very error they are evaluated against.
+    te_tagged = tag(te, split=Split.TEST, role="oracle")
 
-    # ---- assemble selector scores ----
+    # ---- assemble selector scores (guarded: no oracle / test-label access) ----
     t0 = time.perf_counter()
-    all_scores = assemble_baseline_scores(cfg, plugin, trajectories, train.positions, weights=weights)
+    with assert_no_test_access():
+        all_scores = assemble_baseline_scores(cfg, plugin, trajectories, train.positions, weights=weights)
+        all_scores["random"] = random_scores(len(trajectories), seed=int(seed))
     score_seconds = time.perf_counter() - t0
-    all_scores["random"] = random_scores(len(trajectories), seed=int(seed))
+    # Reveal the oracle only now that scoring is done -- the remaining use (metric evaluation and the
+    # label-shuffled placebo) is the legitimate, post-selection consumption of the test labels.
+    te = reveal(te_tagged, allow_test=True)
+    # G4: the label-shuffled negative control -- the true error permuted (right marginal, no
+    # alignment). Built outside the guarded block precisely because it deliberately uses the oracle.
+    all_scores["label_shuffled"] = label_shuffled_scores(te, seed=int(seed))
 
     resolved: dict[str, torch.Tensor] = {}
     missing = []
@@ -263,7 +310,20 @@ def compute_run(config: dict, *, seed: int, rerun_fractions, selectors) -> dict:
                 "runtime_us_per_point": runtime_us_per_point,
             }
             row.update({k: metrics.get(k) for k in RANKING_AGG_METRICS})
+            validate_row(row, where=f"ranking[{band} seed={seed} {selector} f={frac}]")  # G3
             ranking_rows.append(row)
+
+    # ---- decision-quality metrics (WP-B): one row per selector, over the full budget grid ----
+    decision_rows = []
+    for selector, scores in resolved.items():
+        dq = decision_quality_metrics(
+            scores, te, fractions=rerun_fractions,
+            high_quantile=HIGH_ERROR_QUANTILE, reference_fraction=float(reference_fraction),
+        )
+        row = {"band": band, "seed": int(seed), "selector": selector}
+        row.update({k: dq.get(k) for k in DECISION_AGG_METRICS})
+        validate_row(row, where=f"decision[{band} seed={seed} {selector}]")  # G3
+        decision_rows.append(row)
 
     # ---- calibration rows ----
     calibration_rows = []
@@ -273,6 +333,7 @@ def compute_run(config: dict, *, seed: int, rerun_fractions, selectors) -> dict:
             continue
         row = {"band": band, "seed": int(seed), "region": region}
         row.update({k: band_metrics.get(k) for k in CALIB_AGG_METRICS})
+        validate_row(row, where=f"calibration[{band} seed={seed} {region}]")  # G3
         calibration_rows.append(row)
     calibration_scalars = {
         "band": band,
@@ -311,9 +372,14 @@ def compute_run(config: dict, *, seed: int, rerun_fractions, selectors) -> dict:
             "runtime_us_per_point": runtime_us_per_point,
         },
         "ranking_rows": ranking_rows,
+        "decision_rows": decision_rows,
         "calibration_rows": calibration_rows,
         "calibration_scalars": calibration_scalars,
         "altitude_controlled": {"within_bin": within, "partial": partial, "matched": matched},
+        # raw per-trajectory scores + true error, kept in memory for the WP-A trajectory bootstrap
+        # (never written to disk).
+        "scores": resolved,
+        "true_error": te,
     }
 
 
@@ -329,11 +395,107 @@ def aggregate_ranking(ranking_rows) -> dict:
         groups.setdefault(key, []).append(row)
     out = {}
     for key, rows in groups.items():
-        agg = {m: mean_std([r.get(m) for r in rows]) for m in RANKING_AGG_METRICS}
+        agg: dict[str, Any] = {m: mean_std([r.get(m) for r in rows]) for m in RANKING_AGG_METRICS}
         agg["runtime_ms_per_traj"] = mean_std([r.get("runtime_ms_per_traj") for r in rows])
         agg["n_seeds"] = len(rows)
+        for m in RANKING_AGG_METRICS:  # G3: aggregated means stay in-domain too
+            validate_metric(m, agg[m]["mean"], where=f"ranking_agg{key}")
         out[key] = agg
     return out
+
+
+def aggregate_decision(decision_rows) -> dict:
+    """Group decision-quality rows by (band, selector); aggregate each metric mean +/- std."""
+
+    groups: dict[tuple, list[dict]] = {}
+    for row in decision_rows:
+        groups.setdefault((row["band"], row["selector"]), []).append(row)
+    out = {}
+    for key, rows in groups.items():
+        agg: dict[str, Any] = {m: mean_std([r.get(m) for r in rows]) for m in DECISION_AGG_METRICS}
+        agg["n_seeds"] = len(rows)
+        for m in DECISION_AGG_METRICS:  # G3
+            validate_metric(m, agg[m]["mean"], where=f"decision_agg{key}")
+        out[key] = agg
+    return out
+
+
+def _per_seed_metric_series(runs, primary_fraction: float) -> dict:
+    """``{(band, selector): {metric: [value per seed, seed-ordered]}}`` for the significance tests.
+
+    Spearman and capture come from the ranking rows at the primary budget; AUROC from the decision
+    rows. Seeds are ordered so the candidate and comparator series align pairwise.
+    """
+
+    series: dict[tuple, dict[str, list]] = {}
+    for run in sorted(runs, key=lambda r: (r["band"], r["seed"])):
+        band = run["band"]
+        spearman_at = {}
+        capture_at = {}
+        for r in run["ranking_rows"]:
+            if abs(float(r["rerun_fraction"]) - primary_fraction) <= 1e-9:
+                spearman_at[r["selector"]] = r.get("spearman")
+                capture_at[r["selector"]] = r.get("capture_rate")
+        auroc_at = {r["selector"]: r.get("auroc") for r in run["decision_rows"]}
+        selectors = set(spearman_at) | set(auroc_at)
+        for sel in selectors:
+            d = series.setdefault((band, sel), {"spearman": [], "capture": [], "auroc": []})
+            d["spearman"].append(spearman_at.get(sel))
+            d["capture"].append(capture_at.get(sel))
+            d["auroc"].append(auroc_at.get(sel))
+    return series
+
+
+def compute_significance(runs, *, primary_fraction: float, n_boot: int = 2000, seed: int = 0) -> list[dict]:
+    """Test each candidate selector against the altitude comparator per band (WP-A).
+
+    For each (band, candidate, metric) it reports the across-seed Wilcoxon signed-rank test on the
+    per-seed metric differences AND a trajectory-level paired bootstrap (CI + p-value) on the first
+    seed of that band. Returns a flat list of result rows (one per band/candidate/metric).
+    """
+
+    series = _per_seed_metric_series(runs, primary_fraction)
+    first_run_by_band: dict[str, dict] = {}
+    for run in sorted(runs, key=lambda r: (r["band"], r["seed"])):
+        first_run_by_band.setdefault(run["band"], run)
+
+    metric_fns = {"spearman": metric_spearman,
+                  "capture": metric_capture(primary_fraction),
+                  "auroc": metric_auroc(HIGH_ERROR_QUANTILE)}
+
+    rows = []
+    bands = sorted({b for (b, _) in series})
+    for band in bands:
+        comparator_present = (band, SIGNIFICANCE_COMPARATOR) in series
+        for cand in SIGNIFICANCE_CANDIDATES:
+            if (band, cand) not in series or not comparator_present:
+                continue
+            for metric in SIGNIFICANCE_METRICS:
+                seed_test = seed_paired_test(
+                    series[(band, cand)][metric], series[(band, SIGNIFICANCE_COMPARATOR)][metric])
+                run0 = first_run_by_band[band]
+                boot = {"delta": None, "ci_low": None, "ci_high": None,
+                        "p_value": None, "significant": None}
+                if cand in run0["scores"] and SIGNIFICANCE_COMPARATOR in run0["scores"]:
+                    boot = paired_bootstrap_ci(
+                        run0["scores"][cand], run0["scores"][SIGNIFICANCE_COMPARATOR],
+                        run0["true_error"], metric=metric_fns[metric], n_boot=n_boot, seed=seed,
+                    )
+                rows.append({
+                    "band": band,
+                    "candidate": cand,
+                    "comparator": SIGNIFICANCE_COMPARATOR,
+                    "metric": metric,
+                    "seed_mean_delta": seed_test["mean_delta"],
+                    "seed_wilcoxon_p": seed_test["p_value"],
+                    "n_seeds": seed_test["n_seeds"],
+                    "boot_delta": boot.get("delta"),
+                    "boot_ci_low": boot.get("ci_low"),
+                    "boot_ci_high": boot.get("ci_high"),
+                    "boot_p": boot.get("p_value"),
+                    "boot_significant": boot.get("significant"),
+                })
+    return rows
 
 
 def aggregate_calibration(calibration_rows) -> dict:
@@ -344,8 +506,10 @@ def aggregate_calibration(calibration_rows) -> dict:
         groups.setdefault((row["band"], row["region"]), []).append(row)
     out = {}
     for key, rows in groups.items():
-        agg = {m: mean_std([r.get(m) for r in rows]) for m in CALIB_AGG_METRICS}
+        agg: dict[str, Any] = {m: mean_std([r.get(m) for r in rows]) for m in CALIB_AGG_METRICS}
         agg["n_seeds"] = len(rows)
+        for m in CALIB_AGG_METRICS:  # G3
+            validate_metric(m, agg[m]["mean"], where=f"calibration_agg{key}")
         out[key] = agg
     return out
 
@@ -399,6 +563,63 @@ def aggregate_altitude_controlled(runs) -> dict:
             }
         out[band] = {"partial": partial, "within_bin": within, "matched": matched}
     return out
+
+
+# --------------------------------------------------------------------------------------------- #
+# G4 -- negative-control (placebo) assertion
+# --------------------------------------------------------------------------------------------- #
+class PlaceboLeakageError(RuntimeError):
+    """Raised when a negative-control selector scores above chance (a G4 violation)."""
+
+
+# Chance-band half-width = k / sqrt(n_effective), floored so small smoke runs do not trip on
+# ordinary sampling noise. k ~ a few standard deviations of a null Spearman / capture estimate.
+PLACEBO_TOL_K = 3.5
+PLACEBO_TOL_FLOOR = 0.20
+
+
+def placebo_tolerance(n_effective: int, *, k: float = PLACEBO_TOL_K,
+                      floor: float = PLACEBO_TOL_FLOOR) -> float:
+    """Half-width of the at-chance band for a placebo metric at effective sample size ``n_effective``."""
+
+    n = max(1, int(n_effective))
+    return max(float(floor), float(k) / math.sqrt(n))
+
+
+def assert_placebos_at_chance(ranking_agg, *, primary_fraction: float, n_trajectories: int,
+                              n_seeds: int, placebos=PLACEBO_SELECTORS) -> dict:
+    """Assert every negative control scores at chance at the primary budget, per band (G4).
+
+    A placebo (``random``, ``label_shuffled``) has no real alignment with the true error, so its
+    aggregated Spearman must be ~0 and its aggregated capture rate must be ~``primary_fraction``
+    (the chance capture). A placebo that beats chance means scores are leaking alignment with the
+    oracle -- so a violation raises :class:`PlaceboLeakageError` and fails the run. Returns the
+    per-(band, placebo) checks (so the caller can log them); ``None``/non-finite aggregates are
+    treated as legitimately-missing and skipped.
+    """
+
+    tol = placebo_tolerance(int(n_trajectories) * max(1, int(n_seeds)))
+    checks: dict[tuple, dict] = {}
+    for (band, selector, frac), agg in ranking_agg.items():
+        if selector not in placebos or abs(float(frac) - float(primary_fraction)) > 1e-9:
+            continue
+        sp = agg["spearman"]["mean"]
+        cap = agg["capture_rate"]["mean"]
+        sp_ok = sp is None or not math.isfinite(float(sp)) or abs(float(sp)) <= tol
+        cap_ok = (cap is None or not math.isfinite(float(cap))
+                  or abs(float(cap) - float(primary_fraction)) <= tol)
+        checks[(band, selector)] = {"spearman": sp, "capture_rate": cap, "tol": tol,
+                                    "ok": bool(sp_ok and cap_ok)}
+        if not sp_ok:
+            raise PlaceboLeakageError(
+                f"placebo {selector!r} on {band} has Spearman {float(sp):.3f} (|.| > tol {tol:.3f}) "
+                "at the primary budget -- scores are leaking alignment with the true-error oracle")
+        if not cap_ok:
+            raise PlaceboLeakageError(
+                f"placebo {selector!r} on {band} captures {float(cap):.3f} vs chance "
+                f"{float(primary_fraction):.3f} (gap > tol {tol:.3f}) -- a negative control must "
+                "not beat chance")
+    return checks
 
 
 # --------------------------------------------------------------------------------------------- #
@@ -477,7 +698,100 @@ def _calibration_md(calib_agg, primary_fraction) -> str:
             f"{_pm(agg['picp_68'], '.3f')} | {_pm(agg['picp_90'], '.3f')} | "
             f"{_pm(agg['ellipsoid_picp_90'], '.3f')} |"
         )
+    lines += [
+        "",
+        "## Component-wise calibration (radial vs tangential, WP-C)",
+        "",
+        "The predictive error covariance split into the local radial vs tangential frame. The radial "
+        "component carries the altitude-dependent force-model error; a band mis-calibrated mainly in "
+        "the radial axis points to the noise law / geometry rather than an isotropic scale error. "
+        "`z_std` ~ 1 calibrated; Winkler is the interval score (lower is better).",
+        "",
+        "| band | region | radial z_std | tangential z_std | radial PICP90 | tangential PICP90 | "
+        "calib_err_90 |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for (band, region), agg in sorted(calib_agg.items()):
+        lines.append(
+            f"| {band} | {region} | {_pm(agg['radial_z_std'], '.3f')} | "
+            f"{_pm(agg['tangential_z_std'], '.3f')} | {_pm(agg['radial_picp_90'], '.3f')} | "
+            f"{_pm(agg['tangential_picp_90'], '.3f')} | {_pm(agg['calibration_error_90'], '.3f')} |"
+        )
     lines += ["", f"Primary rerun budget for ranking tables: {primary_fraction:.0%}.", ""]
+    return "\n".join(lines) + "\n"
+
+
+def _decision_summary_csv(decision_agg) -> str:
+    cols = ["band", "selector", "n_seeds"]
+    for m in DECISION_AGG_METRICS:
+        cols += [f"{m}_mean", f"{m}_std"]
+    rows = [cols]
+    for (band, selector), agg in sorted(decision_agg.items()):
+        row = [band, selector, agg["n_seeds"]]
+        for m in DECISION_AGG_METRICS:
+            row += [agg[m]["mean"], agg[m]["std"]]
+        rows.append(row)
+    return _csv(rows)
+
+
+def _decision_md(decision_agg, reference_fraction) -> str:
+    lines = [
+        "# VESP-UQ Decision Quality (Table C)",
+        "",
+        "Risk scores judged as the screening tool they are, against trajectory true FORCE-model "
+        f"error. AUROC/AUPRC detect the top-decile-error class (chance AUROC 0.5); capture-AUC is the "
+        "budget-integrated capture (normalized: 1.0 = matches the oracle at every budget); "
+        f"oracle-regret is the captured-error gap to the oracle at the {reference_fraction:.0%} budget "
+        "(0 = optimal, 1 = random). Mean +/- std across seeds.",
+        "",
+        "| band | selector | AUROC | AUPRC | capture-AUC (norm) | oracle-regret |",
+        "| --- | --- | ---: | ---: | ---: | ---: |",
+    ]
+    for (band, selector), agg in sorted(decision_agg.items()):
+        lines.append(
+            f"| {band} | {selector} | {_pm(agg['auroc'], '.3f')} | {_pm(agg['auprc'], '.3f')} | "
+            f"{_pm(agg['capture_auc_normalized'], '.3f')} | {_pm(agg['oracle_regret'], '.3f')} |"
+        )
+    lines += ["", ""]
+    return "\n".join(lines) + "\n"
+
+
+def _significance_csv(sig_rows) -> str:
+    cols = ["band", "candidate", "comparator", "metric", "n_seeds",
+            "seed_mean_delta", "seed_wilcoxon_p",
+            "boot_delta", "boot_ci_low", "boot_ci_high", "boot_p", "boot_significant"]
+    rows = [cols] + [[r.get(c) for c in cols] for r in sig_rows]
+    return _csv(rows)
+
+
+def _significance_md(sig_rows) -> str:
+    lines = [
+        "# VESP-UQ Significance Tests (WP-A)",
+        "",
+        "Each candidate selector vs the strong altitude comparator (`min_altitude`). `delta > 0` means "
+        "the candidate beats altitude on that metric. Two complementary tests: a Wilcoxon signed-rank "
+        "across seeds (exact), and a trajectory-level paired bootstrap (95% CI + p) on the first seed. "
+        "A claim of 'beats altitude' requires the bootstrap CI to exclude 0; otherwise the verdict is "
+        "'indistinguishable from altitude' and the contribution is the calibrated covariance (Table A).",
+        "",
+        "| band | candidate | metric | seed dDelta | Wilcoxon p | boot delta [95% CI] | boot p | verdict |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | --- |",
+    ]
+    for r in sig_rows:
+        ci = (f"{_fmt(r['boot_delta'], '.3f')} "
+              f"[{_fmt(r['boot_ci_low'], '.3f')}, {_fmt(r['boot_ci_high'], '.3f')}]")
+        verdict = ("beats altitude" if r.get("boot_significant") and (r.get("boot_delta") or 0) > 0
+                   else ("altitude beats" if r.get("boot_significant") else "indistinguishable"))
+        lines.append(
+            f"| {r['band']} | {r['candidate']} | {r['metric']} | {_fmt(r['seed_mean_delta'], '.3f')} | "
+            f"{_fmt(r['seed_wilcoxon_p'], '.3f')} | {ci} | {_fmt(r['boot_p'], '.3f')} | {verdict} |"
+        )
+    lines += [
+        "",
+        "The Wilcoxon p across only a few seeds has low power; the bootstrap CI on a full trajectory "
+        "ensemble is the primary significance evidence. Both target force-model error, not position error.",
+        "",
+    ]
     return "\n".join(lines) + "\n"
 
 
@@ -806,7 +1120,8 @@ def run_suite(
     for cfg in configs:
         for seed in seeds:
             t0 = time.perf_counter()
-            runs.append(compute_run(cfg, seed=seed, rerun_fractions=rerun_fractions, selectors=selectors))
+            runs.append(compute_run(cfg, seed=seed, rerun_fractions=rerun_fractions,
+                                    selectors=selectors, reference_fraction=primary_fraction))
             done += 1
             if progress:
                 elapsed = time.perf_counter() - suite_t0
@@ -816,12 +1131,21 @@ def run_suite(
                       flush=True)
 
     ranking_rows = [row for r in runs for row in r["ranking_rows"]]
+    decision_rows = [row for r in runs for row in r["decision_rows"]]
     calibration_rows = [row for r in runs for row in r["calibration_rows"]]
     ranking_agg = aggregate_ranking(ranking_rows)
+    decision_agg = aggregate_decision(decision_rows)
     calib_agg = aggregate_calibration(calibration_rows)
     ac_agg = aggregate_altitude_controlled(runs)
+    significance_rows = compute_significance(runs, primary_fraction=primary_fraction)
 
     first = runs[0]
+    # G4: every negative control must score at chance, or the run fails loudly (continuous
+    # leakage / fabrication detector). Raises PlaceboLeakageError on a violation.
+    placebo_checks = assert_placebos_at_chance(
+        ranking_agg, primary_fraction=primary_fraction,
+        n_trajectories=first["n_trajectories"], n_seeds=len(seeds),
+    )
     meta = {
         "bands": sorted({r["band"] for r in runs}),
         "seeds": seeds,
@@ -836,6 +1160,10 @@ def run_suite(
         "python": sys.version.split()[0],
         "platform": platform.platform(),
         "torch": torch.__version__,
+        "placebo_checks": [
+            {"band": band, "selector": selector, **payload}
+            for (band, selector), payload in sorted(placebo_checks.items())
+        ],
     }
 
     # plots first, so their paths can be registered as prewritten artifacts in the manifest.
@@ -863,6 +1191,10 @@ def run_suite(
             "benchmark_runs.csv": _benchmark_runs_csv(ranking_rows),
             "benchmark_summary.csv": _benchmark_summary_csv(ranking_agg, primary_fraction),
             "benchmark_summary.md": _summary_md(ranking_agg, ac_agg, primary_fraction, meta),
+            "decision_quality.csv": _decision_summary_csv(decision_agg),
+            "decision_quality.md": _decision_md(decision_agg, primary_fraction),
+            "significance_summary.csv": _significance_csv(significance_rows),
+            "significance_summary.md": _significance_md(significance_rows),
             "rerun_budget_curves.csv": _rerun_budget_csv(ranking_agg),
             "selector_ablation.csv": _selector_ablation_csv(ranking_agg, primary_fraction),
             "calibration_summary.csv": _calibration_summary_csv(calib_agg),
@@ -879,6 +1211,9 @@ def run_suite(
         "out_dir": str(out_dir),
         "meta": meta,
         "ranking_agg": ranking_agg,
+        "decision_agg": decision_agg,
         "calib_agg": calib_agg,
         "altitude_controlled": ac_agg,
+        "significance": significance_rows,
+        "placebo_checks": placebo_checks,
     }

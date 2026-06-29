@@ -1,6 +1,8 @@
 import argparse
 from pathlib import Path
 
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -43,10 +45,11 @@ def main():
     df = pd.concat([df_l60, df_l90], ignore_index=True)
 
     # Filter methods to keep only the required ones
-    keep_methods = ["random", "min_altitude", "knn_p95", "supervisor"]
+    keep_methods = ["random", "min_altitude", "uncertainty_only", "knn_p95", "supervisor"]
     method_labels = {
         "random": "Random",
-        "min_altitude": "Altitude-only",
+        "min_altitude": "Min-altitude",
+        "uncertainty_only": "Uncertainty Only",
         "knn_p95": "kNN-only",
         "supervisor": "VESP-UQ"
     }

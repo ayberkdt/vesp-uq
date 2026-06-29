@@ -23,6 +23,14 @@ FIGURE_STEMS = (
     "l60_l90_band_comparison",
 )
 
+# Paper-rigor figures (WP-B/C/D): consume the benchmark-suite + GP-baseline CSVs.
+PAPER_FIGURE_STEMS = (
+    "decision_capture_curve",
+    "component_calibration",
+    "significance_forest",
+    "uq_baseline_calibration",
+)
+
 _COLORS = {
     "all": "#4C78A8",
     "low": "#F58518",
@@ -91,6 +99,184 @@ def render_iac_figures(
     }
     atomic_write_json(out_dir / "figures_manifest.json", manifest)
     return manifest
+
+
+def render_paper_figures(
+    *,
+    benchmark_dir: str | Path = "outputs/benchmark_suite",
+    baseline_dir: str | Path = "outputs/uq_baseline_comparison",
+    out_dir: str | Path = "outputs/paper_figures",
+) -> dict[str, Any]:
+    """Render the WP-B/C/D paper figures from the benchmark-suite + GP-baseline CSVs.
+
+    Like :func:`render_iac_figures`, this is a presentation layer over reproducible run outputs: it
+    refits nothing. Missing CSVs render an explicit placeholder rather than crashing, so the call is
+    safe to wire into the pipeline before the heavy runs have populated every study.
+    """
+
+    benchmark_dir = Path(benchmark_dir)
+    baseline_dir = Path(baseline_dir)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    inputs = {
+        "rerun_budget_curves": benchmark_dir / "rerun_budget_curves.csv",
+        "calibration_summary": benchmark_dir / "calibration_summary.csv",
+        "significance_summary": benchmark_dir / "significance_summary.csv",
+        "uq_baseline_comparison": baseline_dir / "uq_baseline_comparison.csv",
+    }
+    figure_entries = [
+        _render_decision_capture_curve(inputs["rerun_budget_curves"], out_dir),
+        _render_component_calibration(inputs["calibration_summary"], out_dir),
+        _render_significance_forest(inputs["significance_summary"], out_dir),
+        _render_uq_baseline_calibration(inputs["uq_baseline_comparison"], out_dir),
+    ]
+    manifest = {
+        "figure_schema_version": 1,
+        "out_dir": str(out_dir),
+        "inputs": {name: str(path) for name, path in inputs.items()},
+        "figures": figure_entries,
+    }
+    atomic_write_json(out_dir / "paper_figures_manifest.json", manifest)
+    return manifest
+
+
+def _render_decision_capture_curve(path: Path, out_dir: Path) -> dict[str, Any]:
+    stem = "decision_capture_curve"
+    rows = _calibration_rows(path)
+    if not rows:
+        return _placeholder_figure(stem, out_dir, f"Missing rerun-budget data: {path}")
+    plt = _plt()
+    bands = sorted({r.get("band", "") for r in rows})
+    fig, axes = plt.subplots(1, max(1, len(bands)), figsize=(6.2 * max(1, len(bands)), 4.3),
+                             squeeze=False)
+    for bi, band in enumerate(bands):
+        ax = axes[0][bi]
+        selectors = sorted({r["selector"] for r in rows if r.get("band") == band})
+        for sel in selectors:
+            pts = sorted(
+                ((_float(r.get("rerun_fraction")), _float(r.get("capture_rate_mean")),
+                  _float(r.get("capture_rate_std")) or 0.0)
+                 for r in rows if r.get("band") == band and r.get("selector") == sel),
+                key=lambda t: (t[0] if t[0] is not None else 0.0),
+            )
+            xs = [p[0] for p in pts if p[0] is not None and p[1] is not None]
+            ys = [p[1] for p in pts if p[0] is not None and p[1] is not None]
+            es = [p[2] for p in pts if p[0] is not None and p[1] is not None]
+            if not xs:
+                continue
+            emph = sel in ("vespuq_supervisor", "supervisor")
+            ax.errorbar(xs, ys, yerr=es, marker="o", capsize=2,
+                        linewidth=2.4 if emph else 1.2, label=sel, zorder=3 if emph else 2)
+        ax.set_title(f"{band}: capture vs rerun budget")
+        ax.set_xlabel("Rerun fraction")
+        ax.set_ylabel("Capture rate")
+        ax.grid(True, alpha=0.25)
+        ax.legend(frameon=False, fontsize=7)
+    return _save_figure(fig, out_dir, stem, status="ok", source=path)
+
+
+def _render_component_calibration(path: Path, out_dir: Path) -> dict[str, Any]:
+    stem = "component_calibration"
+    rows = [r for r in _calibration_rows(path) if r.get("region") in ("low", "mid", "high")]
+    if not rows:
+        return _placeholder_figure(stem, out_dir, f"Missing component-calibration data: {path}")
+    plt = _plt()
+    bands = sorted({r.get("band", "") for r in rows})
+    order = {"low": 0, "mid": 1, "high": 2}
+    fig, axes = plt.subplots(1, max(1, len(bands)), figsize=(5.6 * max(1, len(bands)), 4.3),
+                             squeeze=False)
+    for bi, band in enumerate(bands):
+        ax = axes[0][bi]
+        regs = sorted({r["region"] for r in rows if r.get("band") == band}, key=lambda x: order.get(x, 9))
+        radial = [_float(next(r for r in rows if r.get("band") == band and r["region"] == reg)
+                         .get("radial_z_std_mean")) for reg in regs]
+        tang = [_float(next(r for r in rows if r.get("band") == band and r["region"] == reg)
+                       .get("tangential_z_std_mean")) for reg in regs]
+        x = range(len(regs))
+        ax.plot(list(x), radial, marker="o", linewidth=2, label="radial z_std", color="#D62728")
+        ax.plot(list(x), tang, marker="s", linewidth=2, label="tangential z_std", color="#4C78A8")
+        ax.axhline(1.0, color="#555555", linestyle="--", linewidth=1, label="calibrated (z_std=1)")
+        ax.set_xticks(list(x))
+        ax.set_xticklabels(regs)
+        ax.set_title(f"{band}: component calibration")
+        ax.set_ylabel("z_std (1 = calibrated)")
+        ax.grid(True, alpha=0.25)
+        ax.legend(frameon=False, fontsize=7)
+    return _save_figure(fig, out_dir, stem, status="ok", source=path)
+
+
+def _render_significance_forest(path: Path, out_dir: Path) -> dict[str, Any]:
+    stem = "significance_forest"
+    rows = [r for r in _calibration_rows(path)
+            if r.get("candidate") in ("vespuq_supervisor", "supervisor")]
+    if not rows:
+        return _placeholder_figure(stem, out_dir, f"Missing significance data: {path}")
+    labels, deltas, los, his = [], [], [], []
+    for r in rows:
+        d, lo, hi = _float(r.get("boot_delta")), _float(r.get("boot_ci_low")), _float(r.get("boot_ci_high"))
+        if d is None or lo is None or hi is None:
+            continue
+        labels.append(f"{r.get('band', '')} / {r.get('metric', '')}")
+        deltas.append(d)
+        los.append(d - lo)
+        his.append(hi - d)
+    if not labels:
+        return _placeholder_figure(stem, out_dir, f"Significance table lacks bootstrap CI columns: {path}")
+    plt = _plt()
+    fig, ax = plt.subplots(figsize=(6.8, 0.5 * len(labels) + 1.6))
+    y = range(len(labels))
+    # green when the CI excludes 0 with a positive edge (beats altitude), red when it excludes 0
+    # negatively (altitude beats), grey when the CI brackets 0 (indistinguishable).
+    colors = []
+    for i in range(len(labels)):
+        ci_low, ci_high = deltas[i] - los[i], deltas[i] + his[i]
+        colors.append("#54A24B" if ci_low > 0 else "#D62728" if ci_high < 0 else "#999999")
+    ax.errorbar(deltas, list(y), xerr=[los, his], fmt="none", capsize=3, ecolor="#333333", zorder=2)
+    for i in y:
+        ax.plot([deltas[i]], [i], "o", color=colors[i], zorder=3)
+    ax.axvline(0.0, color="#555555", linestyle="--", linewidth=1)
+    ax.set_yticks(list(y))
+    ax.set_yticklabels(labels, fontsize=8)
+    ax.set_xlabel("Bootstrap delta vs min_altitude (supervisor - altitude), 95% CI")
+    ax.set_title("Significance of the supervisor's ranking edge over altitude")
+    ax.grid(True, axis="x", alpha=0.25)
+    return _save_figure(fig, out_dir, stem, status="ok", source=path)
+
+
+def _render_uq_baseline_calibration(path: Path, out_dir: Path) -> dict[str, Any]:
+    stem = "uq_baseline_calibration"
+    rows = [r for r in _calibration_rows(path) if r.get("region") in ("low", "mid", "high")]
+    if not rows:
+        return _placeholder_figure(stem, out_dir, f"Missing GP-baseline comparison data: {path}")
+    plt = _plt()
+    bands = sorted({r.get("band", "") for r in rows})
+    order = {"low": 0, "mid": 1, "high": 2}
+    fig, axes = plt.subplots(1, max(1, len(bands)), figsize=(5.6 * max(1, len(bands)), 4.3),
+                             squeeze=False)
+    model_colors = {"vespuq": "#4C78A8", "gp": "#F58518"}
+    for bi, band in enumerate(bands):
+        ax = axes[0][bi]
+        regs = sorted({r["region"] for r in rows if r.get("band") == band}, key=lambda x: order.get(x, 9))
+        models = sorted({r["model"] for r in rows if r.get("band") == band})
+        width = 0.8 / max(1, len(models))
+        for mi, model in enumerate(models):
+            vals = []
+            for reg in regs:
+                match = next((r for r in rows if r.get("band") == band and r["region"] == reg
+                              and r["model"] == model), None)
+                vals.append(_float(match.get("z_std_mean")) if match else None)
+            xs = [j + mi * width for j in range(len(regs))]
+            ax.bar(xs, [v if v is not None else 0.0 for v in vals], width=width, label=model,
+                   color=model_colors.get(model))
+        ax.axhline(1.0, color="#555555", linestyle="--", linewidth=1, label="calibrated")
+        ax.set_xticks([j + 0.4 - width / 2 for j in range(len(regs))])
+        ax.set_xticklabels(regs)
+        ax.set_title(f"{band}: VESP-UQ vs GP (z_std)")
+        ax.set_ylabel("z_std (1 = calibrated)")
+        ax.grid(True, axis="y", alpha=0.25)
+        ax.legend(frameon=False, fontsize=7)
+    return _save_figure(fig, out_dir, stem, status="ok", source=path)
 
 
 def _render_reliability(path: Path, out_dir: Path) -> dict[str, Any]:

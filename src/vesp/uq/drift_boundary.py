@@ -61,6 +61,7 @@ def drift_boundary_run(config: dict, *, seed: int, families, n_orbits: int = 20,
             true_error[i] = aggregate_trajectory_error(nn.to(torch.float64), aggregator)
 
         dispersion = {k: torch.empty(len(paths), dtype=torch.float64) for k in HORIZON_PERIODS}
+        assert fam.period is not None and fam.initial_states is not None
         for i in range(len(paths)):
             T = float(fam.period[i])
             res = prop.propagate(fam.initial_states[i].numpy(), duration_s=max_k * T,

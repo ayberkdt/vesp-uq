@@ -49,6 +49,14 @@ uq:
   noise_model: heteroscedastic
   covariance_mode: exact      # exact | diagonal | lowrank
   val_fraction: 0.25
+  # Conformal recalibration was evaluated and intentionally DISABLED: the baseline geometry already
+  # calibrates the low band (held-out z_std ~1.16), so split-conformal added nothing globally (scale
+  # ~1) and over-widened it per band (z_std ~0.36). Left here as a documented, reproducible knob.
+  conformal:
+    apply: false
+    by_band: true
+    alpha: 0.10               # target 90% predictive coverage
+    prediction_mode: norm     # norm | component_max | mahalanobis
   risk:
     # Use supervisor_rel for relative rerun prioritization.
     # Use expected_abs_p95 or supervisor_abs_p95 for absolute budget / zero-alarm screening.

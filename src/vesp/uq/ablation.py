@@ -141,7 +141,7 @@ def _aggregate_variant(rows) -> dict:
         agg = {"val_spearman": mean_std([r["val_spearman"] for r in rs])}
         for k in _EVAL_METRICS:
             agg[f"test_{k}"] = mean_std([r[f"test_{k}"] for r in rs])
-        agg["n_seeds"] = len(rs)
+        agg["n_seeds"] = len(rs)  # type: ignore[assignment]
         out[key] = agg
     return out
 
@@ -351,7 +351,7 @@ def expanded_baselines_run(config: dict, *, seed: int, primary_fraction: float =
         best_model = fit_ridge_ranker(feats[train_idx], te[train_idx], lam=_RIDGE_LAMBDAS[0])
     candidates["learned_ridge_supervisor"] = apply_ridge_ranker(best_model, feats)
     selection["learned_ridge_lambda"] = best_lam
-    selection["learned_ridge_features"] = feat_names
+    selection["learned_ridge_features"] = feat_names  # type: ignore[assignment]
 
     rows = []
     for name, score in candidates.items():
@@ -369,7 +369,7 @@ def _aggregate_expanded(rows) -> dict:
     out = {}
     for key, rs in groups.items():
         agg = {f"test_{k}": mean_std([r[f"test_{k}"] for r in rs]) for k in _EVAL_METRICS}
-        agg["n_seeds"] = len(rs)
+        agg["n_seeds"] = len(rs)  # type: ignore[assignment]
         out[key] = agg
     return out
 
@@ -532,7 +532,7 @@ def _aggregate_learned(rows) -> dict:
         agg["beta_ee"] = mean_std([r["beta_ee"] for r in rs])
         agg["beta_alt"] = mean_std([r["beta_alt"] for r in rs])
         agg["beta_ood"] = mean_std([r["beta_ood"] for r in rs])
-        agg["n_seeds"] = len(rs)
+        agg["n_seeds"] = len(rs)  # type: ignore[assignment]
         out[key] = agg
     return out
 
@@ -593,7 +593,7 @@ def run_learned_supervisor(
             for cfg in configs for s in seeds]
     rows = [r for run in runs for r in run["rows"]]
     agg = _aggregate_learned(rows)
-    betas_by_band = {}
+    betas_by_band: dict[str, list] = {}
     for run in runs:
         betas_by_band.setdefault(run["band"], []).append(run["betas"])
 

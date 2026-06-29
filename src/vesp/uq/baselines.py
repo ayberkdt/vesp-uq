@@ -38,6 +38,28 @@ def random_scores(n: int, seed: int = 0) -> torch.Tensor:
     return torch.rand(int(n), generator=g, dtype=torch.float64)
 
 
+def label_shuffled_scores(true_error, seed: int = 0) -> torch.Tensor:
+    """Negative control (G4): the true-error values permuted by a seeded RNG.
+
+    This placebo has the *right marginal distribution* of scores but no alignment to the
+    trajectories, so it must score at chance (capture ~ rerun fraction, Spearman ~ 0). Unlike
+    :func:`random_scores` it shares the true error's heavy-tailed shape, making it a tighter
+    upper-bound-at-chance control: any continuous leakage or fabrication that aligns scores with the
+    oracle would push this placebo above chance and trip the suite's placebo assertion.
+
+    It deliberately consumes the oracle ``true_error`` -- it is a control, not a competing method --
+    so it must only ever be built *outside* a selection / scoring region (the suite constructs it
+    after the guarded score-assembly block, never inside it).
+    """
+
+    e = torch.as_tensor(true_error, dtype=torch.float64).reshape(-1)
+    if e.numel() == 0:
+        raise ValueError("true_error is empty")
+    g = torch.Generator().manual_seed(int(seed))
+    perm = torch.randperm(e.numel(), generator=g)
+    return e[perm].clone()
+
+
 def min_altitude_scores(trajectories) -> torch.Tensor:
     """Minimum-altitude heuristic: lower periapsis -> higher risk.
 
@@ -162,8 +184,10 @@ def vespuq_scores(plugin, trajectories, scoring: str, weights=None) -> torch.Ten
     ``supervisor_rel_p95`` for the full supervisor); unsupported modes raise a clear ``ValueError``.
     """
 
+    from vesp.uq.integrity.split_guard import forbid_oracle
     from vesp.uq.scoring import SCORING_FUNCTIONS
 
+    forbid_oracle(trajectories, weights)  # G2: a risk score must never consume the true-error oracle
     if scoring not in SCORING_FUNCTIONS:
         raise ValueError(f"unsupported scoring {scoring!r}; must be one of {SCORING_FUNCTIONS}")
     if not hasattr(plugin, "score_ensemble"):

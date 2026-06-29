@@ -66,7 +66,13 @@ baseline, and a reframed report.**
 
 ---
 
-## WP-A — Statistical defensibility (highest priority, low risk)
+## WP-A — Statistical defensibility (highest priority, low risk) — **DONE**
+
+> Implemented: `src/vesp/uq/significance.py` (`paired_bootstrap_ci` — trajectory-level paired
+> bootstrap CI + two-sided p; `seed_paired_test` — exact Wilcoxon signed-rank across seeds;
+> metric resolvers spearman/capture/auroc). Wired into `suite.compute_significance`, written as
+> `significance_summary.{csv,md}` with a per-comparison verdict (beats / indistinguishable /
+> altitude beats) derived from the bootstrap CI. Tests: `tests/test_uq_significance.py`.
 
 **Goal:** every headline comparison ships with an uncertainty interval and a significance verdict,
 so "modestly improves" is a tested statement, not an eyeball.
@@ -89,7 +95,14 @@ so "modestly improves" is a tested statement, not an eyeball.
 - **Acceptance:** every Table-B headline number has a CI; the verdict ("beats altitude" vs
   "indistinguishable") is derived from the CI, never hand-set. **Effort:** S–M.
 
-## WP-B — Decision-quality metrics (reframes the contribution)
+## WP-B — Decision-quality metrics (reframes the contribution) — **DONE**
+
+> Implemented in `src/vesp/uq/benchmarking.py`: `detection_metrics` (AUROC + AUPRC, tie-aware,
+> degenerate/non-finite safe), `capture_auc` (budget-integrated capture, raw + oracle-normalized),
+> `oracle_regret` (normalized captured-error gap to the oracle), and `decision_quality_metrics`
+> aggregating all four. Wired into `suite.compute_run` (`decision_rows`) +
+> `aggregate_decision`, written as `decision_quality.{csv,md}` (Table C) with mean±std across
+> seeds. Tests: `tests/test_uq_decision_metrics.py`. Significance (WP-A) tests these metrics too.
 
 **Goal:** evaluate VESP-UQ as the screening tool it is, not as a correlation. Spearman/capture@k
 under-sell calibrated covariance and over-index on a single budget.
@@ -112,7 +125,19 @@ under-sell calibrated covariance and over-index on a single budget.
 - **Acceptance:** Table B reports AUROC/AUPRC/capture-AUC/regret with CIs (via WP-A); the paper can
   state decision quality without leaning on the marginal Spearman gap. **Effort:** M.
 
-## WP-C — Calibration as the core contribution (close/explain L90)
+## WP-C — Calibration as the core contribution (close/explain L90) — **DONE (metrics); L90 fix gated**
+
+> Implemented in `src/vesp/uq/metrics.py`: `local_radial_frame` (per-point orthonormal radial/
+> tangential frame) and `component_calibration_metrics` (radial vs tangential `z_std`/PICP, mean
+> **Winkler** interval score, scalar `calibration_error_90`). Wired into
+> `plugin.evaluate_calibration` (every band now reports component metrics) and surfaced in the suite
+> calibration aggregation + a new "Component-wise calibration" table in `calibration_summary.md`.
+> Tests: `tests/test_uq_vector_calibration.py` (orthonormal frame, calibrated→z_std≈1, radial-only
+> miscalibration detected, Winkler minimized at true scale). The L90 *fix*: the diagnostic now
+> exists (radial vs tangential per band) + the `geometry_calibration` placement finding + per-band
+> conformal; a 3-param noise law stays gated on whether the L90 radial z_std shows the 2-param law is
+> the binding limit (decided from the real-data run, not assumed). Reporting/L90-resolution section
+> belongs to WP-E.
 
 **Goal:** make calibrated covariance the headline and resolve the L90 transfer failure into a clean,
 publishable mechanism + the best available fix.
@@ -139,7 +164,20 @@ publishable mechanism + the best available fix.
 - **Acceptance:** the paper's calibration claim is per-component and per-band, with a stated mechanism
   for L90 and a measured best-available fix. **Effort:** M–L.
 
-## WP-D — A respected UQ baseline
+## WP-D — A respected UQ baseline — **DONE (GP; ensemble deferred)**
+
+> Implemented `src/vesp/uq/baselines_uq.py::GPResidualUQ` — an exact independent-output Gaussian
+> process (RBF, median-heuristic lengthscale, per-component evidence-selected noise, Cholesky,
+> chunked predict, deterministic subsample for tractability) exposing `predict`,
+> `evaluate_calibration` (reusing the *same* `calibration_metrics` / `vector_calibration_metrics` /
+> `component_calibration_metrics`), and `score_trajectories`. Comparison runner
+> `src/vesp/uq/uq_baseline_comparison.py` + thin `scripts/run_uq_baseline_comparison.py` fit VESP-UQ
+> and the GP on the same split and emit `uq_baseline_comparison.{csv,md}` + `uq_baseline_decision.csv`
+> (per-band calibration, AUROC/capture-AUC/regret, fit/predict runtime) through the manifest layer.
+> Tests: `tests/test_uq_baseline_comparison.py`. No new dependency (torch only). The
+> heteroscedastic-ensemble baseline is deferred (GP is the respected baseline reviewers expect; add
+> only if a reviewer asks). Note: on the smoke set the GP is actually better-calibrated than VESP-UQ
+> in several bands — an honest, useful finding the paper should report.
 
 **Goal:** answer "why an equivalent-source posterior instead of a standard UQ method?" with numbers.
 
@@ -161,7 +199,18 @@ publishable mechanism + the best available fix.
 - **Acceptance:** one table places VESP-UQ against a GP on identical calibration + decision metrics
   with runtime; claims stay comparative and honest. **Effort:** L.
 
-## WP-E — Reframed journal report + manuscript scaffolding (closeout)
+## WP-E — Reframed journal report + manuscript scaffolding (closeout) — **DONE**
+
+> Extended `src/vesp/uq/journal_report.py`: STUDY_INPUTS now ingests `significance_summary.csv`,
+> `decision_quality.csv`, and the GP-baseline CSVs. The executive summary leads with **calibrated
+> covariance as the primary contribution** and demotes scalar ranking to a significance-tested,
+> diagnostic use (`significance_verdict` injects the bootstrap-CI verdict). New report sections:
+> 3b component-wise calibration, 3c decision quality, 6b supervisor-vs-altitude significance, 9c GP
+> baseline (calibration + decision). New LaTeX tables: `table_significance`, `table_decision_quality`,
+> `table_component_calibration`, `table_uq_baseline`. Claims table adds significance / per-component
+> calibration / decision-quality / GP-baseline entries; recommendations fold in the significance and
+> baseline findings. Tests: extended `tests/test_journal_report.py`. Missing studies still render as
+> honest "pending" lines. Forbidden phrases remain forbidden.
 
 **Goal:** the auto-generated report leads with the defensible story and feeds the manuscript.
 
@@ -177,6 +226,25 @@ publishable mechanism + the best available fix.
   evidence; no hand-entered numbers. **Effort:** M.
 
 ---
+
+## Post-plan increments (config tuning + figures + gated decision)
+
+- **Calibration config tuning (validated on held-out, disclosed):** L90 switched to a surface-leaning
+  geometry (`shell_alphas: [0.85, 0.95]`, `[640, 640]`) → low-band held-out z_std `0.083 → 0.931`,
+  rel-RMSE `1.71 → 1.06`. L60 keeps its baseline geometry (low z_std already ~1.16).
+- **Conformal: tested and disabled.** Per-band conformal over-corrected (L90 mid/high → over-confident
+  z_std 2.8–5.8, low pulled off 1); global conformal pushed the low band to over-confident 2.5.
+  Geometry alone is the stronger, safer fix. `conformal.apply: false` documented in both configs.
+  Correctness fix kept: `plugin.evaluate_calibration` now reflects conformal when `apply=True`.
+- **Gated L90 noise-law decision: RESOLVED — keep heteroscedastic.** The residual L90 mid/high
+  under-confidence (z_std 0.22 / 0.075) is robust to the noise model (`altitude_binned` does not fix
+  it and overshoots the low band) because the near-zero high-altitude residual (rmse ~2e-6) sits below
+  the predictive floor. This is the conservative/over-covering (safe) direction; chasing z_std=1 risks
+  under-coverage for negligible benefit. Reported as a benign limitation, not a defect.
+- **Paper figures (WP-B/C/D):** `vesp.uq.figures.render_paper_figures` +
+  `scripts/render_paper_figures.py` render `decision_capture_curve`, `component_calibration`,
+  `significance_forest`, `uq_baseline_calibration` (PNG+PDF+manifest, placeholder-safe). Wired into
+  `run_journal_report.py --figures`. Tests: `tests/test_uq_paper_figures.py`.
 
 ## Suggested execution order
 

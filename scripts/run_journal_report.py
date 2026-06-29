@@ -20,6 +20,8 @@ def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description="Generate the VESP-UQ journal validation report (WP12).")
     parser.add_argument("--outputs", default="outputs/", help="root containing the study output dirs")
     parser.add_argument("--out", default=None, help="where to write the report (default: --outputs root)")
+    parser.add_argument("--figures", action="store_true",
+                        help="also render the WP-B/C/D paper figures into <out>/figures")
     args = parser.parse_args(argv)
 
     root = Path(args.outputs)
@@ -32,6 +34,16 @@ def main(argv=None) -> None:
         print(f"pending studies: {result['missing']}")
     out_dir = Path(args.out) if args.out else root
     print(f"saved_journal_report: {out_dir / 'journal_validation_report.md'}")
+    if args.figures:
+        from vesp.uq.figures import render_paper_figures
+
+        manifest = render_paper_figures(
+            benchmark_dir=root / "benchmark_suite",
+            baseline_dir=root / "uq_baseline_comparison",
+            out_dir=out_dir / "figures",
+        )
+        ok = sum(1 for f in manifest["figures"] if f.get("status") == "ok")
+        print(f"saved_paper_figures: {ok}/{len(manifest['figures'])} rendered -> {out_dir / 'figures'}")
 
 
 if __name__ == "__main__":

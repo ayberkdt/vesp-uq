@@ -118,7 +118,7 @@ def _aggregate(rows, key: str) -> dict:
     out = {}
     for gk, rs in groups.items():
         agg = {m: mean_std([r[m] for r in rs]) for m in _METRICS}
-        agg["n_seeds"] = len(rs)
+        agg["n_seeds"] = len(rs)  # type: ignore[assignment]
         out[gk] = agg
     return out
 

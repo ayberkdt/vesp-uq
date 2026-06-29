@@ -1,0 +1,13 @@
+{
+  "_provenance": {
+    "config_path": "D:\\Masaustu\\Physics Informed NN\\MaxEnt - VESP Net\\configs\\vespuq\\vespuq_smoke.yaml",
+    "generated_at": "2026-06-29T23:02:18Z",
+    "seed": 0,
+    "tool": "run_uq_baseline_comparison"
+  },
+  "git_commit": "65cb5e3969b8c698740df50fd4ed9cfd45aec5be",
+  "seeds": [
+    0
+  ],
+  "true_force_error_source": "nn_oracle_heldout"
+}

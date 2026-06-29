@@ -26,8 +26,13 @@ from vesp.uq.suite import git_commit_hash
 STUDY_INPUTS = {
     "ranking": ("benchmark_suite/benchmark_summary.csv", "run_vespuq_benchmark_suite.py"),
     "calibration": ("benchmark_suite/calibration_summary.csv", "run_vespuq_benchmark_suite.py"),
+    "decision": ("benchmark_suite/decision_quality.csv", "run_vespuq_benchmark_suite.py"),
+    "significance": ("benchmark_suite/significance_summary.csv", "run_vespuq_benchmark_suite.py"),
     "budget": ("benchmark_suite/rerun_budget_curves.csv", "run_vespuq_benchmark_suite.py"),
     "partial": ("benchmark_suite/partial_correlation_summary.csv", "run_vespuq_benchmark_suite.py"),
+    "uq_baseline": ("uq_baseline_comparison/uq_baseline_comparison.csv", "run_uq_baseline_comparison.py"),
+    "uq_baseline_decision": ("uq_baseline_comparison/uq_baseline_decision.csv",
+                             "run_uq_baseline_comparison.py"),
     "score_ablation": ("score_ablation/score_variant_ablation.csv", "run_score_ablation.py"),
     "expanded": ("expanded_baselines/expanded_baselines.csv", "run_expanded_baselines.py"),
     "learned_supervisor": ("learned_supervisor/learned_supervisor.csv", "run_learned_supervisor.py"),
@@ -119,6 +124,34 @@ def verdict_from_ranking(ranking_rows, partial_rows) -> dict:
     return {"overall": overall, "bands": per_band, "partial_by_band": partial_by}
 
 
+def significance_verdict(sig_rows) -> dict:
+    """Whether the supervisor's edge over altitude is statistically significant (WP-A bootstrap CI).
+
+    Reads ``significance_summary.csv``; for the ``vespuq_supervisor`` candidate, a metric "wins" when
+    the trajectory-level bootstrap CI excludes 0 with a positive delta. Returns per-band winning
+    metrics and an overall flag, used to keep the executive summary's ranking language honest.
+    """
+
+    if not sig_rows:
+        return {"available": False, "bands": {}, "any_significant": False}
+    bands: dict[str, dict] = {}
+    for r in sig_rows:
+        if r.get("candidate") not in ("vespuq_supervisor", "supervisor"):
+            continue
+        band = r.get("band", "?")
+        delta = _f(r, "boot_delta")
+        lo, hi = _f(r, "boot_ci_low"), _f(r, "boot_ci_high")
+        sig = lo is not None and hi is not None and (lo > 0.0 or hi < 0.0)
+        wins = bool(sig and delta is not None and delta > 0.0)
+        entry = bands.setdefault(band, {"wins": [], "loses": []})
+        if wins:
+            entry["wins"].append(r.get("metric"))
+        elif sig and delta is not None and delta < 0.0:
+            entry["loses"].append(r.get("metric"))
+    any_sig = any(b["wins"] for b in bands.values())
+    return {"available": True, "bands": bands, "any_significant": any_sig}
+
+
 _VERDICT_TEXT = {
     "consistent": "VESP-UQ provides consistent incremental value beyond altitude-only in the tested setting.",
     "mixed": "VESP-UQ matches or modestly improves upon altitude-based heuristics depending on band, "
@@ -198,6 +231,38 @@ def build_latex_tables(data: dict) -> dict[str, str]:
         caption="Source-geometry sensitivity: held-out reconstruction and calibration vs source count.",
         label="tab:source_sensitivity",
         fmt={"rel_accel_rmse_mean": ".3f", "z_std_mean": ".3f", "picp_90_mean": ".3f"})
+    # significance (WP-A)
+    sig = data.get("significance") or []
+    tables["table_significance.tex"] = _latex_table(
+        sig, ["band", "candidate", "metric", "boot_delta", "boot_ci_low", "boot_ci_high", "boot_p"],
+        caption="Significance of the supervisor's edge over altitude: trajectory bootstrap "
+                "difference with 95\\% CI and p-value.",
+        label="tab:significance",
+        fmt={"boot_delta": ".3f", "boot_ci_low": ".3f", "boot_ci_high": ".3f", "boot_p": ".3f"})
+    # decision quality (WP-B)
+    dec = data.get("decision") or []
+    tables["table_decision_quality.tex"] = _latex_table(
+        dec, ["band", "selector", "auroc_mean", "auprc_mean", "capture_auc_normalized_mean",
+              "oracle_regret_mean"],
+        caption="Decision quality of trajectory screening (mean across seeds).",
+        label="tab:decision_quality",
+        fmt={"auroc_mean": ".3f", "auprc_mean": ".3f", "capture_auc_normalized_mean": ".3f",
+             "oracle_regret_mean": ".3f"})
+    # component-wise calibration (WP-C) -- reuses the calibration CSV's radial/tangential columns
+    tables["table_component_calibration.tex"] = _latex_table(
+        calib, ["band", "region", "radial_z_std_mean", "tangential_z_std_mean",
+                "calibration_error_90_mean"],
+        caption="Component-wise (radial vs tangential) calibration of the predictive covariance.",
+        label="tab:component_calibration",
+        fmt={"radial_z_std_mean": ".3f", "tangential_z_std_mean": ".3f",
+             "calibration_error_90_mean": ".3f"})
+    # GP UQ baseline comparison (WP-D)
+    uqb = data.get("uq_baseline") or []
+    tables["table_uq_baseline.tex"] = _latex_table(
+        uqb, ["band", "region", "model", "z_std_mean", "picp_90_mean", "radial_z_std_mean"],
+        caption="VESP-UQ vs a Gaussian-process UQ baseline: per-band calibration.",
+        label="tab:uq_baseline",
+        fmt={"z_std_mean": ".3f", "picp_90_mean": ".3f", "radial_z_std_mean": ".3f"})
     return tables
 
 
@@ -222,10 +287,40 @@ def build_claims(data: dict, verdict: dict) -> list[dict]:
                    "pending": "future work"}[ov],
         "evidence": "benchmark_summary.csv, partial_correlation_summary.csv",
     })
+    sig = significance_verdict(data.get("significance"))
+    if not sig["available"]:
+        sig_status = "future work"
+    elif sig["any_significant"]:
+        sig_status = "supported"
+    else:
+        sig_status = "not supported (indistinguishable from altitude)"
+    claims.append({
+        "claim": "The supervisor's ranking edge over altitude is statistically significant",
+        "status": sig_status,
+        "evidence": "significance_summary.csv (trajectory bootstrap CI + seed Wilcoxon)",
+    })
     claims.append({
         "claim": "VESP-UQ provides calibrated local force-error covariance",
         "status": status(data.get("calibration") or data.get("reliability")),
         "evidence": "calibration_summary.csv, calibration_reliability.csv",
+    })
+    has_component = bool(data.get("calibration") and any(
+        isinstance(r, dict) and r.get("radial_z_std_mean") not in (None, "")
+        for r in data["calibration"]))
+    claims.append({
+        "claim": "The predictive covariance is calibrated per component (radial vs tangential)",
+        "status": status(has_component),
+        "evidence": "calibration_summary.csv (radial/tangential z_std, Winkler, calibration error)",
+    })
+    claims.append({
+        "claim": "Screening is reported with decision-quality metrics (AUROC / capture-AUC / regret)",
+        "status": status(data.get("decision")),
+        "evidence": "decision_quality.csv",
+    })
+    claims.append({
+        "claim": "VESP-UQ is benchmarked head-to-head against a Gaussian-process UQ baseline",
+        "status": status(data.get("uq_baseline")),
+        "evidence": "uq_baseline_comparison.csv, uq_baseline_decision.csv",
     })
     claims.append({
         "claim": "Results are robust across seeds and residual bands (L60/L90)",
@@ -279,7 +374,7 @@ def build_claims(data: dict, verdict: dict) -> list[dict]:
 # --------------------------------------------------------------------------------------------- #
 # report
 # --------------------------------------------------------------------------------------------- #
-def _availability(outputs_root: Path) -> dict:
+def _availability(outputs_root: Path) -> tuple[dict, dict]:
     data, missing = {}, {}
     for key, (rel, script) in STUDY_INPUTS.items():
         rows = _read_csv(outputs_root / rel)
@@ -301,6 +396,7 @@ def build_report(outputs_root: Path) -> dict:
 
     data, missing = _availability(outputs_root)
     verdict = verdict_from_ranking(data.get("ranking"), data.get("partial"))
+    sig = significance_verdict(data.get("significance"))
     claims = build_claims(data, verdict)
     tables = build_latex_tables(data)
 
@@ -342,7 +438,40 @@ def build_report(outputs_root: Path) -> dict:
             lines.append("| " + " | ".join(_cell(r.get(c, "")) for c in cols) + " |")
         return "\n".join(lines) + "\n"
 
+    def component_calib_body(rows):
+        lines = ["| band | region | radial z_std | tangential z_std | calib_err_90 |",
+                 "| --- | --- | ---: | ---: | ---: |"]
+        for r in rows:
+            lines.append(f"| {r['band']} | {r['region']} | {_fmt(_f(r, 'radial_z_std_mean'))} | "
+                         f"{_fmt(_f(r, 'tangential_z_std_mean'))} | "
+                         f"{_fmt(_f(r, 'calibration_error_90_mean'))} |")
+        return "\n".join(lines) + "\n"
+
+    def significance_body(rows):
+        lines = ["| band | candidate | metric | boot delta [95% CI] | boot p | verdict |",
+                 "| --- | --- | --- | ---: | ---: | --- |"]
+        for r in rows:
+            delta, lo, hi = _f(r, "boot_delta"), _f(r, "boot_ci_low"), _f(r, "boot_ci_high")
+            sigf = lo is not None and hi is not None and (lo > 0.0 or hi < 0.0)
+            verdict_txt = ("beats altitude" if sigf and delta and delta > 0 else
+                           "altitude beats" if sigf else "indistinguishable")
+            ci = f"{_fmt(delta)} [{_fmt(lo)}, {_fmt(hi)}]"
+            lines.append(f"| {r['band']} | {r.get('candidate', '')} | {r.get('metric', '')} | {ci} | "
+                         f"{_fmt(_f(r, 'boot_p'))} | {verdict_txt} |")
+        return "\n".join(lines) + "\n"
+
     verdict_band = ", ".join(f"{b}: {v}" for b, v in verdict.get("bands", {}).items()) or "n/a"
+    if not sig["available"]:
+        sig_line = "_Significance pending: run the benchmark suite to populate the bootstrap CIs._"
+    elif sig["any_significant"]:
+        winners = ", ".join(f"{b} ({'/'.join(m for m in v['wins'] if m)})"
+                            for b, v in sig["bands"].items() if v["wins"])
+        sig_line = ("**Significance (WP-A):** the supervisor's edge over altitude is statistically "
+                    f"significant (trajectory bootstrap CI excludes 0) for: {winners}.")
+    else:
+        sig_line = ("**Significance (WP-A):** no metric/band shows a supervisor edge over altitude "
+                    "whose bootstrap CI excludes 0 -- the scalar ranking is statistically "
+                    "indistinguishable from altitude; the contribution is the calibrated covariance.")
     lines = [
         "# VESP-UQ Journal Validation Report",
         "",
@@ -351,9 +480,16 @@ def build_report(outputs_root: Path) -> dict:
         "",
         "## 1. Executive summary",
         "",
-        f"**Verdict (Phase-14 rule):** {_VERDICT_TEXT[verdict['overall']]}",
+        "**Primary contribution:** a calibrated, altitude-aware *local force-error covariance* "
+        "(per-band and per-component; Tables A / 3b-3c) that altitude or kNN heuristics cannot "
+        "produce. Scalar trajectory ranking is a secondary, diagnostic use and is reported with "
+        "significance testing rather than asserted.",
         "",
-        f"Per-band: {verdict_band}.",
+        f"**Ranking verdict (Phase-14 rule):** {_VERDICT_TEXT[verdict['overall']]}",
+        "",
+        sig_line,
+        "",
+        f"Per-band ranking: {verdict_band}.",
         "",
         "## 2. What changed compared to the current paper",
         "",
@@ -370,6 +506,25 @@ def build_report(outputs_root: Path) -> dict:
         _section_status("ranking", data, missing, ranking_body),
         "",
         _section_status("calibration", data, missing, calib_body),
+        "",
+        "### 3b. Component-wise calibration (radial vs tangential, WP-C)",
+        "",
+        "The predictive covariance split into the local radial vs tangential frame. The radial axis "
+        "carries the altitude-dependent force-model error; radial-dominated miscalibration points to "
+        "the noise law / geometry rather than an isotropic scale error. `z_std` ~ 1 is calibrated.",
+        "",
+        _section_status("calibration", data, missing, component_calib_body),
+        "",
+        "### 3c. Decision quality of screening (AUROC / capture-AUC / regret, WP-B)",
+        "",
+        "Risk scores judged as the screening tool they are: AUROC/AUPRC for high-error detection, "
+        "budget-integrated capture (oracle-normalized), and oracle-regret at the primary budget "
+        "(0 = optimal). Mean across seeds.",
+        "",
+        _section_status("decision", data, missing,
+                        lambda rows: passthrough(rows, ["band", "selector", "auroc_mean",
+                                                        "capture_auc_normalized_mean",
+                                                        "oracle_regret_mean"])),
         "",
         "## 4. Rerun-budget curves",
         "",
@@ -394,6 +549,14 @@ def build_report(outputs_root: Path) -> dict:
         "",
         _section_status("partial", data, missing, partial_body),
         "",
+        "### 6b. Significance: supervisor vs altitude (WP-A)",
+        "",
+        "Trajectory-level paired bootstrap (95% CI + p) of the supervisor minus `min_altitude` on "
+        "each metric. A claim of 'beats altitude' requires the CI to exclude 0; otherwise the scalar "
+        "ranking is indistinguishable from altitude and the contribution is the calibrated covariance.",
+        "",
+        _section_status("significance", data, missing, significance_body),
+        "",
         "## 7. Score ablation",
         "",
         _section_status("score_ablation", data, missing,
@@ -417,6 +580,21 @@ def build_report(outputs_root: Path) -> dict:
         _section_status("geometry", data, missing,
                         lambda rows: passthrough(rows, ["band", "geometry", "rel_accel_rmse_mean",
                                                         "low_z_std_mean", "low_picp_90_mean"])),
+        "",
+        "### 9c. VESP-UQ vs Gaussian-process UQ baseline (WP-D)",
+        "",
+        "Both models fit on the same split and scored on identical metrics. Where the GP matches or "
+        "beats VESP-UQ on in-support calibration, VESP-UQ's contribution is its physics-structured, "
+        "altitude-aware covariance rather than a lower in-support error -- reported honestly.",
+        "",
+        _section_status("uq_baseline", data, missing,
+                        lambda rows: passthrough(rows, ["band", "region", "model", "z_std_mean",
+                                                        "picp_90_mean", "radial_z_std_mean"])),
+        "",
+        _section_status("uq_baseline_decision", data, missing,
+                        lambda rows: passthrough(rows, ["band", "model", "auroc_mean",
+                                                        "capture_auc_normalized_mean",
+                                                        "oracle_regret_mean"])),
         "",
         "## 10. Trajectory-family results",
         "",
@@ -477,6 +655,20 @@ def _recommendations(verdict, data) -> str:
     elif ov == "altitude_dominant":
         recs.append("Frame the contribution as calibrated local force-error covariance, not superior "
                     "scalar ranking; state that low-altitude exposure dominates the ranking signal.")
+    sig = significance_verdict(data.get("significance"))
+    if sig["available"] and not sig["any_significant"]:
+        recs.append("State explicitly that the supervisor's scalar-ranking edge over altitude is not "
+                    "statistically significant (bootstrap CIs include 0); lead with the calibrated "
+                    "covariance as the contribution.")
+    elif sig["any_significant"]:
+        recs.append("Report the bootstrap CIs that show where the supervisor's ranking edge over "
+                    "altitude is statistically significant.")
+    if data.get("decision"):
+        recs.append("Report decision-quality metrics (AUROC, capture-AUC, oracle-regret) instead of "
+                    "leaning on the marginal Spearman gap.")
+    if data.get("uq_baseline"):
+        recs.append("Include the head-to-head GP UQ baseline; frame VESP-UQ's value as physics-"
+                    "structured, altitude-aware covariance, not necessarily lower in-support error.")
     if data.get("drift"):
         recs.append("Keep the scope boundary: VESP-UQ ranks force-model risk, not long-horizon "
                     "position error (drift correlation decays with horizon).")

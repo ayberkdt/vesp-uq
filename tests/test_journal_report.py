@@ -6,9 +6,16 @@ from vesp.uq.journal_report import (
     build_claims,
     build_latex_tables,
     build_report,
+    significance_verdict,
     verdict_from_ranking,
     write_report,
 )
+
+
+def _significance(band, delta, lo, hi, metric="spearman"):
+    return [{"band": band, "candidate": "vespuq_supervisor", "comparator": "min_altitude",
+             "metric": metric, "boot_delta": str(delta), "boot_ci_low": str(lo),
+             "boot_ci_high": str(hi), "boot_p": "0.04"}]
 
 
 def _ranking(band, sup_sp, alt_sp):
@@ -55,6 +62,52 @@ def test_claims_status_mapping():
     # the long-horizon drift claim is a scope boundary, never "supported"
     drift = next(c for c in claims if "long-horizon position error" in c["claim"])
     assert drift["status"].startswith("not supported")
+
+
+def test_significance_verdict_detects_significant_win():
+    v = significance_verdict(_significance("L60", 0.12, 0.03, 0.21))
+    assert v["available"] and v["any_significant"]
+    assert "spearman" in v["bands"]["L60"]["wins"]
+
+
+def test_significance_verdict_indistinguishable_when_ci_brackets_zero():
+    v = significance_verdict(_significance("L60", 0.05, -0.02, 0.12))
+    assert v["available"] and not v["any_significant"]
+
+
+def test_significance_verdict_unavailable_when_empty():
+    assert significance_verdict(None)["available"] is False
+
+
+def test_claims_include_significance_and_baseline():
+    v = verdict_from_ranking(_ranking("L60", 0.50, 0.30), _partial("L60", 0.2))
+    data = {"significance": _significance("L60", 0.12, 0.03, 0.21),
+            "uq_baseline": [1], "decision": [1],
+            "calibration": [{"band": "L60", "region": "low", "radial_z_std_mean": "1.1"}]}
+    by = {c["claim"]: c["status"] for c in build_claims(data, v)}
+    assert by["The supervisor's ranking edge over altitude is statistically significant"] == "supported"
+    assert by["The predictive covariance is calibrated per component (radial vs tangential)"] == "supported"
+    assert by["VESP-UQ is benchmarked head-to-head against a Gaussian-process UQ baseline"] == "supported"
+
+
+def test_claims_significance_indistinguishable_status():
+    v = verdict_from_ranking(_ranking("L60", 0.50, 0.30), _partial("L60", 0.2))
+    data = {"significance": _significance("L60", 0.05, -0.02, 0.12)}
+    by = {c["claim"]: c["status"] for c in build_claims(data, v)}
+    assert by["The supervisor's ranking edge over altitude is statistically significant"].startswith(
+        "not supported")
+
+
+def test_latex_tables_for_new_studies():
+    tables = build_latex_tables({"significance": _significance("L60", 0.12, 0.03, 0.21),
+                                 "decision": [{"band": "L60", "selector": "vespuq_supervisor",
+                                               "auroc_mean": "0.75", "auprc_mean": "0.5",
+                                               "capture_auc_normalized_mean": "0.6",
+                                               "oracle_regret_mean": "0.4"}]})
+    assert "\\toprule" in tables["table_significance.tex"]
+    assert "\\toprule" in tables["table_decision_quality.tex"]
+    # missing baseline study still yields a pending comment
+    assert tables["table_uq_baseline.tex"].startswith("%")
 
 
 def test_latex_tables_escape_and_pending():

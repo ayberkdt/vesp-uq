@@ -95,3 +95,173 @@ def _best_by(results: dict, key: str) -> str | None:
         if v > best_val:
             best, best_val = name, v
     return best
+
+
+# --------------------------------------------------------------------------------------------- #
+# Decision-quality metrics (WP-B): evaluate a risk score as the screening tool it is, rather than
+# as a single correlation. Threshold-free detection (AUROC / AUPRC), a budget-integrated capture
+# (capture-AUC), and the operationally meaningful loss vs the oracle ranking (normalized regret).
+# All are computed against trajectory-level true FORCE-model error; none invents physical units.
+# --------------------------------------------------------------------------------------------- #
+DECISION_METRIC_KEYS = (
+    "auroc",
+    "auprc",
+    "capture_auc",
+    "capture_auc_normalized",
+    "oracle_regret",
+)
+
+
+def _avg_ranks(values: torch.Tensor) -> torch.Tensor:
+    """Ascending average ranks (ties share their mean rank); dependency-free, deterministic."""
+
+    order = torch.argsort(values, stable=True)
+    sorted_v = values[order]
+    n = int(values.numel())
+    ranks_sorted = torch.empty(n, dtype=torch.float64)
+    start = 0
+    while start < n:
+        end = start + 1
+        while end < n and bool(sorted_v[end] == sorted_v[start]):
+            end += 1
+        ranks_sorted[start:end] = 0.5 * (start + end - 1) + 1.0  # 1-based average rank
+        start = end
+    ranks = torch.empty(n, dtype=torch.float64)
+    ranks[order] = ranks_sorted
+    return ranks
+
+
+def _high_error_labels(true_error: torch.Tensor, high_quantile: float) -> torch.Tensor:
+    """Boolean positive class: trajectories at or above the ``high_quantile`` of true error."""
+
+    thr = float(torch.quantile(true_error, float(high_quantile)))
+    return true_error >= thr
+
+
+def detection_metrics(scores, true_error, high_quantile: float = 0.90) -> dict:
+    """Threshold-free detection of high-error trajectories: AUROC + AUPRC (average precision).
+
+    The positive class is the top ``1 - high_quantile`` of trajectories by true force error. AUROC
+    is the tie-aware Mann-Whitney statistic (0.5 = chance, 1.0 = perfect); AUPRC is the average
+    precision (its chance level is the positive-class prevalence). Both return ``nan`` if a class is
+    empty (degenerate split), never a crash.
+    """
+
+    s = torch.as_tensor(scores, dtype=torch.float64).reshape(-1)
+    e = torch.as_tensor(true_error, dtype=torch.float64).reshape(-1)
+    if s.numel() != e.numel():
+        raise ValueError(f"scores ({s.numel()}) and true_error ({e.numel()}) must have equal length")
+    if s.numel() == 0:
+        raise ValueError("scores is empty")
+    if not bool(torch.isfinite(s).all()) or not bool(torch.isfinite(e).all()):
+        return {"auroc": float("nan"), "auprc": float("nan"), "high_quantile": float(high_quantile)}
+
+    y = _high_error_labels(e, high_quantile)
+    n_pos = int(y.sum())
+    n_neg = int((~y).sum())
+    if n_pos == 0 or n_neg == 0:
+        return {"auroc": float("nan"), "auprc": float("nan"), "high_quantile": float(high_quantile)}
+
+    ranks = _avg_ranks(s)
+    auroc = (float(ranks[y].sum()) - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg)
+
+    order = torch.argsort(s, descending=True, stable=True)
+    y_sorted = y[order].to(torch.float64)
+    cum_tp = torch.cumsum(y_sorted, dim=0)
+    precision_at_k = cum_tp / torch.arange(1, y_sorted.numel() + 1, dtype=torch.float64)
+    auprc = float((precision_at_k * y_sorted).sum() / n_pos)
+    return {"auroc": float(auroc), "auprc": auprc, "high_quantile": float(high_quantile)}
+
+
+def _captured_error_mass(scores: torch.Tensor, true_error: torch.Tensor, fraction: float) -> float:
+    """Sum of true error over the top ``fraction`` of trajectories ranked by ``scores``."""
+
+    n = int(scores.numel())
+    k = min(n, max(1, int(math.ceil(float(fraction) * n))))
+    top = torch.argsort(scores, descending=True, stable=True)[:k]
+    return float(true_error[top].sum())
+
+
+def capture_auc(scores, true_error, fractions=(0.02, 0.05, 0.10, 0.15, 0.20, 0.30, 0.40),
+                high_quantile: float = 0.90) -> dict:
+    """Trapezoidal area under the capture-rate-vs-rerun-fraction curve (one number for all budgets).
+
+    ``capture_auc`` integrates capture rate (share of top-decile-error trajectories flagged) over the
+    rerun-fraction grid; ``capture_auc_normalized`` divides by the oracle's capture-AUC on the same
+    grid, giving a budget-integrated efficiency in ``[0, 1]`` (1.0 = matches the oracle everywhere).
+    """
+
+    s = torch.as_tensor(scores, dtype=torch.float64).reshape(-1)
+    e = torch.as_tensor(true_error, dtype=torch.float64).reshape(-1)
+    fracs = sorted({float(f) for f in fractions})
+    if not fracs:
+        raise ValueError("fractions is empty")
+
+    def _auc(score_vec: torch.Tensor) -> float:
+        caps = [evaluate_score_against_true_error(
+            score_vec, e, rerun_fraction=f)["capture_rate"] for f in fracs]
+        caps = [c if (c is not None and not math.isnan(float(c))) else float("nan") for c in caps]
+        if any(math.isnan(c) for c in caps):
+            return float("nan")
+        area = 0.0
+        for i in range(1, len(fracs)):
+            area += 0.5 * (fracs[i] - fracs[i - 1]) * (caps[i] + caps[i - 1])
+        return area
+
+    raw = _auc(s)
+    oracle = _auc(e)  # ranking by the true error itself is the optimal capture curve
+    normalized = (raw / oracle) if (oracle and not math.isnan(oracle) and oracle > 0) else float("nan")
+    return {"capture_auc": raw, "capture_auc_normalized": normalized,
+            "fractions": fracs, "high_quantile": float(high_quantile)}
+
+
+def oracle_regret(scores, true_error, fraction: float = 0.20) -> dict:
+    """Normalized regret of the score's flagged set vs the oracle at a fixed rerun budget.
+
+    At budget ``fraction`` the oracle flags the trajectories with the largest true error; a random
+    screen captures ``fraction`` of the total error mass in expectation. ``oracle_regret`` is the
+    captured-error gap to the oracle, normalized so 0.0 = oracle-optimal and 1.0 = no better than
+    random (``nan`` when the oracle and random captures coincide). The raw captured masses are also
+    returned for traceability.
+    """
+
+    s = torch.as_tensor(scores, dtype=torch.float64).reshape(-1)
+    e = torch.as_tensor(true_error, dtype=torch.float64).reshape(-1)
+    if s.numel() != e.numel():
+        raise ValueError("scores and true_error must have equal length")
+    score_mass = _captured_error_mass(s, e, fraction)
+    oracle_mass = _captured_error_mass(e, e, fraction)
+    random_mass = float(fraction) * float(e.sum())
+    denom = oracle_mass - random_mass
+    regret = ((oracle_mass - score_mass) / denom) if abs(denom) > 0 else float("nan")
+    if regret == regret:  # finite: clamp tiny numerical excursions outside [0, 1]
+        regret = min(1.0, max(0.0, regret))
+    return {"oracle_regret": regret, "fraction": float(fraction),
+            "captured_mass_score": score_mass, "captured_mass_oracle": oracle_mass,
+            "captured_mass_random": random_mass}
+
+
+def decision_quality_metrics(scores, true_error, *, fractions, high_quantile: float = 0.90,
+                             reference_fraction: float = 0.20) -> dict:
+    """All WP-B decision-quality scalars for one risk score against true force error.
+
+    Combines :func:`detection_metrics` (AUROC/AUPRC), :func:`capture_auc` (budget-integrated capture,
+    raw + oracle-normalized), and :func:`oracle_regret` at ``reference_fraction`` (snapped to the
+    nearest available budget in ``fractions``). The keys in :data:`DECISION_METRIC_KEYS` are always
+    present so the suite can aggregate them mean +/- std across seeds.
+    """
+
+    fracs = sorted({float(f) for f in fractions})
+    ref = min(fracs, key=lambda f: abs(f - float(reference_fraction))) if fracs else float(reference_fraction)
+    det = detection_metrics(scores, true_error, high_quantile=high_quantile)
+    cap = capture_auc(scores, true_error, fractions=fracs, high_quantile=high_quantile)
+    reg = oracle_regret(scores, true_error, fraction=ref)
+    return {
+        "auroc": det["auroc"],
+        "auprc": det["auprc"],
+        "capture_auc": cap["capture_auc"],
+        "capture_auc_normalized": cap["capture_auc_normalized"],
+        "oracle_regret": reg["oracle_regret"],
+        "high_quantile": float(high_quantile),
+        "reference_fraction": ref,
+    }

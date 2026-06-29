@@ -111,7 +111,7 @@ def _aggregate(runs) -> dict:
         if metric_names is None:
             metric_names = [k for k in entries[0] if k != "n"]
         agg = {m: mean_std([e.get(m) for e in entries]) for m in metric_names}
-        agg["n_seeds"] = len(entries)
+        agg["n_seeds"] = len(entries)  # type: ignore[assignment]
         out[(band, region)] = agg
     return out
 

@@ -153,7 +153,7 @@ def within_altitude_bin_ranking(
                         s[idx], e[idx], rerun_fraction=capture_fraction
                     )["capture_rate"]
                 )
-            bin_entry["methods"][name] = {"spearman": rho, "capture": cap}
+            bin_entry["methods"][name] = {"spearman": rho, "capture": cap}  # type: ignore[index]
             if math.isfinite(rho):
                 per_method_weighted[name].append((rho, int(idx.numel())))
         bins.append(bin_entry)

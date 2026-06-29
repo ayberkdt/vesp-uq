@@ -1,5 +1,0 @@
-[suite] 1/6 done (L60 seed=0, 244s) | elapsed 244s | eta 1221s
-[suite] 2/6 done (L60 seed=1, 216s) | elapsed 460s | eta 920s
-[suite] 3/6 done (L60 seed=2, 207s) | elapsed 667s | eta 667s
-[suite] 4/6 done (L90 seed=0, 285s) | elapsed 952s | eta 476s
-[suite] 5/6 done (L90 seed=1, 322s) | elapsed 1274s | eta 255s

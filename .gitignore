@@ -21,3 +21,4 @@ checkpoints/
 .env
 .venv
 .DS_Store
+.tmp_run/

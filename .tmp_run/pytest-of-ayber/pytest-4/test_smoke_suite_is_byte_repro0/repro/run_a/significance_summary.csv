@@ -1,7 +1,0 @@
-band,candidate,comparator,metric,n_seeds,seed_mean_delta,seed_wilcoxon_p,boot_delta,boot_ci_low,boot_ci_high,boot_p,boot_significant
-vespuq_smoke,vespuq_supervisor,min_altitude,spearman,1,0.10121380899558136,1.0,0.10121380899558136,-0.08472771596891564,0.2898209992772128,0.311,False
-vespuq_smoke,vespuq_supervisor,min_altitude,capture,1,-0.25,1.0,-0.25,-0.8,0.25,0.831,False
-vespuq_smoke,vespuq_supervisor,min_altitude,auroc,1,-0.09722222222222221,1.0,-0.09722222222222221,-0.20833333333333326,0.12571428571428567,0.634,False
-vespuq_smoke,uncertainty_only,min_altitude,spearman,1,-0.11250159438542312,1.0,-0.11250159438542312,-0.248581097901871,0.02584479762787466,0.103,False
-vespuq_smoke,uncertainty_only,min_altitude,capture,1,0.0,,0.0,-0.4,0.25,1.0,False
-vespuq_smoke,uncertainty_only,min_altitude,auroc,1,-0.07638888888888884,1.0,-0.07638888888888884,-0.19444444444444448,0.02083333333333326,0.153,False

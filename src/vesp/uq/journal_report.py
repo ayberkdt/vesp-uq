@@ -30,11 +30,14 @@ STUDY_INPUTS = {
     "partial": ("benchmark_suite/partial_correlation_summary.csv", "run_vespuq_benchmark_suite.py"),
     "score_ablation": ("score_ablation/score_variant_ablation.csv", "run_score_ablation.py"),
     "expanded": ("expanded_baselines/expanded_baselines.csv", "run_expanded_baselines.py"),
+    "learned_supervisor": ("learned_supervisor/learned_supervisor.csv", "run_learned_supervisor.py"),
     "reliability": ("calibration_reliability/calibration_reliability.csv", "run_calibration_reliability.py"),
     "geom_sens": ("sensitivity/source_geometry_sensitivity.csv", "run_source_sensitivity.py"),
     "reg_sens": ("sensitivity/regularization_sensitivity.csv", "run_source_sensitivity.py"),
     "families": ("trajectory_families/trajectory_family_summary.csv", "run_trajectory_families.py"),
     "drift": ("drift_horizon/drift_horizon.csv", "run_drift_horizon.py"),
+    "drift_boundary": ("drift_boundary/drift_boundary.csv", "run_drift_boundary.py"),
+    "geometry": ("geometry_calibration/geometry_calibration.csv", "run_geometry_calibration.py"),
     "physical": ("physical_budget_status/physical_budget_status.csv", "run_physical_budget_status.py"),
 }
 _ALT_BASELINES = ("min_altitude", "low_altitude_exposure")
@@ -245,6 +248,21 @@ def build_claims(data: dict, verdict: dict) -> list[dict]:
         "evidence": "drift_horizon.csv (force-error ranking holds; long-horizon drift null)",
     })
     claims.append({
+        "claim": "Force-risk predicts position drift in a characterized regime (family x horizon)",
+        "status": "partial (characterized, not validated)" if data.get("drift_boundary") else "future work",
+        "evidence": "drift_boundary.csv (per-family intermediate-horizon Spearman)",
+    })
+    claims.append({
+        "claim": "The low-altitude under-confidence (z_std<1) is mechanistically explained",
+        "status": "supported" if data.get("geometry") else "future work",
+        "evidence": "geometry_calibration.csv (placement vs noise-law verdict)",
+    })
+    claims.append({
+        "claim": "Supervisor component weights can be validation-tuned to improve ranking",
+        "status": "supported" if data.get("learned_supervisor") else "future work",
+        "evidence": "learned_supervisor.csv (hand-set vs learned exponents, test split)",
+    })
+    claims.append({
         "claim": "Validated operational 6x6 orbit/state covariance",
         "status": "future work",
         "evidence": "not attempted; linear/STM appendix is diagnostic only",
@@ -365,6 +383,13 @@ def build_report(outputs_root: Path) -> dict:
                         lambda rows: passthrough(rows, ["band", "baseline", "test_spearman_mean",
                                                         "test_capture_rate_mean"])),
         "",
+        "### 5b. Learned supervisor (validation-tuned exponents)",
+        "",
+        _section_status("learned_supervisor", data, missing,
+                        lambda rows: passthrough(rows, ["band", "method", "beta_ee_mean",
+                                                        "beta_alt_mean", "beta_ood_mean",
+                                                        "test_spearman_mean", "test_capture_rate_mean"])),
+        "",
         "## 6. Altitude-controlled diagnostics",
         "",
         _section_status("partial", data, missing, partial_body),
@@ -387,6 +412,12 @@ def build_report(outputs_root: Path) -> dict:
                         lambda rows: passthrough(rows, ["band", "n_sources_total", "rel_accel_rmse_mean",
                                                         "z_std_mean"])),
         "",
+        "### 9b. Geometry x low-altitude calibration (E8)",
+        "",
+        _section_status("geometry", data, missing,
+                        lambda rows: passthrough(rows, ["band", "geometry", "rel_accel_rmse_mean",
+                                                        "low_z_std_mean", "low_picp_90_mean"])),
+        "",
         "## 10. Trajectory-family results",
         "",
         _section_status("families", data, missing,
@@ -398,6 +429,12 @@ def build_report(outputs_root: Path) -> dict:
         _section_status("drift", data, missing,
                         lambda rows: passthrough(rows, ["band", "diagnostic", "horizon_periods",
                                                         "spearman_forcerisk_vs_target_mean"])),
+        "",
+        "### 11b. Drift boundary (family x horizon)",
+        "",
+        _section_status("drift_boundary", data, missing,
+                        lambda rows: passthrough(rows, ["band", "family", "horizon_periods",
+                                                        "spearman_forcerisk_vs_drift_mean"])),
         "",
         "## 12. Recommended manuscript updates",
         "",

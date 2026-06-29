@@ -18,6 +18,7 @@ same conic geometry as the default ensemble; only the orientation/eccentricity s
 
 from __future__ import annotations
 
+import hashlib
 import math
 from dataclasses import dataclass
 
@@ -61,6 +62,8 @@ class Family:
     apoapsis: torch.Tensor
     inclination_deg: torch.Tensor
     eccentricity: torch.Tensor
+    initial_states: torch.Tensor | None = None  # (N, 6) [r, v] at periapsis, mu=1 normalized
+    period: torch.Tensor | None = None          # (N,) Keplerian period (mu=1)
 
 
 def _rotation(omega_raan: torch.Tensor, inc: torch.Tensor, arg_peri: torch.Tensor) -> torch.Tensor:
@@ -100,7 +103,9 @@ def generate_family(
     if name not in FAMILIES:
         raise ValueError(f"unknown family {name!r}; choices: {sorted(FAMILIES)}")
     spec = FAMILIES[name]
-    g = torch.Generator().manual_seed(int(seed) + 31 * (abs(hash(name)) % 997))
+    # Stable per-family offset (Python's str hash is salted per process -> not reproducible).
+    name_offset = int(hashlib.sha256(name.encode()).hexdigest(), 16) % 997
+    g = torch.Generator().manual_seed(int(seed) + 31 * name_offset)
 
     u_peri = torch.rand(n_orbits, generator=g, dtype=dtype)
     u_apo = torch.rand(n_orbits, generator=g, dtype=dtype)
@@ -125,14 +130,23 @@ def generate_family(
     else:
         theta = torch.linspace(-0.5 * span, 0.5 * span, n_points, dtype=dtype)  # perilune-centred
 
+    # Initial state at periapsis (theta=0) for trajectory propagation: r0 = R @ [r_peri,0,0],
+    # v0 = R @ [0, v_peri, 0] (prograde), with the vis-viva periapsis speed (mu=1 normalized).
+    v_peri = torch.sqrt((2.0 / r_peri - 1.0 / a).clamp_min(0.0))  # mu = 1
+    period = 2.0 * math.pi * torch.sqrt(a ** 3)                   # mu = 1
+    states = torch.empty(n_orbits, 6, dtype=dtype)
+
     trajectories: list[torch.Tensor] = []
     for k in range(n_orbits):
         r = p[k] / (1.0 + e[k] * torch.cos(theta))
         plane = torch.stack([r * torch.cos(theta), r * torch.sin(theta), torch.zeros_like(theta)], dim=-1)
         trajectories.append(plane @ rotations[k].transpose(0, 1))
+        r0 = rotations[k] @ torch.tensor([r_peri[k], 0.0, 0.0], dtype=dtype)
+        v0 = rotations[k] @ torch.tensor([0.0, v_peri[k], 0.0], dtype=dtype)
+        states[k] = torch.cat([r0, v0])
 
     return Family(name=name, trajectories=trajectories, periapsis=r_peri, apoapsis=r_apo,
-                  inclination_deg=inc_deg, eccentricity=e)
+                  inclination_deg=inc_deg, eccentricity=e, initial_states=states, period=period)
 
 
 def family_descriptor(fam: Family) -> dict:

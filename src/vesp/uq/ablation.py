@@ -30,6 +30,12 @@ from vesp.uq.expanded_baselines import (
 )
 from vesp.uq.experiment import _build_trajectories, _resolve_time_weighting, _time_weights
 from vesp.uq.io.run_artifacts import write_run_artifacts
+from vesp.uq.learned_supervisor import (
+    DEFAULT_BETAS,
+    apply_learned_supervisor,
+    fit_learned_supervisor,
+    supervisor_components,
+)
 from vesp.uq.risk_baselines import assemble_baseline_scores, prepare, true_force_error
 from vesp.uq.score_variants import SCORE_VARIANTS, compute_score_variants
 from vesp.uq.suite import (
@@ -481,3 +487,134 @@ def run_expanded_baselines(
         manifest_name="manifest.json",
     )
     return {"out_dir": str(out_dir), "agg": agg, "selections": selections}
+
+
+# --------------------------------------------------------------------------------------------- #
+# Learned supervisor (Design A): validation-tuned exponents vs the hand-set supervisor
+# --------------------------------------------------------------------------------------------- #
+def _subset_components(c: dict, idx) -> dict:
+    return {"expected_error": c["expected_error"][idx], "rel_alt": c["rel_alt"][idx],
+            "domain_risk": c["domain_risk"][idx], "n_points": c["n_points"]}
+
+
+def learned_supervisor_run(config: dict, *, seed: int, primary_fraction: float = PRIMARY_FRACTION) -> dict:
+    """Fit supervisor exponents on a validation split; compare hand-set vs learned on a test split."""
+
+    setup = _trajectory_setup(config, seed)
+    plugin, trajectories, te = setup["plugin"], setup["trajectories"], setup["true_error"]
+    comps = supervisor_components(plugin, trajectories)
+    n = len(trajectories)
+    _train_idx, val_idx, test_idx = _three_way_split(n, seed)
+
+    fit = fit_learned_supervisor(_subset_components(comps, val_idx), te[val_idx])
+    betas = fit["betas"]
+    scores = {
+        "supervisor_handtuned": apply_learned_supervisor(comps, DEFAULT_BETAS),
+        "supervisor_learned": apply_learned_supervisor(comps, betas),
+    }
+    rows = []
+    for name, score in scores.items():
+        test = _evaluate(score, te, test_idx, primary_fraction)
+        rows.append({"band": setup["band"], "seed": int(seed), "method": name,
+                     "beta_ee": betas[0], "beta_alt": betas[1], "beta_ood": betas[2],
+                     "val_fit_spearman": fit["fit_spearman"],
+                     **{f"test_{k}": test[k] for k in _EVAL_METRICS}})
+    return {"band": setup["band"], "seed": int(seed), "rows": rows, "betas": betas, "fit": fit}
+
+
+def _aggregate_learned(rows) -> dict:
+    groups: dict[tuple, list[dict]] = {}
+    for r in rows:
+        groups.setdefault((r["band"], r["method"]), []).append(r)
+    out = {}
+    for key, rs in groups.items():
+        agg = {f"test_{k}": mean_std([r[f"test_{k}"] for r in rs]) for k in _EVAL_METRICS}
+        agg["beta_ee"] = mean_std([r["beta_ee"] for r in rs])
+        agg["beta_alt"] = mean_std([r["beta_alt"] for r in rs])
+        agg["beta_ood"] = mean_std([r["beta_ood"] for r in rs])
+        agg["n_seeds"] = len(rs)
+        out[key] = agg
+    return out
+
+
+def _learned_csv(agg: dict) -> str:
+    cols = ["band", "method", "n_seeds", "beta_ee_mean", "beta_alt_mean", "beta_ood_mean"]
+    for k in _EVAL_METRICS:
+        cols += [f"test_{k}_mean", f"test_{k}_std"]
+    rows = [cols]
+    for (band, method), a in sorted(agg.items()):
+        row = [band, method, a["n_seeds"], a["beta_ee"]["mean"], a["beta_alt"]["mean"], a["beta_ood"]["mean"]]
+        for k in _EVAL_METRICS:
+            row += [a[f"test_{k}"]["mean"], a[f"test_{k}"]["std"]]
+        rows.append(row)
+    return _csv(rows)
+
+
+def _learned_md(agg: dict, primary_fraction: float) -> str:
+    lines = [
+        "# VESP-UQ Learned Supervisor (Design A)",
+        "",
+        "Validation-tuned exponents on the supervisor's physical components "
+        "(`point_risk = expected_error^b1 * rel_alt^b2 * (1 + b3 * domain_risk)`), reported on a "
+        f"disjoint test split at the {primary_fraction:.0%} budget. `beta=(1,1,1)` is the hand-set "
+        "supervisor. Mean +/- std across seeds.",
+        "",
+        "| band | method | betas (ee, alt, ood) | test spearman | test capture | test lift |",
+        "| --- | --- | --- | ---: | ---: | ---: |",
+    ]
+    for (band, method), a in sorted(agg.items()):
+        betas = (f"({_fmt(a['beta_ee']['mean'], '.2f')}, {_fmt(a['beta_alt']['mean'], '.2f')}, "
+                 f"{_fmt(a['beta_ood']['mean'], '.2f')})") if method == "supervisor_learned" else "(1, 1, 1)"
+        lines.append(
+            f"| {band} | {method} | {betas} | {_pm(a['test_spearman'], '.3f')} | "
+            f"{_pm(a['test_capture_rate'], '.3f')} | {_pm(a['test_lift_over_random'], '.2f')} |"
+        )
+    lines += [
+        "",
+        "Interpretation: where the learned supervisor beats the hand-set one on test Spearman/capture, "
+        "the supervisor's fixed component weights were sub-optimal and can be validation-tuned (the "
+        "physical multiplicative form is preserved; only the exponents change). Where altitude "
+        "dominates, even tuned exponents cannot beat altitude -- the value there remains the "
+        "calibrated covariance. Default behavior is unchanged: `beta=(1,1,1)` reproduces the current "
+        "supervisor exactly.",
+        "",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def run_learned_supervisor(
+    configs, *, seeds=(0, 1, 2, 3, 4), out_dir="outputs/learned_supervisor/",
+    primary_fraction: float = PRIMARY_FRACTION,
+) -> dict:
+    """Run the learned-supervisor comparison over configs x seeds; write table + manifest."""
+
+    out_dir = Path(out_dir)
+    runs = [learned_supervisor_run(cfg, seed=s, primary_fraction=primary_fraction)
+            for cfg in configs for s in seeds]
+    rows = [r for run in runs for r in run["rows"]]
+    agg = _aggregate_learned(rows)
+    betas_by_band = {}
+    for run in runs:
+        betas_by_band.setdefault(run["band"], []).append(run["betas"])
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    runs_cols = ["band", "seed", "method", "beta_ee", "beta_alt", "beta_ood", "val_fit_spearman",
+                 *[f"test_{k}" for k in _EVAL_METRICS]]
+    write_run_artifacts(
+        out_dir,
+        tool="run_learned_supervisor",
+        config=configs[0],
+        json_files={"learned_supervisor_meta.json": {
+            "git_commit": git_commit_hash(), "seeds": list(seeds),
+            "primary_fraction": primary_fraction, "betas_by_band": betas_by_band,
+            "parameterization": "point_risk = expected_error^b1 * rel_alt^b2 * (1 + b3 * domain_risk)",
+            "default_betas_reproduce_handset_supervisor": list(DEFAULT_BETAS),
+        }},
+        text_files={
+            "learned_supervisor.csv": _learned_csv(agg),
+            "learned_supervisor_runs.csv": _csv([runs_cols] + [[r.get(c) for c in runs_cols] for r in rows]),
+            "learned_supervisor.md": _learned_md(agg, primary_fraction),
+        },
+        manifest_name="manifest.json",
+    )
+    return {"out_dir": str(out_dir), "agg": agg, "betas_by_band": betas_by_band}

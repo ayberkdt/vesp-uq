@@ -20,7 +20,6 @@ force-model error only; never position error; no density claim.
 from __future__ import annotations
 
 import math
-import time
 from dataclasses import dataclass
 
 import torch
@@ -205,7 +204,3 @@ class GPResidualUQ:
         return out
 
 
-def _timed(fn):
-    t0 = time.perf_counter()
-    result = fn()
-    return result, time.perf_counter() - t0

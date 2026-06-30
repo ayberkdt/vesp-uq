@@ -1,4 +1,10 @@
-"""Small shared helpers for VESP-UQ command-line wrappers."""
+"""Small shared helpers for the VESP-UQ surface.
+
+Config loading, deterministic CSV rendering, and compact float formatting used by both the thin
+command-line wrappers under ``scripts/`` and the library runners (e.g. ``gate_diagnostics``,
+``attribution``, ``readiness``). Kept dependency-light (std lib + ``vesp.common.config`` only) so it
+is cheap to import from anywhere.
+"""
 
 from __future__ import annotations
 

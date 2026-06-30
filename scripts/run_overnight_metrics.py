@@ -47,7 +47,7 @@ from pathlib import Path
 
 import torch
 
-from vesp.common.config import load_config
+from vesp.uq.cli import load_configs
 from vesp.uq.suite import (
     DEFAULT_FRACTIONS,
     DEFAULT_SELECTORS,
@@ -79,19 +79,13 @@ def _memory_mb() -> float | None:
 
 
 def _load_configs(paths, *, quick: bool, n_orbits: int | None) -> list[dict]:
-    configs = []
-    for path in paths:
-        p = Path(path)
-        if not p.exists():
-            raise SystemExit(f"config not found: {path}")
-        cfg = load_config(str(p))
-        cfg.setdefault("_config_path", str(p))
+    configs = load_configs(paths)
+    for cfg in configs:
         screen = cfg.setdefault("uq", {}).setdefault("screening", {})
         if quick:
             screen["n_orbits"] = min(int(screen.get("n_orbits", _QUICK_N_ORBITS)), _QUICK_N_ORBITS)
         elif n_orbits is not None:
             screen["n_orbits"] = int(n_orbits)
-        configs.append(cfg)
     return configs
 
 

@@ -29,7 +29,7 @@ import json
 import sys
 from pathlib import Path
 
-from vesp.common.config import load_config
+from vesp.uq.cli import load_configs
 from vesp.uq.suite import (
     DEFAULT_FRACTIONS,
     DEFAULT_SELECTORS,
@@ -43,18 +43,12 @@ _QUICK_N_ORBITS = 200
 
 
 def _load_configs(paths, *, quick: bool) -> list[dict]:
-    configs = []
-    for path in paths:
-        p = Path(path)
-        if not p.exists():
-            raise SystemExit(f"config not found: {path}")
-        cfg = load_config(str(p))
-        cfg.setdefault("_config_path", str(p))
-        if quick:
+    configs = load_configs(paths)
+    if quick:
+        for cfg in configs:
             screen = cfg.setdefault("uq", {}).setdefault("screening", {})
             current = int(screen.get("n_orbits", _QUICK_N_ORBITS))
             screen["n_orbits"] = min(current, _QUICK_N_ORBITS)
-        configs.append(cfg)
     return configs
 
 

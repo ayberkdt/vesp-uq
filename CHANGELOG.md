@@ -13,6 +13,11 @@ surface; the binding science scope lives in `docs/SCIENTIFIC_CLAIMS.md` and
   thin wrappers over package modules and share config-loading helpers from `vesp.uq.cli`.
 - Updated README, benchmark notes, roadmap, and limitations docs to describe the readiness gate,
   prototype boundaries, and non-promoted SHAP/LIME/Helmholtz/RTN decisions.
+- Cleanup pass on the maintained UQ surface (behavior-preserving): removed three confirmed-dead
+  helpers (`baselines_uq._timed`, `scoring.is_directional_scoring`, `physical_units.is_physical_units`);
+  finished the helper consolidation so `gate_diagnostics`/`attribution` use `cli.csv_text`/`cli.fmt_float`
+  and a single `metrics.safe_log` instead of private copies; routed the remaining `_load_configs`
+  duplicates in benchmark/overnight scripts through `cli.load_configs`. ruff + mypy clean.
 
 ## 0.2.0 — 2026-06-11
 

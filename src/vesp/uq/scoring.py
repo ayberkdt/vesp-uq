@@ -154,12 +154,6 @@ def is_expected_only_scoring(scoring: str) -> bool:
     return _validate_scoring(scoring) in _EXPECTED_ONLY_SCORINGS
 
 
-def is_directional_scoring(scoring: str) -> bool:
-    """True for the M1 covariance-geometry / bias-direction risk modes."""
-
-    return _validate_scoring(scoring) in _DIRECTIONAL_MODES
-
-
 def needs_covariance(scoring: str) -> bool:
     """True if ``scoring`` needs the full per-point 3x3 covariance (anisotropy / largest eigenvalue).
 

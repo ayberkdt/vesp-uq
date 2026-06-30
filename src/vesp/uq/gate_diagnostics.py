@@ -18,18 +18,18 @@ Everything here targets force-model residuals, never position error.
 from __future__ import annotations
 
 import copy
-import csv
-import io
 import math
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import torch
 
+from vesp.uq.cli import csv_text, fmt_float
 from vesp.uq.experiment import _build_trajectories, _resolve_time_weighting, _time_weights
 from vesp.uq.io.run_artifacts import write_run_artifacts
-from vesp.uq.metrics import local_radial_frame
+from vesp.uq.metrics import local_radial_frame, safe_log
 from vesp.uq.risk_baselines import prepare
 from vesp.uq.suite import band_label
 
@@ -45,15 +45,6 @@ def _as_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return out if math.isfinite(out) else None
-
-
-def _fmt(value: Any, spec: str = ".3g") -> str:
-    f = _as_float(value)
-    return "n/a" if f is None else format(f, spec)
-
-
-def _safe_log(x: torch.Tensor, eps: float = 1.0e-300) -> torch.Tensor:
-    return torch.log(torch.as_tensor(x, dtype=torch.float64).clamp_min(eps))
 
 
 def _pearson(x: torch.Tensor, y: torch.Tensor) -> float:
@@ -148,15 +139,6 @@ def _weighted_mean(x: torch.Tensor, weights: torch.Tensor | None = None) -> floa
     if total <= 0.0:
         return float(values.mean())
     return float((values * (w / total)).sum())
-
-
-def _csv_text(rows: list[dict[str, Any]], columns: list[str]) -> str:
-    handle = io.StringIO()
-    writer = csv.DictWriter(handle, fieldnames=columns, lineterminator="\n")
-    writer.writeheader()
-    for row in rows:
-        writer.writerow({c: row.get(c, "") for c in columns})
-    return handle.getvalue()
 
 
 def _flat_sample_indices(total: int, max_points: int | None) -> set[int] | None:
@@ -354,9 +336,9 @@ def measurement_a_factor_separation(plugin, trajectories, weights=None) -> dict:
         d_ood = torch.zeros_like(radius)
     ood_factor = 1.0 + risk_cfg["domain_weight"] * d_ood.clamp_min(0.0)
 
-    log_s = _safe_log(expected)
-    log_w = _safe_log(w_alt)
-    log_o = _safe_log(ood_factor)
+    log_s = safe_log(expected)
+    log_w = safe_log(w_alt)
+    log_o = safe_log(ood_factor)
 
     traj_rows: list[dict[str, Any]] = []
     offset = 0
@@ -371,7 +353,7 @@ def measurement_a_factor_separation(plugin, trajectories, weights=None) -> dict:
             "log_s_rms": _weighted_mean(log_s[sl], ww),
             "log_w_alt": _weighted_mean(log_w[sl], ww),
             "log_ood_factor": _weighted_mean(log_o[sl], ww),
-            "log_min_altitude": float(_safe_log((r_i.min() - 1.0).reshape(1).clamp_min(1.0e-6))[0]),
+            "log_min_altitude": float(safe_log((r_i.min() - 1.0).reshape(1).clamp_min(1.0e-6))[0]),
             "min_radius": float(r_i.min()),
             "mean_radius": _weighted_mean(r_i, ww),
         })
@@ -426,7 +408,7 @@ def measurement_b_covariance_modes(
     eigvals, eigvecs = torch.linalg.eigh(0.5 * (cov_rtn + cov_rtn.transpose(-1, -2)))
     dominant = eigvecs[:, :, -1].abs().argmax(dim=-1)
     radius = torch.linalg.norm(positions.to(torch.float64), dim=-1)
-    log_h = _safe_log((radius - 1.0).clamp_min(1.0e-6))
+    log_h = safe_log((radius - 1.0).clamp_min(1.0e-6))
     lam_min = eigvals[:, 0].clamp_min(torch.finfo(torch.float64).tiny)
     anisotropy_ratio = eigvals[:, -1].clamp_min(0.0) / lam_min
 
@@ -624,7 +606,7 @@ def decision_table_rows(case_results: list[dict[str, Any]]) -> list[dict[str, An
         {
             "proposal": "anisotropic_heteroscedastic_noise",
             "rationale_verified": "conditional",
-            "gate_result": f"max radial-vs-tangential z_std gap = {_fmt(max_z_gap)}",
+            "gate_result": f"max radial-vs-tangential z_std gap = {fmt_float(max_z_gap)}",
             "decision": "prototype diagonal RTN noise" if (_as_float(max_z_gap) or 0.0) >= 0.20 else "keep isotropic for now",
             "uncertainty": "Before/after z_std and PICP must improve without creating over-confidence.",
         },
@@ -639,8 +621,8 @@ def decision_table_rows(case_results: list[dict[str, Any]]) -> list[dict[str, An
             "proposal": "helmholtz_non_conservative_extension",
             "rationale_verified": helmholtz_rationale,
             "gate_result": (
-                f"max excess curl = {_fmt(max_curl_excess)} "
-                f"(raw {_fmt(max_curl_raw)}, conservative-control {_fmt(max_curl_control)})"
+                f"max excess curl = {fmt_float(max_curl_excess)} "
+                f"(raw {fmt_float(max_curl_raw)}, conservative-control {fmt_float(max_curl_control)})"
             ),
             "decision": helmholtz_decision,
             "uncertainty": helmholtz_uncertainty,
@@ -749,9 +731,9 @@ def _summary_md(case_results: list[dict[str, Any]], decisions: list[dict[str, An
         b = case["measurement_b"]
         c = case["measurement_c"]
         lines.append(
-            f"| {case['band']} | {a['n_trajectories']} | {_fmt(a['mean_abs_factor_corr'])} | "
-            f"{_fmt(a['max_abs_factor_corr'])} | {_fmt(a['max_abs_altitude_corr'])} | "
-            f"{b['n_points']} | {_fmt(c.get('excess_scaled_curl_ratio'))} | "
+            f"| {case['band']} | {a['n_trajectories']} | {fmt_float(a['mean_abs_factor_corr'])} | "
+            f"{fmt_float(a['max_abs_factor_corr'])} | {fmt_float(a['max_abs_altitude_corr'])} | "
+            f"{b['n_points']} | {fmt_float(c.get('excess_scaled_curl_ratio'))} | "
             f"{'WARN ' + str(warn_count) if warn_count else 'ok'} |"
         )
     lines += [
@@ -786,7 +768,7 @@ def _summary_md(case_results: list[dict[str, Any]], decisions: list[dict[str, An
 def run_gate_diagnostics(
     configs: list[dict],
     *,
-    report_paths: list[str | Path | None] | None = None,
+    report_paths: Sequence[str | Path | None] | None = None,
     out_dir: str | Path = "outputs/gate_diagnostics",
     n_orbits: int | None = None,
     n_points: int | None = None,
@@ -873,10 +855,10 @@ def run_gate_diagnostics(
 
     text_files = {
         "gate_diagnostics.md": _summary_md(case_results, decisions),
-        "measurement_a_factor_correlations.csv": _csv_text(
+        "measurement_a_factor_correlations.csv": csv_text(
             factor_rows, ["band", "kind", "left", "right", "pearson", "spearman"]
         ),
-        "measurement_b_covariance_modes.csv": _csv_text(
+        "measurement_b_covariance_modes.csv": csv_text(
             covariance_rows,
             [
                 "band", "region", "axis", "n", "radius_mean", "variance_share_mean",
@@ -884,7 +866,7 @@ def run_gate_diagnostics(
                 "dominant_axis_fraction", "anisotropy_ratio_mean",
             ],
         ),
-        "measurement_c_curl.csv": _csv_text(
+        "measurement_c_curl.csv": csv_text(
             curl_rows,
             [
                 "band", "n_points_total", "n_points_sampled", "k_neighbors", "rms_curl",
@@ -893,15 +875,15 @@ def run_gate_diagnostics(
                 "curl_norm_median", "curl_norm_p95", "control_note",
             ],
         ),
-        "calibration_current.csv": _csv_text(
+        "calibration_current.csv": csv_text(
             calibration_rows,
             ["band", "region", "z_std", "picp_90", "ellipsoid_picp_90", "radial_z_std", "tangential_z_std"],
         ),
-        "consistency_audit.csv": _csv_text(
+        "consistency_audit.csv": csv_text(
             consistency_rows,
             ["band", "check", "status", "config_value", "actual_value", "report_value", "diff", "detail"],
         ),
-        "decision_table.csv": _csv_text(
+        "decision_table.csv": csv_text(
             decisions,
             ["proposal", "rationale_verified", "gate_result", "decision", "uncertainty"],
         ),

@@ -371,7 +371,7 @@ src/vesp/
                    ensemble.py   synthetic orbit ensemble + nearest-neighbour ground-truth error
                    data.py       surrogate-agnostic UQSamples loader (error / ref-surrogate modes)
                    metrics.py    vector (ellipsoid / Mahalanobis chi-square-3) calibration metrics
-                   cli.py        shared helpers for thin VESP-UQ CLI wrappers
+                   cli.py        shared config-load / CSV / float-format helpers (CLI wrappers + runners)
                    readiness.py  pre-results gate orchestration + top-level manifested report
                    gate_diagnostics.py / attribution.py   measured A/B/C gates + exact log attribution
                    rtn_noise.py / rtn_noise_prototype.py  RTN-style covariance prototype + guardrails

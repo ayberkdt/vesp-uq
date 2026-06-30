@@ -38,6 +38,24 @@ def random_scores(n: int, seed: int = 0) -> torch.Tensor:
     return torch.rand(int(n), generator=g, dtype=torch.float64)
 
 
+# A negative-control random score must be INDEPENDENT of the trajectory ensemble. Ensembles are
+# generated from the same integer ``seed``; calling ``random_scores(seed)`` would replay the exact
+# torch RNG stream the ensemble drew its periapsides from, making `random` a perfect (anti-)altitude
+# ranker instead of a chance control. Offsetting the seed by a large prime decouples the streams.
+PLACEBO_SEED_OFFSET = 1_000_003
+
+
+def independent_random_scores(n: int, seed: int = 0) -> torch.Tensor:
+    """Chance-level random scores whose seed is decoupled from the trajectory-ensemble seed.
+
+    Use this (not :func:`random_scores` with the run seed) for the `random` negative control in any
+    study that also generates a seeded trajectory ensemble, so the placebo is genuinely at chance and
+    not silently aligned with the ensemble geometry (see :data:`PLACEBO_SEED_OFFSET`).
+    """
+
+    return random_scores(int(n), seed=int(seed) + PLACEBO_SEED_OFFSET)
+
+
 def label_shuffled_scores(true_error, seed: int = 0) -> torch.Tensor:
     """Negative control (G4): the true-error values permuted by a seeded RNG.
 

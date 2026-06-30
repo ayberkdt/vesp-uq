@@ -15,7 +15,7 @@ import copy
 from pathlib import Path
 
 from vesp.uq.altitude_controlled import min_radius_scores, partial_pearson_given_altitude
-from vesp.uq.baselines import random_scores
+from vesp.uq.baselines import independent_random_scores
 from vesp.uq.benchmarking import compare_baselines
 from vesp.uq.io.run_artifacts import write_run_artifacts
 from vesp.uq.risk_baselines import assemble_baseline_scores, prepare, true_force_error
@@ -49,7 +49,7 @@ def family_run(config: dict, *, seed: int, families, n_orbits: int, n_points: in
         descriptors[fam_name] = family_descriptor(fam)
         te, _ = true_force_error(trajectories, residuals=None, held=held, aggregator=aggregator, dtype=dtype)
         scores = assemble_baseline_scores(cfg, plugin, trajectories, train.positions)
-        scores["random"] = random_scores(len(trajectories), seed=int(seed))
+        scores["random"] = independent_random_scores(len(trajectories), seed=int(seed))
         resolved = {name: scores[name] for name in _SELECTORS if name in scores}
 
         min_radius = min_radius_scores(trajectories)

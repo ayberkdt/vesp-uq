@@ -37,7 +37,7 @@ from vesp.uq.altitude_controlled import (
     partial_correlations,
     within_altitude_bin_ranking,
 )
-from vesp.uq.baselines import label_shuffled_scores, random_scores
+from vesp.uq.baselines import independent_random_scores, label_shuffled_scores
 from vesp.uq.benchmarking import (
     DECISION_METRIC_KEYS,
     compare_baselines,
@@ -273,7 +273,7 @@ def compute_run(config: dict, *, seed: int, rerun_fractions, selectors,
     t0 = time.perf_counter()
     with assert_no_test_access():
         all_scores = assemble_baseline_scores(cfg, plugin, trajectories, train.positions, weights=weights)
-        all_scores["random"] = random_scores(len(trajectories), seed=int(seed))
+        all_scores["random"] = independent_random_scores(len(trajectories), seed=int(seed))
     score_seconds = time.perf_counter() - t0
     # Reveal the oracle only now that scoring is done -- the remaining use (metric evaluation and the
     # label-shuffled placebo) is the legitimate, post-selection consumption of the test labels.

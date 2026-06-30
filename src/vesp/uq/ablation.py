@@ -18,7 +18,7 @@ from pathlib import Path
 import torch
 
 from vesp.uq.altitude_controlled import spearman
-from vesp.uq.baselines import random_scores
+from vesp.uq.baselines import independent_random_scores
 from vesp.uq.benchmarking import evaluate_score_against_true_error
 from vesp.uq.expanded_baselines import (
     HYBRID_WEIGHTS,
@@ -292,7 +292,7 @@ def expanded_baselines_run(config: dict, *, seed: int, primary_fraction: float =
     base = assemble_baseline_scores(setup["cfg"], plugin, trajectories, setup["train"].positions,
                                     weights=setup["weights"])
     n = len(trajectories)
-    base["random"] = random_scores(n, seed=int(seed))
+    base["random"] = independent_random_scores(n, seed=int(seed))
     base["altitude_bin_rmse_lookup"] = altitude_bin_rmse_lookup(
         setup["held"].positions, setup["held"].error, trajectories
     )

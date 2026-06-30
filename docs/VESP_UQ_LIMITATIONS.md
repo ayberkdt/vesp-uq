@@ -121,6 +121,20 @@ So after a large update without fresh validation data, the per-band coverage num
 original fit are stale: **re-validate** (`evaluate_calibration` on new held-out samples) before
 relying on calibration claims, and prefer passing fresh validation data to the update itself.
 
+## Measured extension gates, not automatic production features
+
+The pre-results readiness gate (`scripts/run_vespuq_system_readiness.py`) may run diagnostics and
+prototypes that deliberately stop short of production integration:
+
+- exact log-factor attribution explains the existing multiplicative supervisor and uses masking
+  validation; it is **not** SHAP/LIME and does not improve rerun selection by itself;
+- the RTN-style covariance prototype is a held-out before/after gate artifact. It is not applied
+  by `VESPUQPlugin` unless a future measured run promotes it explicitly;
+- Helmholtz / non-conservative force-error extensions remain closed unless the curl diagnostic
+  justifies them on a real surrogate residual field;
+- source-geometry auto-selection is a calibration sweep over equivalent-source placement, not a
+  physical density inference.
+
 ## Serve-time screening has no oracle
 
 `python -m vesp.uq.screen` (the serve driver) scores trajectories with a persisted model and

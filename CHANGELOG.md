@@ -4,6 +4,16 @@ All notable changes to the VESP-UQ layer. Versioning follows semver on the `vesp
 surface; the binding science scope lives in `docs/SCIENTIFIC_CLAIMS.md` and
 `docs/VESP_UQ_LIMITATIONS.md` and is unaffected by version numbers.
 
+## Unreleased
+
+- Added the measured pre-results readiness gate (`vesp.uq.readiness` and
+  `scripts/run_vespuq_system_readiness.py`) that runs A/B/C diagnostics, exact log attribution,
+  the RTN covariance prototype, optional geometry auto-selection, and manifest verification.
+- Moved RTN prototype artifact generation into `vesp.uq.rtn_noise_prototype`; CLI scripts are now
+  thin wrappers over package modules and share config-loading helpers from `vesp.uq.cli`.
+- Updated README, benchmark notes, roadmap, and limitations docs to describe the readiness gate,
+  prototype boundaries, and non-promoted SHAP/LIME/Helmholtz/RTN decisions.
+
 ## 0.2.0 — 2026-06-11
 
 The N7–N17 wave: performance hardening, a deployable train/serve model lifecycle, an operator

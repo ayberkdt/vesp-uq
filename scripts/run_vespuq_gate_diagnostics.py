@@ -18,25 +18,13 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from vesp.common.config import load_config
+from vesp.uq.cli import load_configs
 from vesp.uq.gate_diagnostics import run_gate_diagnostics
 
 _QUICK_N_ORBITS = 120
 _QUICK_N_POINTS = 48
 _QUICK_MAX_COV_POINTS = 600
 _QUICK_MAX_CURL_POINTS = 256
-
-
-def _load_configs(paths: list[str]) -> list[dict]:
-    configs = []
-    for path in paths:
-        p = Path(path)
-        if not p.exists():
-            raise SystemExit(f"config not found: {path}")
-        cfg = load_config(str(p))
-        cfg.setdefault("_config_path", str(p))
-        configs.append(cfg)
-    return configs
 
 
 def main(argv=None) -> None:
@@ -61,7 +49,7 @@ def main(argv=None) -> None:
                         help="small real-data diagnostic pass for wiring / first look")
     args = parser.parse_args(argv)
 
-    configs = _load_configs(args.configs)
+    configs = load_configs(args.configs)
     reports = args.reports
     if reports is not None and len(reports) == 0:
         reports = None

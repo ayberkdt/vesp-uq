@@ -14,7 +14,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from vesp.common.config import load_config
+from vesp.uq.cli import load_configs
 from vesp.uq.geometry_calibration import GEOMETRIES, run_geometry_calibration
 
 
@@ -28,14 +28,7 @@ def main(argv=None) -> None:
     parser.add_argument("--no-plots", action="store_true")
     args = parser.parse_args(argv)
 
-    configs = []
-    for path in args.configs:
-        p = Path(path)
-        if not p.exists():
-            raise SystemExit(f"config not found: {path}")
-        cfg = load_config(str(p))
-        cfg.setdefault("_config_path", str(p))
-        configs.append(cfg)
+    configs = load_configs(args.configs)
     seeds = [0] if args.quick else args.seeds
     geometries = args.geometries or (["baseline", "surface_dense", "deep"] if args.quick else None)
 

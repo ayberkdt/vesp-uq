@@ -162,61 +162,6 @@ generated ensemble or an external CSV, with policy overrides and a flagged-traje
 **Compare** (model promotion/drift report with calibration and screening agreement),
 **Propagate** (STM/MC force-error covariance propagation with the position-sigma growth plot and
 the exploratory-not-validated caveat in-page), **Model** (provenance, packaged decision policy,
-model card, and the uncertainty-vs-altitude profile), **Update** (exact sequential update with
-the honesty warning surfaced in-page), and **Runs** (manifest/provenance browser). The heavy
-pipelines run as subprocesses of the documented CLIs (`python -m vesp.uq.run` / `vesp.uq.screen`
-/ the propagation scripts), so anything done in the UI is reproducible from the command line;
-results are read back from the artifact/manifest layer. The UI shell imports no
-torch/matplotlib at startup (lazy workers; pinned by `tests/test_vespuq_ui.py`).
-
-Prediction paths are query-chunked (`uq.query_chunk_size`, default 8192 positions per dense
-block) and `score_ensemble` scores the whole trajectory ensemble in batched passes — bounded
-memory on large ensembles, identical per-trajectory numbers to a `score_trajectory` loop
-(locked by `tests/test_uq_batched_scoring.py`).
-
-### VESP-UQ scoring modes
-
-`uq.risk.scoring` selects how the per-point risk profile is aggregated into one trajectory
-score. The scale of the score determines whether it can be used for absolute thresholds:
-
-| Mode | Alias? | Scale | Use |
-| --- | --- | --- | --- |
-| `expected_abs` | `expected` | absolute | mean expected force error |
-| `expected_abs_p95` | `expected_p95` | absolute | physical budget / robust threshold |
-| `supervisor_rel` | `supervisor` | relative | rerun prioritization |
-| `supervisor_rel_p95` | `supervisor_p95` | relative | robust rerun prioritization |
-| `supervisor_abs` | none | absolute | altitude-weighted force-risk budget |
-| `supervisor_abs_p95` | none | absolute | robust absolute alarm |
-
-- **Use relative modes for ranking** — which orbits to rerun first within one ensemble. Their
-  per-trajectory altitude normalization makes them *not* comparable across trajectories.
-- **Use absolute modes for threshold alarms** — whether any orbit exceeds a physical budget.
-- **Do not calibrate pointwise thresholds against relative trajectory scores.** A pointwise
-  `expected_error` budget (`threshold_source: pointwise_calibration_quantile`) is on the absolute
-  force-error scale; pair it only with `expected_abs*` / `supervisor_abs*`. To threshold a
-  *relative* score, use `threshold_source: trajectory_calibration_quantile`, which scores
-  calibration orbits with the same mode (the driver rejects the unsafe pairing automatically).
-
-Legacy sigma-only modes (`max | mean | low_alt_integral | time_above | combined`) remain
-available and unchanged.
-
-### Physical acceleration budgets and post-hoc auditing
-
-Two optional, post-hoc layers build on the absolute scoring modes (both keep model-normalized
-values and never invent physical units):
-
-```text
-python scripts/run_physical_budget_screening.py --config configs/vespuq/vespuq_smoke.yaml \
-    --budget 1e-8 --units m/s^2 --scoring expected_abs_p95   # benchmarks/physical_budget_screening.md
-python scripts/run_calibration_audit.py --config configs/vespuq/vespuq_smoke.yaml   # benchmarks/calibration_audit.md
-```
-model card, and the uncertainty-vs-altitude profile), **Update** (exact sequential update with
-the honesty warning surfaced in-page), and **Runs** (manifest/provenance browser). The heavy
-pipelines run as subprocesses of the documented CLIs (`python -m vesp.uq.run` / `vesp.uq.screen`
-/ the propagation scripts), so anything done in the UI is reproducible from the command line;
-results are read back from the artifact/manifest layer. The UI shell imports no
-torch/matplotlib at startup (lazy workers; pinned by `tests/test_vespuq_ui.py`).
-
 Prediction paths are query-chunked (`uq.query_chunk_size`, default 8192 positions per dense
 block) and `score_ensemble` scores the whole trajectory ensemble in batched passes — bounded
 memory on large ensembles, identical per-trajectory numbers to a `score_trajectory` loop
@@ -266,6 +211,25 @@ python scripts/run_calibration_audit.py --config configs/vespuq/vespuq_smoke.yam
 - **Conformal calibration + sentinel audit** measures held-out force-error coverage and audits
   accepted low-risk trajectories for false negatives. See
   [`benchmarks/calibration_audit.md`](benchmarks/calibration_audit.md).
+
+### Pre-results readiness gate
+
+Before producing headline result runs, use the manifested readiness gate. It runs the measurement
+diagnostics (A/B/C), exact log-factor attribution with masking validation, the RTN-style covariance
+prototype, and in full mode the source-geometry auto-selection sweep. It writes one top-level
+`system_readiness.md/json/csv` report plus checksummed subrun artifacts.
+
+```text
+# Fast wiring check; geometry is skipped unless explicitly requested.
+python scripts/run_vespuq_system_readiness.py --quick --out outputs/system_readiness_quick
+
+# Full pre-results gate; includes geometry auto-selection.
+python scripts/run_vespuq_system_readiness.py --out outputs/system_readiness
+```
+
+The readiness gate is intentionally conservative: SHAP/LIME are not used, Helmholtz-style
+non-conservative extensions stay closed unless the curl diagnostic justifies them, and the RTN
+noise prototype is not promoted into production unless every case clears its guardrail.
 
 ### Baseline Comparison for Risk Screening
 
@@ -407,6 +371,11 @@ src/vesp/
                    ensemble.py   synthetic orbit ensemble + nearest-neighbour ground-truth error
                    data.py       surrogate-agnostic UQSamples loader (error / ref-surrogate modes)
                    metrics.py    vector (ellipsoid / Mahalanobis chi-square-3) calibration metrics
+                   cli.py        shared helpers for thin VESP-UQ CLI wrappers
+                   readiness.py  pre-results gate orchestration + top-level manifested report
+                   gate_diagnostics.py / attribution.py   measured A/B/C gates + exact log attribution
+                   rtn_noise.py / rtn_noise_prototype.py  RTN-style covariance prototype + guardrails
+                   geometry_calibration.py source-geometry auto-selection sweep
                    propagation.py / linear_propagation.py   exploratory MC / STM covariance
                    conformal.py / audit.py / physical_units.py / correction.py
     ui/          Mission Console (PyQt6): theme / widgets / jobs / pages (7 pages)

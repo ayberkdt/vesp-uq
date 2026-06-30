@@ -16,24 +16,12 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from vesp.common.config import load_config
 from vesp.uq.attribution import run_log_attribution
+from vesp.uq.cli import load_configs
 
 _QUICK_N_ORBITS = 160
 _QUICK_N_POINTS = 48
 _QUICK_TOP_N = 20
-
-
-def _load_configs(paths: list[str]) -> list[dict]:
-    configs = []
-    for path in paths:
-        p = Path(path)
-        if not p.exists():
-            raise SystemExit(f"config not found: {path}")
-        cfg = load_config(str(p))
-        cfg.setdefault("_config_path", str(p))
-        configs.append(cfg)
-    return configs
 
 
 def main(argv=None) -> None:
@@ -62,7 +50,7 @@ def main(argv=None) -> None:
         top_n = min(top_n, _QUICK_TOP_N)
 
     result = run_log_attribution(
-        _load_configs(args.configs),
+        load_configs(args.configs),
         out_dir=args.out,
         n_orbits=n_orbits,
         n_points=n_points,

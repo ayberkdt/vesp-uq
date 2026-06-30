@@ -23,6 +23,7 @@ It matters *what each benchmark tests* — a result can be strong on one and nul
 | STM-dispersion diagnostic (N10) | [`stm_dispersion_diagnostic.md`](stm_dispersion_diagnostic.md) | does *dynamics-weighted* force risk (linearized STM position dispersion) co-rank ST-LRPS **position** error? (exploratory diagnostic; measured **null**, Spearman ~ -0.05) |
 | Second residual band (N11) | [`vespuq_real_lunar_L90_report.md`](vespuq_real_lunar_L90_report.md) | does the same layer calibrate a **different error spectrum** (degree-31..90, a degree-30 truncation surrogate) without retuning? (band-vs-band table included; conservative, not sharp) |
 | GPU / Float32 Verification | [`gpu_verification.md`](gpu_verification.md) | throughput speedups and float32 precision degradation for CUDA hardware paths; states the policy that headline claims remain CPU float64. |
+| Pre-results readiness gate | `outputs/system_readiness/system_readiness.md` | runs the A/B/C gates, exact log attribution, RTN prototype, provenance checks, and full geometry auto-selection before headline result production. |
 
 Two scoring families are used:
 - **relative** (`supervisor_rel*`): per-trajectory altitude normalization — for *ranking* which
@@ -66,6 +67,7 @@ python scripts/run_calibration_audit.py --config configs/vespuq/vespuq_smoke.yam
 python scripts/run_conformal_validation.py                                                # L60/L90 operational conformal validation
 python scripts/run_physical_budget_screening.py --config configs/vespuq/vespuq_smoke.yaml \
     --budget 1e-8 --units m/s^2 --scoring expected_abs_p95                                  # physical acceleration budget
+python scripts/run_vespuq_system_readiness.py --out outputs/system_readiness                 # pre-results gate before headline runs
 python scripts/run_linear_propagation.py --config configs/vespuq/vespuq_smoke.yaml          # STM force-error covariance (deterministic)
 python scripts/run_propagation.py --config configs/vespuq/vespuq_real_lunar.yaml            # MC orbit-dispersion sampler (cross-check)
 python scripts/run_force_correction_benchmark.py --config configs/vespuq/vespuq_smoke.yaml  # online force-model correction (accuracy vs cost)

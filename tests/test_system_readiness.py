@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from scripts.run_vespuq_system_readiness import summarize_readiness
+from vesp.uq.readiness import summarize_readiness
 
 
 def test_summarize_readiness_ready_with_partial_rtn_not_promoted():

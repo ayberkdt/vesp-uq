@@ -492,6 +492,23 @@ held-out-calibrated). The second gap: the IAC evidence pack collects Markdown ta
   verified `Success: no issues found in 51 source files`.
 - **Effort:** S-M.
 
+### N22 - Pre-results readiness gate and measured-change cleanup - **DONE**
+
+- **Why:** the VESP-UQ development prompt requires measured gates before architecture or
+  attribution decisions. It is not enough for diagnostic tools to exist; they must run through one
+  repeatable, provenance-backed pre-results command before headline result production.
+- **Deliverables:** `src/vesp/uq/readiness.py` orchestrates the A/B/C gate diagnostics, exact
+  log-factor attribution with masking validation, RTN-style covariance prototype, optional
+  source-geometry auto-selection, and subrun provenance checks. `scripts/run_vespuq_system_readiness.py`
+  is now a thin CLI wrapper. `src/vesp/uq/rtn_noise_prototype.py` owns the RTN prototype artifact
+  workflow, while `src/vesp/uq/rtn_noise.py` stays the numerical scaling core. Shared CLI helpers
+  live in `src/vesp/uq/cli.py`.
+- **Acceptance:** quick readiness writes `outputs/system_readiness_quick/system_readiness.md` with
+  no consistency warnings and verified subrun manifests; full readiness includes the geometry
+  auto-selection sweep. SHAP/LIME, Helmholtz expansion, richer posterior, and source-tracing remain
+  intentionally absent unless their gates justify them.
+- **Effort:** S.
+
 ## Current research backlog (deliberately not scheduled)
 
 - **Angular heteroscedastic noise refinement** — N11 surfaced *band*-level (global sharpness)

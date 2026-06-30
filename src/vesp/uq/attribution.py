@@ -17,34 +17,22 @@ nearest-neighbour true force-error profile drops more than a random mask of the 
 from __future__ import annotations
 
 import copy
-import csv
-import io
 import math
 from pathlib import Path
 from typing import Any
 
 import torch
 
+from vesp.uq.cli import csv_text, fmt_float
 from vesp.uq.ensemble import nearest_neighbor_error_magnitude
 from vesp.uq.experiment import _build_trajectories, _resolve_time_weighting, _time_weights
 from vesp.uq.io.run_artifacts import write_run_artifacts
+from vesp.uq.metrics import safe_log
 from vesp.uq.risk_baselines import prepare
 from vesp.uq.scoring import _weighted_quantile
 from vesp.uq.suite import band_label
 
 _TERMS = ("log_expected_error", "log_altitude_weight", "log_ood_factor")
-
-
-def _safe_log(x: torch.Tensor, eps: float = 1.0e-300) -> torch.Tensor:
-    return torch.log(torch.as_tensor(x, dtype=torch.float64).clamp_min(eps))
-
-
-def _fmt(value: Any, spec: str = ".3g") -> str:
-    try:
-        f = float(value)
-    except (TypeError, ValueError):
-        return "n/a"
-    return "n/a" if not math.isfinite(f) else format(f, spec)
 
 
 def _weights_or_none(weights, n: int) -> torch.Tensor | None:
@@ -116,9 +104,9 @@ def supervisor_log_profiles(
         radius, mode=altitude_mode, low_altitude_radius=float(plugin.low_altitude_radius)
     )
     terms = {
-        "log_expected_error": _safe_log(expected),
-        "log_altitude_weight": _safe_log(altitude_weight),
-        "log_ood_factor": _safe_log(domain_factor),
+        "log_expected_error": safe_log(expected),
+        "log_altitude_weight": safe_log(altitude_weight),
+        "log_ood_factor": safe_log(domain_factor),
     }
     log_point_risk = terms["log_expected_error"] + terms["log_altitude_weight"] + terms["log_ood_factor"]
     point_risk = torch.exp(log_point_risk)
@@ -216,15 +204,6 @@ def masking_validation(
     }
 
 
-def _csv_text(rows: list[dict[str, Any]], columns: list[str]) -> str:
-    handle = io.StringIO()
-    writer = csv.DictWriter(handle, fieldnames=columns, lineterminator="\n")
-    writer.writeheader()
-    for row in rows:
-        writer.writerow({col: row.get(col, "") for col in columns})
-    return handle.getvalue()
-
-
 def _summary_md(summary_rows: list[dict[str, Any]], masking_rows: list[dict[str, Any]]) -> str:
     lines = [
         "# VESP-UQ Log-Factor Attribution",
@@ -251,7 +230,7 @@ def _summary_md(summary_rows: list[dict[str, Any]], masking_rows: list[dict[str,
         median_drop = drops[len(drops) // 2] if drops else float("nan")
         lines.append(
             f"| {band} | {n} | {dom_expected / max(1, n):.2f} | {dom_alt / max(1, n):.2f} | "
-            f"{dom_ood / max(1, n):.2f} | {wins / max(1, len(masks)):.2f} | {_fmt(median_drop, '.3f')} |"
+            f"{dom_ood / max(1, n):.2f} | {wins / max(1, len(masks)):.2f} | {fmt_float(median_drop, '.3f')} |"
         )
     lines += [
         "",
@@ -356,7 +335,7 @@ def run_log_attribution(
 
     text_files = {
         "log_attribution.md": _summary_md(summary_rows, masking_rows),
-        "attribution_summary.csv": _csv_text(
+        "attribution_summary.csv": csv_text(
             summary_rows,
             [
                 "band", "rank", "trajectory_id", "risk_score", "min_radius", "mean_radius",
@@ -366,7 +345,7 @@ def run_log_attribution(
                 "share_abs_expected_error", "share_abs_altitude_weight", "share_abs_ood_factor",
             ],
         ),
-        "masking_validation.csv": _csv_text(
+        "masking_validation.csv": csv_text(
             masking_rows,
             [
                 "band", "rank", "trajectory_id", "mask_fraction", "n_points", "n_masked",
@@ -375,7 +354,7 @@ def run_log_attribution(
                 "random_mask_drop_fraction", "top_mask_beats_random",
             ],
         ),
-        "top_segments.csv": _csv_text(
+        "top_segments.csv": csv_text(
             segment_rows,
             [
                 "band", "trajectory_id", "point_rank", "point_index", "radius", "point_risk",

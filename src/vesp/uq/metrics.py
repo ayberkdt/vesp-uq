@@ -15,6 +15,12 @@ import math
 import torch
 
 
+def safe_log(x: torch.Tensor, eps: float = 1.0e-300) -> torch.Tensor:
+    """Elementwise ``log`` in float64 with a tiny positive floor, so zeros/negatives clamp to ``eps``."""
+
+    return torch.log(torch.as_tensor(x, dtype=torch.float64).clamp_min(eps))
+
+
 def chi2_3_cdf(x: torch.Tensor | float) -> torch.Tensor:
     """CDF of the chi-square(3) distribution (closed form via the regularized lower gamma)."""
 

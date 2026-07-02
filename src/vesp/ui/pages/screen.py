@@ -11,6 +11,7 @@ import csv
 from datetime import datetime
 from pathlib import Path
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QButtonGroup,
@@ -28,7 +29,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from vesp.ui.helpers import safe_read_json
+from vesp.ui.helpers import SCORING_MODES as CANONICAL_SCORING_MODES
+from vesp.ui.helpers import safe_read_json, scoring_hint
 from vesp.ui.jobs import ProcessJob
 from vesp.ui.paths import OUTPUTS_DIR, list_configs, list_models
 from vesp.ui.widgets import (
@@ -44,12 +46,8 @@ from vesp.ui.widgets import (
 )
 
 MODEL_DEFAULT = "(model policy)"
-SCORING_MODES = (
-    MODEL_DEFAULT,
-    "supervisor_rel", "supervisor_rel_p95", "supervisor_abs", "supervisor_abs_p95",
-    "expected_abs", "expected_abs_p95", "expected_low_alt",
-    "max", "mean", "low_alt_integral", "combined",
-)
+# Full canonical scoring registry (shared, drift-guarded) + the "use the packaged policy" sentinel.
+SCORING_MODES = (MODEL_DEFAULT, *CANONICAL_SCORING_MODES)
 UNIT_CHOICES = ("model_normalized_accel", "m/s^2", "km/s^2", "mm/s^2", "um/s^2")
 SCORE_COLUMNS = ("trajectory_id", "risk_score", "max_expected_error", "min_radius", "max_domain_risk", "flagged_for_rerun")
 
@@ -124,6 +122,10 @@ class ScreenPage(QWidget):
         form.setVerticalSpacing(9)
         self.scoring = QComboBox()
         self.scoring.addItems(SCORING_MODES)
+        for i, mode in enumerate(SCORING_MODES):
+            hint = scoring_hint(mode)
+            if hint:
+                self.scoring.setItemData(i, hint, Qt.ItemDataRole.ToolTipRole)
         form.addRow("Scoring", self.scoring)
         self.threshold_edit = QLineEdit()
         self.threshold_edit.setPlaceholderText("absolute risk budget, e.g. 2.5e-3 (optional)")

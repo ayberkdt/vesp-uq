@@ -6,7 +6,7 @@ from scipy.integrate import solve_ivp
 
 from vesp.uq.data import load_uq_samples_from_csv
 from vesp.uq.plugin import VESPUQPlugin
-from vesp.uq.trajectory import run_risk_screening, select_reruns
+from vesp.uq.selection import run_risk_screening, select_reruns
 
 
 def kepler_to_cartesian(a_norm, e, inc_deg, raan_deg, argp_deg, ta_deg, mu=1.0):

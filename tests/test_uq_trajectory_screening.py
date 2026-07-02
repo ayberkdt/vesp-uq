@@ -375,7 +375,7 @@ def test_fit_info_omits_angular_scale_when_weight_zero():
 
 def test_vespuq_configs_use_recognized_scoring():
     from vesp.common.config import load_config
-    from vesp.uq.trajectory import SCORING_FUNCTIONS
+    from vesp.uq.scoring import SCORING_FUNCTIONS
 
     for path in ("configs/vespuq/vespuq_smoke.yaml", "configs/vespuq/vespuq_real_lunar.yaml"):
         cfg = load_config(path)

@@ -1,6 +1,6 @@
 """Drivers for the VESP-UQ score-variant ablation (WP6) and expanded baselines (WP5).
 
-These reuse the fit / trajectory / true-force-error core (:mod:`vesp.uq.risk_baselines`) and the
+These reuse the fit / trajectory / true-force-error core (:mod:`vesp.uq.baselines`) and the
 suite helpers (:mod:`vesp.uq.suite`) so the ablation studies share one source of truth for
 splitting, scoring, and aggregation. Variant / hybrid *selection* is done on a held-out validation
 split of the trajectory ensemble and the chosen candidate is reported on a disjoint test split, so
@@ -18,16 +18,19 @@ from pathlib import Path
 import torch
 
 from vesp.uq.altitude_controlled import spearman
-from vesp.uq.baselines import independent_random_scores
-from vesp.uq.benchmarking import evaluate_score_against_true_error
-from vesp.uq.expanded_baselines import (
+from vesp.uq.baselines import (
     HYBRID_WEIGHTS,
     altitude_bin_rmse_lookup,
     altitude_ood_hybrid,
     altitude_uncertainty_hybrid,
     apply_ridge_ranker,
+    assemble_baseline_scores,
     fit_ridge_ranker,
+    independent_random_scores,
+    prepare,
+    true_force_error,
 )
+from vesp.uq.benchmarking import evaluate_score_against_true_error
 from vesp.uq.experiment import _build_trajectories, _resolve_time_weighting, _time_weights
 from vesp.uq.io.run_artifacts import write_run_artifacts
 from vesp.uq.learned_supervisor import (
@@ -36,7 +39,6 @@ from vesp.uq.learned_supervisor import (
     fit_learned_supervisor,
     supervisor_components,
 )
-from vesp.uq.risk_baselines import assemble_baseline_scores, prepare, true_force_error
 from vesp.uq.score_variants import SCORE_VARIANTS, compute_score_variants
 from vesp.uq.suite import (
     _csv,

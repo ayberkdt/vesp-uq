@@ -15,7 +15,7 @@ conditions?" by combining four diagnostics on a single fitted layer per (config,
 
 Everything targets trajectory-level true FORCE-MODEL error (``a_reference - a_surrogate``), never
 position error. Runs are deterministic given a seed. Reuses the fit / true-error / score-assembly
-core in :mod:`vesp.uq.risk_baselines` rather than re-implementing it.
+core in :mod:`vesp.uq.baselines` rather than re-implementing it.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ from vesp.uq.experiment import _build_trajectories, _resolve_time_weighting, _ti
 from vesp.uq.integrity.metric_invariants import validate_metric, validate_row
 from vesp.uq.integrity.split_guard import Split, assert_no_test_access, reveal, tag
 from vesp.uq.io.run_artifacts import write_run_artifacts
-from vesp.uq.risk_baselines import assemble_baseline_scores, prepare, true_force_error
+from vesp.uq.baselines import assemble_baseline_scores, prepare, true_force_error
 from vesp.uq.significance import (
     metric_auroc,
     metric_capture,
@@ -572,18 +572,36 @@ class PlaceboLeakageError(RuntimeError):
     """Raised when a negative-control selector scores above chance (a G4 violation)."""
 
 
-# Chance-band half-width = k / sqrt(n_effective), floored so small smoke runs do not trip on
-# ordinary sampling noise. k ~ a few standard deviations of a null Spearman / capture estimate.
+# Chance-band half-width = k / sqrt(n_effective). k ~ a few standard deviations of a null Spearman /
+# capture estimate, so the band tracks the actual sampling noise of the aggregate.
+#
+# The floor only guards SMALL runs (smoke tests, n_effective <= PLACEBO_FLOOR_MAX_N): there the
+# statistical band is wide anyway and a fixed floor just avoids tripping on discreteness noise.
+# Above that cutoff the floor is dropped -- at journal-run scale the null std is ~1/sqrt(n) << floor,
+# so a fixed 0.20 floor would blind the detector to a subtle leak (the whole point of G4). This is
+# evidence-backed: on the real 28-seed run (n_effective = 10000*28 = 280k) the aggregated placebo
+# |Spearman| was <= 0.0025 and capture stayed within 0.005 of chance, comfortably inside the
+# statistical band 3.5/sqrt(280k) ~ 0.0066 -- the 0.20 floor was pure dead weight there.
 PLACEBO_TOL_K = 3.5
 PLACEBO_TOL_FLOOR = 0.20
+PLACEBO_FLOOR_MAX_N = 2000
 
 
 def placebo_tolerance(n_effective: int, *, k: float = PLACEBO_TOL_K,
-                      floor: float = PLACEBO_TOL_FLOOR) -> float:
-    """Half-width of the at-chance band for a placebo metric at effective sample size ``n_effective``."""
+                      floor: float = PLACEBO_TOL_FLOOR,
+                      floor_max_n: int = PLACEBO_FLOOR_MAX_N) -> float:
+    """Half-width of the at-chance band for a placebo metric at effective sample size ``n_effective``.
+
+    The band ``k / sqrt(n_effective)`` shrinks with sample size; the small-run ``floor`` is applied
+    only up to ``floor_max_n`` so large journal runs keep the full statistical sensitivity (see the
+    module note above -- a fixed floor at scale would mask subtle leaks).
+    """
 
     n = max(1, int(n_effective))
-    return max(float(floor), float(k) / math.sqrt(n))
+    band = float(k) / math.sqrt(n)
+    if n <= int(floor_max_n):
+        return max(float(floor), band)
+    return band
 
 
 def assert_placebos_at_chance(ranking_agg, *, primary_fraction: float, n_trajectories: int,

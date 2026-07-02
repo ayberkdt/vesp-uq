@@ -1,4 +1,4 @@
-"""VESP-UQ: a surrogate-agnostic equivalent-source uncertainty calibration layer (Phase 2).
+"""VESP-UQ: a surrogate-interface-agnostic equivalent-source uncertainty calibration layer.
 
 VESP-UQ is *not* a residual-gravity surrogate. It is an uncertainty layer that wraps any
 model with the interface ``x -> residual acceleration`` and answers a different question:

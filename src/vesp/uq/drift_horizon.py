@@ -12,6 +12,10 @@ dispersion at each horizon.
 Horizons are expressed in orbital periods (unit-free); no physical time scale is invented. The
 position dispersion is the force-error-posterior-implied sigma, the same quantity the ST-LRPS
 appendix reports -- this is a diagnostic, not a validated position-error propagation.
+
+Relationship to :mod:`vesp.uq.drift_boundary`: this module owns the generic random-orbit horizon
+sweep; ``drift_boundary`` owns the family-conditioned boundary map. They share the propagation
+primitive but answer different questions, so they are kept as separate entry points.
 """
 
 from __future__ import annotations
@@ -24,11 +28,11 @@ import numpy as np
 import torch
 
 from vesp.uq.altitude_controlled import spearman
+from vesp.uq.baselines import prepare
 from vesp.uq.benchmarking import evaluate_score_against_true_error
 from vesp.uq.ensemble import nearest_neighbor_error_magnitude
 from vesp.uq.io.run_artifacts import write_run_artifacts
 from vesp.uq.linear_propagation import LinearForceErrorCovariancePropagator
-from vesp.uq.risk_baselines import prepare
 from vesp.uq.scoring import aggregate_trajectory_error
 from vesp.uq.suite import _csv, _fmt, _pm, band_label, git_commit_hash, mean_std
 

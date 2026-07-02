@@ -1,7 +1,8 @@
 # VESP-UQ Paper Rigor Plan (Acta Astronautica)
 
-Status: **planning**. This plan hardens the *evidence and framing* of VESP-UQ for a journal
-(Acta Astronautica) submission. It builds on the completed
+Status: **implemented harnesses; paper verdicts remain measured-output dependent**. This plan
+hardens the *evidence and framing* of VESP-UQ for a journal (Acta Astronautica) submission. It
+builds on the completed
 [`VESP_UQ_JOURNAL_VALIDATION_PLAN.md`](VESP_UQ_JOURNAL_VALIDATION_PLAN.md) (WP1–WP12 done) and the
 N1–N21 roadmap. It does **not** relax any claim boundary in
 [`SCIENTIFIC_CLAIMS.md`](SCIENTIFIC_CLAIMS.md) / [`VESP_UQ_LIMITATIONS.md`](VESP_UQ_LIMITATIONS.md).
@@ -61,8 +62,8 @@ equivalent-source posterior against a UQ baseline a reviewer respects. These are
 | Learned supervisor exponents | `learned_supervisor.py` |
 | Journal report + LaTeX + claims table | `journal_report.py`, `run_journal_report.py` |
 
-**Gap = a statistics layer, decision-quality metrics, component-wise calibration, a respected UQ
-baseline, and a reframed report.**
+**Implemented evidence surface = statistics layer, decision-quality metrics, component-wise
+calibration, a respected UQ baseline, and a reframed report.**
 
 ---
 
@@ -77,7 +78,7 @@ baseline, and a reframed report.**
 **Goal:** every headline comparison ships with an uncertainty interval and a significance verdict,
 so "modestly improves" is a tested statement, not an eyeball.
 
-- **New module `src/vesp/uq/significance.py`:**
+- **Implemented module `src/vesp/uq/significance.py`:**
   - `paired_bootstrap_ci(scores_a, scores_b, true_error, metric, n_boot=2000, seed)` — bootstrap
     over trajectories for the **difference** in a metric (Spearman / capture@k / AUROC), returning
     `(delta_mean, ci_low, ci_high, p_two_sided)`. Trajectory-level resampling (not seed-level) gives
@@ -85,7 +86,7 @@ so "modestly improves" is a tested statement, not an eyeball.
   - `seed_paired_test(per_seed_a, per_seed_b)` — Wilcoxon signed-rank across seeds (small-n exact),
     complementary to the bootstrap.
   - Reuse the existing `spearman` (`altitude_controlled.py`) and `evaluate_score_against_true_error`.
-- **Wire into the suite:** `suite.run_suite` gains a pairwise block comparing `vespuq_supervisor`
+- **Wired into the suite:** `suite.run_suite` includes a pairwise block comparing `vespuq_supervisor`
   (and `learned_ridge_supervisor`) against `min_altitude` per band, emitting
   `significance_summary.csv` (delta, 95% CI, bootstrap p, Wilcoxon p) and a one-line verdict per
   comparison ("CI excludes 0" / "indistinguishable from altitude").
@@ -166,7 +167,7 @@ publishable mechanism + the best available fix.
 
 ## WP-D — A respected UQ baseline — **DONE (GP; ensemble deferred)**
 
-> Implemented `src/vesp/uq/baselines_uq.py::GPResidualUQ` — an exact independent-output Gaussian
+> Implemented `src/vesp/uq/baselines/gp.py::GPResidualUQ` — an exact independent-output Gaussian
 > process (RBF, median-heuristic lengthscale, per-component evidence-selected noise, Cholesky,
 > chunked predict, deterministic subsample for tractability) exposing `predict`,
 > `evaluate_calibration` (reusing the *same* `calibration_metrics` / `vector_calibration_metrics` /
@@ -181,7 +182,7 @@ publishable mechanism + the best available fix.
 
 **Goal:** answer "why an equivalent-source posterior instead of a standard UQ method?" with numbers.
 
-- **New `src/vesp/uq/baselines_uq.py`** (kept separate from the cheap heuristic `baselines.py`):
+- **Implemented `src/vesp/uq/baselines/gp.py`** (exported through the canonical `vesp.uq.baselines` package):
   - `gp_residual_baseline` — a GP (sparse/inducing-point if N forces it) on the residual force-error
     magnitude vs position, giving predictive mean + std for the same per-band calibration metrics and
     the same trajectory screening. This is the baseline reviewers expect for spatial UQ.
@@ -204,9 +205,9 @@ publishable mechanism + the best available fix.
 > Extended `src/vesp/uq/journal_report.py`: STUDY_INPUTS now ingests `significance_summary.csv`,
 > `decision_quality.csv`, and the GP-baseline CSVs. The executive summary leads with **calibrated
 > covariance as the primary contribution** and demotes scalar ranking to a significance-tested,
-> diagnostic use (`significance_verdict` injects the bootstrap-CI verdict). New report sections:
+> diagnostic use (`significance_verdict` injects the bootstrap-CI verdict). Implemented report sections:
 > 3b component-wise calibration, 3c decision quality, 6b supervisor-vs-altitude significance, 9c GP
-> baseline (calibration + decision). New LaTeX tables: `table_significance`, `table_decision_quality`,
+> baseline (calibration + decision). LaTeX tables: `table_significance`, `table_decision_quality`,
 > `table_component_calibration`, `table_uq_baseline`. Claims table adds significance / per-component
 > calibration / decision-quality / GP-baseline entries; recommendations fold in the significance and
 > baseline findings. Tests: extended `tests/test_journal_report.py`. Missing studies still render as

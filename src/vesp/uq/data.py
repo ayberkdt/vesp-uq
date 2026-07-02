@@ -1,4 +1,4 @@
-"""Surrogate-agnostic sample interface for VESP-UQ.
+"""Surrogate-interface-agnostic sample interface for VESP-UQ.
 
 VESP-UQ only needs, at each calibration position, the residual-force error
 ``e_a(x) = a_reference(x) - a_surrogate(x)``. This module loads/holds those samples in two

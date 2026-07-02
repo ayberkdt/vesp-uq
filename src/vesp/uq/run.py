@@ -86,7 +86,9 @@ def run(config: dict) -> dict:
     markdown = build_report_md(report)
     atomic_write_text(run_dir / "vespuq_report.md", markdown)
 
-    cal_header, cal_rows = calibration_table(report["experiment_1_calibration"])
+    cal_header, cal_rows = calibration_table(
+        report["experiment_1_calibration"], report.get("conformal_calibration")
+    )
     atomic_write_text(run_dir / "calibration_by_band.csv", csv_text(cal_header, cal_rows))
     atomic_write_text(
         run_dir / "trajectory_scores.csv", csv_text(tables["trajectory_header"], tables["trajectory_rows"])

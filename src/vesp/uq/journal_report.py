@@ -20,6 +20,7 @@ import csv
 import math
 from pathlib import Path
 
+from vesp.uq.io.run_artifacts import write_run_artifacts
 from vesp.uq.suite import git_commit_hash
 
 # study key -> CSV path relative to the outputs root, and the script that produces it.
@@ -681,15 +682,28 @@ def _recommendations(verdict, data) -> str:
 
 
 def write_report(outputs_root, out_dir=None) -> dict:
-    """Generate and write the report + LaTeX tables under ``out_dir`` (default: outputs root)."""
+    """Generate and write the report + LaTeX tables under ``out_dir`` (default: outputs root).
+
+    Everything is emitted through :func:`write_run_artifacts`, so ``out_dir`` also gets a
+    ``run_manifest.json`` (tool ``journal_report``) carrying SHA-256s for the Markdown report and
+    every LaTeX table -- closing the G1/G7 "no manifest" gap that previously flagged the journal
+    directory.
+    """
 
     outputs_root = Path(outputs_root)
     out_dir = Path(out_dir) if out_dir else outputs_root
     out_dir.mkdir(parents=True, exist_ok=True)
     result = build_report(outputs_root)
-    (out_dir / "journal_validation_report.md").write_text(result["report_md"], encoding="utf-8")
+
     tables_dir = out_dir / "latex_tables"
     tables_dir.mkdir(parents=True, exist_ok=True)
     for name, tex in result["tables"].items():
         (tables_dir / name).write_text(tex, encoding="utf-8")
+
+    write_run_artifacts(
+        out_dir,
+        tool="journal_report",
+        text_files={"journal_validation_report.md": result["report_md"]},
+        artifact_files={f"latex_tables/{name}": tables_dir / name for name in result["tables"]},
+    )
     return result

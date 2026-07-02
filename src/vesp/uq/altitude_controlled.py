@@ -22,7 +22,7 @@ import math
 
 import torch
 
-from vesp.uq.benchmarking import evaluate_score_against_true_error
+from vesp.uq.benchmarking import average_ranks, evaluate_score_against_true_error
 
 __all__ = [
     "min_radius_scores",
@@ -40,23 +40,9 @@ def _as_float_tensor(values) -> torch.Tensor:
 
 
 def _rankdata(values: torch.Tensor) -> torch.Tensor:
-    """Average ranks (ties shared); deterministic and dependency-free."""
+    """Average ranks (ties shared); deterministic and dependency-free (vectorized shared helper)."""
 
-    v = _as_float_tensor(values)
-    order = torch.argsort(v, stable=True)
-    sorted_v = v[order]
-    ranks_sorted = torch.empty_like(sorted_v)
-    n = int(v.numel())
-    start = 0
-    while start < n:
-        end = start + 1
-        while end < n and bool(sorted_v[end] == sorted_v[start]):
-            end += 1
-        ranks_sorted[start:end] = 0.5 * (start + end - 1) + 1.0
-        start = end
-    ranks = torch.empty_like(ranks_sorted)
-    ranks[order] = ranks_sorted
-    return ranks
+    return average_ranks(_as_float_tensor(values), base=1.0)
 
 
 def pearson(a, b) -> float:

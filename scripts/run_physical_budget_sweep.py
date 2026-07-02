@@ -2,7 +2,8 @@
 
 The single-budget screener (:mod:`scripts.run_physical_budget_screening`) answers "at budget B, which
 trajectories are flagged?". The journal question is the *curve*: "as the physical acceleration-error
-budget tightens, how many trajectories need a high-fidelity rerun, and what error slips through?".
+budget tightens, how many trajectories become force-risk follow-up candidates, and what error slips
+through?".
 
 This sweeps a grid of physical budgets against a single fitted layer. The VESP-UQ pipeline is run
 **once** to obtain every trajectory's force-risk score and held-out true force-model error; each

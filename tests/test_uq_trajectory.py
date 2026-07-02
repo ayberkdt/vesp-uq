@@ -7,9 +7,7 @@ import math
 import pytest
 import torch
 
-from vesp.uq.trajectory import (
-    RiskScreeningReport,
-    _spearman,
+from vesp.uq.scoring import (
     aggregate_trajectory_error,
     calibrate_risk_threshold,
     canonical_scoring_name,
@@ -17,6 +15,10 @@ from vesp.uq.trajectory import (
     is_expected_only_scoring,
     is_relative_scoring,
     score_sigma_profile,
+)
+from vesp.uq.selection import (
+    RiskScreeningReport,
+    _spearman,
     select_reruns,
 )
 

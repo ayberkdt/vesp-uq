@@ -10,14 +10,15 @@ import torch
 from vesp.common.config import load_config
 from vesp.uq.ablation import expanded_baselines_run, score_variant_run
 from vesp.uq.altitude_controlled import spearman
-from vesp.uq.expanded_baselines import (
+from vesp.uq.baselines import (
     altitude_bin_rmse_lookup,
     altitude_uncertainty_hybrid,
     apply_ridge_ranker,
     fit_ridge_ranker,
     zscore,
 )
-from vesp.uq.score_variants import SCORE_VARIANTS
+from vesp.uq.score_variants import PRODUCTION_SCORE_VARIANTS, SCORE_VARIANTS
+from vesp.uq.scoring import SCORING_FUNCTIONS
 
 ROOT = Path(__file__).resolve().parents[1]
 SMOKE_CONFIG = ROOT / "configs" / "vespuq" / "vespuq_smoke.yaml"
@@ -60,6 +61,11 @@ def test_altitude_bin_rmse_lookup_tracks_altitude():
     scores = altitude_bin_rmse_lookup(pos, err, [low_traj, high_traj])
     assert scores.numel() == 2
     assert float(scores[0]) > float(scores[1])  # low-altitude trajectory flagged riskier
+
+
+def test_production_score_variants_reference_scoring_registry():
+    assert set(PRODUCTION_SCORE_VARIANTS) <= set(SCORE_VARIANTS)
+    assert set(PRODUCTION_SCORE_VARIANTS.values()) <= set(SCORING_FUNCTIONS)
 
 
 @pytest.mark.skipif(not SMOKE_CONFIG.exists(), reason="smoke config missing")

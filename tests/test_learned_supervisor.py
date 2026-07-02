@@ -58,7 +58,7 @@ def test_fit_includes_default_and_never_worse():
 @pytest.mark.skipif(not SMOKE_CONFIG.exists(), reason="smoke config missing")
 def test_supervisor_components_match_plugin_supervisor():
     from vesp.uq.experiment import _build_trajectories
-    from vesp.uq.risk_baselines import prepare
+    from vesp.uq.baselines import prepare
 
     cfg = load_config(str(SMOKE_CONFIG))
     cfg["_config_path"] = str(SMOKE_CONFIG)

@@ -22,7 +22,7 @@ Implemented now:
 - constrained ("equal-data-fit", Skilling-Bryan) MaxEnt with OOD evaluation (Stage 3A.2),
 - **Stage 3C: exact linear-Gaussian posterior over sources + calibration diagnostics**
   (`extensions/probabilistic.py`, `training/uncertainty.py`). Posterior mean == ridge; the
-  covariance gives predictive error bars, validated by coverage (PICP) on held-out data.
+  covariance gives predictive force-error bars, evaluated by coverage (PICP) on held-out data.
 
 Established results (report as-is, do not soften):
 
@@ -39,10 +39,11 @@ Established results (report as-is, do not soften):
   case). With empirical-Bayes (evidence) hyperparameters it is well calibrated
   in-distribution (z_std ≈ 1.09, PICP90 ≈ 0.88).
 - **Stage 3C+ heteroscedastic (altitude-dependent) noise** (`noise_model: heteroscedastic`,
-  `floor + a·h^(-b)`, fit on held-out validation residuals) **calibrates every altitude band
-  in-distribution** on real lunar — the low band improves from PICP90 0.53 / z_std 4.13 to
-  ≈0.86 / 1.22 (mid 0.74→0.93, high ~1.0). On a pure altitude-OOD split the calibration must
-  extrapolate the law into an unseen band and is fundamentally limited.
+  `floor + a·h^(-b)`, fit on held-out validation residuals) is a post-hoc force-error
+  recalibration. It substantially improved the original real-lunar in-distribution coverage, but
+  the current L60/L90 evidence is conservative rather than uniformly sharp; operational conformal
+  scaling is implemented and partially validated, not a universal fix. On a pure altitude-OOD split
+  the calibration must extrapolate the law into an unseen band and is fundamentally limited.
 - `lambda_l2: auto` selects the Tikhonov weight at the L-curve corner (lands in the stable
   knee, λ≈1e-3 on the synthetic multi-shell case).
 - **Source geometry is only a weak lever for the low-altitude bottleneck** (experiment E8).
@@ -57,7 +58,7 @@ Implemented in the `vesp.uq` force-risk layer:
 
 - the **local predictive acceleration-error covariance `Sigma_a(x)`** (the full `3x3` per-point
   covariance, `VESPUQPlugin.predict_covariance_3x3`), plus expected-force-error and
-  domain-support / OOD scoring and trajectory-level selective-rerun screening,
+  domain-support / OOD scoring and trajectory-level force-risk prioritization,
 - a **simple post-hoc altitude-dependent heteroscedastic recalibration** of the predictive noise
   (`floor + a·h^(-b)`, 2 parameters) fit on held-out validation residuals.
 
@@ -65,12 +66,14 @@ Not implemented yet (do not claim):
 
 - full nonlinear / variational Bayesian posterior or sampling-based inference (Stage 3C is
   the **exact conjugate Gaussian** posterior for the linear model, not MCMC/VI),
-- a **learned / full / generative / nonlinear** heteroscedastic noise model (only the simple
-  2-parameter post-hoc recalibration above is implemented — do not call it learned/generative),
-- **validated orbit/state covariance propagation**: the *local* force-error covariance `Sigma_a(x)`
-  is implemented, and an *exploratory* Monte Carlo orbit-dispersion sampler exists
-  (`vesp.uq.propagation`), but a *validated* operational state/orbit covariance (realistic process
-  noise, measurement processing, covariance-realism result) is not — do not claim it,
+- a full data-driven or nonlinear heteroscedastic noise law (only the simple 2-parameter post-hoc
+  recalibration above is implemented — do not call it learned/generative),
+- a non-conservative / Helmholtz residual-force model: the current equivalent-source posterior is a
+  scalar-potential gradient model, so it is curl-free outside the source domain,
+- orbit/state covariance propagation is not validated: the *local* force-error covariance
+  `Sigma_a(x)` is implemented, and an *exploratory* Monte Carlo orbit-dispersion sampler exists
+  (`vesp.uq.propagation`), but an operational state/orbit covariance with realistic process noise,
+  measurement processing, and a covariance-realism result is not — do not claim it,
 - neural source-density network,
 - irregular-body source placement.
 
@@ -79,6 +82,10 @@ Not implemented yet (do not claim):
 - The method **represents exterior residual gravity fields using interior equivalent
   sources**.
 - The exterior field is **harmonic outside the source domain**.
+- The acceleration-error field represented by the current equivalent-source posterior is a
+  conservative field (a gradient of a scalar potential). This is appropriate for the committed
+  spherical-harmonic residual datasets, not a claim that arbitrary surrogate residuals are
+  curl-free.
 - Acceleration is **computed analytically** from the Newtonian kernel (synthetic path)
   or via finite differences from the spherical-harmonic model when ingesting real data
   (documented per dataset).
@@ -96,18 +103,22 @@ Not implemented yet (do not claim):
 
 ## Disallowed claims
 
-- Do **not** claim true internal density recovery.
+- Do not claim true internal-density inference or reconstruction.
 - Do **not** claim a full *nonlinear/variational/sampling* Bayesian posterior — Stage 3C
   is the exact conjugate Gaussian posterior for the (linear) model only.
 - Uncertainty: you **may** report the linear-Gaussian posterior's *measured* calibration
-  numbers (evidence + heteroscedastic: in-distribution per-band PICP90 ≈ 0.86–1.0, z_std ≈ 1).
-  The heteroscedastic noise is a simple 2-parameter power-law (+floor) **post-hoc recalibration**
-  on held-out residuals — do **not** call it a learned/full/generative noise model. Do **not**
-  claim calibration on **altitude-OOD extrapolation** (calibrating an altitude band with no
-  calibration data is fundamentally limited; report it as such).
-- Do **not** claim operational/validated orbit uncertainty propagation. An exploratory Monte Carlo
+  numbers. The heteroscedastic noise is a simple 2-parameter power-law (+floor) **post-hoc
+  recalibration** on held-out residuals, and operational conformal scaling is only partially
+  validated across L60/L90 bands — do not claim either one as a full data-driven noise model or a
+  universal sharpness fix. Do **not** claim calibration on **altitude-OOD extrapolation**
+  (calibrating an altitude band with no calibration data is fundamentally limited; report it as
+  such).
+- Do **not** claim VESP-UQ has been empirically validated across arbitrary surrogate families. The
+  interface accepts any residual acceleration samples; the committed evidence is still primarily
+  spherical-harmonic-derived residual spectra unless a separate surrogate benchmark is added.
+- Do **not** claim operational orbit uncertainty propagation. An exploratory Monte Carlo
   orbit-dispersion sampler exists (`vesp.uq.propagation`), but it samples the local force-error
-  posterior only; it is not a validated operational covariance product and force-risk does not rank
+  posterior only; an operational covariance product is not validated and force-risk does not rank
   long-horizon position error.
 - Do **not** claim "neural VESP-Net" unless a neural source-density model is
   implemented.

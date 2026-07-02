@@ -147,3 +147,12 @@ def test_write_report_emits_files(tmp_path):
     write_report(tmp_path, out_dir=out)
     assert (out / "journal_validation_report.md").exists()
     assert (out / "latex_tables" / "table_ranking_robustness.tex").exists()
+
+    # G1/G7: the journal dir now carries a provenance manifest covering the report + every table.
+    from vesp.uq.io.run_artifacts import verify_manifest
+
+    assert (out / "run_manifest.json").exists()
+    report = verify_manifest(out)
+    assert report["ok"], report
+    assert "journal_validation_report.md" in report["verified"]
+    assert any(name.endswith("table_ranking_robustness.tex") for name in report["verified"])

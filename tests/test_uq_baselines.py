@@ -10,6 +10,7 @@ import torch
 from vesp.core.sources import make_shell_sources
 from vesp.uq import VESPUQPlugin, make_synthetic_uq_samples
 from vesp.uq.baselines import (
+    BASELINE_REGISTRY,
     altitude_residual_expected_scores,
     domain_support_scores,
     fit_altitude_expected_curve,
@@ -35,6 +36,22 @@ def _fitted_plugin(domain_support=True):
 
 
 # ---- random ----
+
+
+def test_baseline_registry_exposes_canonical_entries():
+    assert {
+        "random",
+        "label_shuffled",
+        "min_altitude",
+        "low_altitude_exposure",
+        "knn_p95",
+        "vespuq_score",
+        "altitude_residual_expected",
+        "gp_residual_uq",
+    } <= set(BASELINE_REGISTRY)
+    assert BASELINE_REGISTRY["label_shuffled"].consumes_true_error is True
+    assert BASELINE_REGISTRY["min_altitude"].builder is min_altitude_scores
+
 
 def test_random_scores_deterministic_for_same_seed():
     a = random_scores(50, seed=7)

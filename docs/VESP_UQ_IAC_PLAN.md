@@ -13,8 +13,10 @@ e_a(x) = a_reference(x) - a_surrogate(x)
 ```
 
 with a physics-consistent interior equivalent-source posterior, and then provides per-position
-predictive uncertainty, trajectory-level risk scores, and selective high-fidelity rerun flags.
-It is surrogate-agnostic: it only needs acceleration samples, not the surrogate's architecture.
+predictive uncertainty and trajectory-level force-risk prioritization. It is
+surrogate-interface agnostic: it only needs acceleration samples, not the surrogate's architecture,
+and the committed evidence is SH-derived residual spectra rather than a separate neural
+surrogate family.
 
 ## Pipeline
 
@@ -35,7 +37,8 @@ It is surrogate-agnostic: it only needs acceleration samples, not the surrogate'
 
 ## What is implemented
 
-- Surrogate-agnostic data interface (direct-error and reference/surrogate CSV modes; synthetic).
+- Surrogate-interface-agnostic data interface (direct-error and reference/surrogate CSV modes;
+  synthetic).
 - Exact conjugate linear-Gaussian posterior; posterior mean == ridge point estimate.
 - Automatic L-curve regularization; evidence (empirical-Bayes) and fixed modes.
 - Altitude-dependent heteroscedastic calibration on held-out residuals.
@@ -51,8 +54,9 @@ It is surrogate-agnostic: it only needs acceleration samples, not the surrogate'
   and an *absolute* form (`supervisor_abs`(+`_p95`), fixed altitude reference — for physical
   budgets / zero-alarm thresholds). `expected`/`supervisor`(+`_p95`) are backward-compatible aliases.
 - Domain-support / OOD scoring (k-NN distance + radial + optional angular components).
-- Selective rerun with three policies (top-fraction top-k, absolute threshold, threshold+cap) and
-  capture-rate / precision / Spearman validation against a held-out ground-truth oracle.
+- Force-risk follow-up selection with three policies (top-fraction top-k, absolute threshold,
+  threshold+cap) and capture-rate / precision / Spearman validation against a held-out force-error
+  oracle. This is prioritization guidance, not a validated operational rerun loop.
 - **External trajectory ingestion** (`vesp.uq.io.load_trajectory_csv`): score surrogate-generated
   ensembles from CSV (positions-only, or with surrogate/reference acceleration pairs for direct
   residual-force-error fitting/scoring).
@@ -99,7 +103,7 @@ is not force-model-error dominated.
 - **Monte Carlo orbit-dispersion sampling** (`vesp.uq.propagation`, `scripts/run_propagation.py`):
   draws source-strength samples from the posterior and propagates a batch to show the orbit-level
   spread implied by the force-error posterior. It samples the *local* force-model error only and is
-  **not** a validated operational orbit-determination / state-covariance product (and force-risk does
+  operational orbit-determination / state-covariance realism is not validated here (and force-risk does
   not rank long-horizon position error). See `docs/VESP_UQ_LIMITATIONS.md`.
 - **Linearized (STM) covariance propagation** (`vesp.uq.linear_propagation`): the deterministic
   variational counterpart of the MC sampler, mapping the source posterior into a `6x6` state
@@ -113,8 +117,8 @@ is not force-model-error dominated.
 
 - A **validated** ST-LRPS (or other named surrogate) integration with an explicitly-tested
   orbit-accuracy / covariance-realism result.
-- Validated operational orbit/state covariance realism (the MC and STM propagators above are
-  exploratory only).
+- Operational orbit/state covariance realism is not validated here (the MC and STM propagators
+  above are exploratory only).
 
 (The Phase-5 online correction `a_corrected = a_surrogate + mean_error` is now implemented as an
 **exploratory** force-model correction — `vesp.uq.correction`, benchmarked with measured accuracy
@@ -126,8 +130,10 @@ position-accuracy claim. See `docs/VESP_UQ_LIMITATIONS.md`.)
 - VESP-UQ fits residual-force error from reference/surrogate acceleration pairs.
 - It provides a physics-consistent equivalent-source posterior over the force-error field.
 - It calibrates altitude-dependent predictive uncertainty (reduces low-altitude overconfidence).
-- It scores surrogate-generated trajectories for risk and supports selective high-fidelity rerun.
-- It is surrogate-agnostic at the acceleration interface level.
+- It scores surrogate-generated trajectories for force-risk prioritization and reports screening
+  diagnostics against held-out force-error oracles.
+- It is surrogate-interface agnostic at the acceleration interface level; current committed
+  evidence is SH-derived.
 
 ## Unsafe claims (do not make)
 
@@ -145,9 +151,9 @@ position-accuracy claim. See `docs/VESP_UQ_LIMITATIONS.md`.)
 - **Experiment 2 — geometry & regularization ablation** (existing `geometry_shootout` /
   `regularizer_shootout`). Goal: show source placement and entropy do not cheaply solve the
   low-altitude bottleneck, so uncertainty calibration is necessary.
-- **Experiment 3 — trajectory risk screening.** Goal: show selective high-fidelity reruns without
-  destroying surrogate speed. Report risk score per trajectory, flagged fraction, whether flagged
-  trajectories correspond to larger reference error, and post-processing runtime overhead.
+- **Experiment 3 — trajectory risk screening.** Goal: show force-risk prioritization at low
+  post-processing cost. Report risk score per trajectory, flagged fraction, whether flagged
+  trajectories correspond to larger reference force error, and post-processing runtime overhead.
 
 Run:
 

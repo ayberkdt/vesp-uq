@@ -11,6 +11,7 @@ import copy
 import tempfile
 from pathlib import Path
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -27,7 +28,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from vesp.ui.helpers import fmt, safe_read_json
+from vesp.ui.helpers import SCORING_MODES as CANONICAL_SCORING_MODES
+from vesp.ui.helpers import fmt, safe_read_json, scoring_hint
 from vesp.ui.jobs import ProcessJob
 from vesp.ui.paths import OUTPUTS_DIR, list_configs
 from vesp.ui.widgets import (
@@ -42,13 +44,7 @@ from vesp.ui.widgets import (
 )
 
 CONFIG_DEFAULT = "(config default)"
-SCORING_MODES = (
-    CONFIG_DEFAULT,
-    "calibrated_supervisor", "calibrated_supervisor_p95",
-    "supervisor_rel", "supervisor_rel_p95", "supervisor_abs", "supervisor_abs_p95",
-    "expected_abs", "expected_abs_p95", "expected_low_alt",
-    "max", "mean", "low_alt_integral", "combined",
-)
+SCORING_MODES = (CONFIG_DEFAULT, *CANONICAL_SCORING_MODES)
 COVARIANCE_MODES = (CONFIG_DEFAULT, "exact", "diagonal", "lowrank")
 NOISE_MODES = (CONFIG_DEFAULT, "heteroscedastic", "altitude_binned", "homoscedastic")
 TRISTATE = (CONFIG_DEFAULT, "on", "off")
@@ -118,6 +114,10 @@ class TrainPage(QWidget):
 
         self.scoring = QComboBox()
         self.scoring.addItems(SCORING_MODES)
+        for i, mode in enumerate(SCORING_MODES):
+            hint = scoring_hint(mode)
+            if hint:
+                self.scoring.setItemData(i, hint, Qt.ItemDataRole.ToolTipRole)
         form.addRow("Risk scoring", self.scoring)
 
         self.covariance = QComboBox()

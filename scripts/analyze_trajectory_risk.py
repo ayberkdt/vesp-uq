@@ -5,7 +5,7 @@ import yaml
 from vesp.uq.data import load_uq_samples_from_csv
 from vesp.uq.plugin import VESPUQPlugin
 from vesp.uq.propagation import VESPMonteCarloPropagator
-from vesp.uq.trajectory import run_risk_screening
+from vesp.uq.selection import run_risk_screening
 
 
 def main():

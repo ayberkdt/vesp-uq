@@ -28,7 +28,7 @@ from vesp.uq.ensemble import nearest_neighbor_error_magnitude
 from vesp.uq.experiment import _build_trajectories, _resolve_time_weighting, _time_weights
 from vesp.uq.io.run_artifacts import write_run_artifacts
 from vesp.uq.metrics import safe_log
-from vesp.uq.risk_baselines import prepare
+from vesp.uq.baselines import prepare
 from vesp.uq.scoring import _weighted_quantile
 from vesp.uq.suite import band_label
 

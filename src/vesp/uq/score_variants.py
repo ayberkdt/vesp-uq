@@ -20,9 +20,9 @@ import math
 
 import torch
 
-from vesp.uq.scoring import anisotropy_multiplier, radial_profile
+from vesp.uq.scoring import SCORING_FUNCTIONS, score_sigma_profile
 
-__all__ = ["SCORE_VARIANTS", "compute_score_variants"]
+__all__ = ["PRODUCTION_SCORE_VARIANTS", "SCORE_VARIANTS", "compute_score_variants"]
 
 # Variant name -> short description (also the stable column order for tables).
 SCORE_VARIANTS = (
@@ -46,6 +46,18 @@ SCORE_VARIANTS = (
     "anisotropy_gated_p95",
     "expected_epistemic_p95",
 )
+
+# Ablation variants that must stay tied to first-class production scoring modes.
+# Keys are report/table names; values are entries from ``scoring.SCORING_FUNCTIONS``.
+PRODUCTION_SCORE_VARIANTS = {
+    "radial_expected_p95": "radial_expected",
+    "anisotropy_gated_p95": "anisotropy_gated",
+    "expected_epistemic_p95": "expected_epistemic",
+}
+
+_missing_scoring = sorted(set(PRODUCTION_SCORE_VARIANTS.values()) - set(SCORING_FUNCTIONS))
+if _missing_scoring:
+    raise RuntimeError(f"score variant registry references unknown scoring modes: {_missing_scoring}")
 
 
 def _aggregate(values: torch.Tensor, mode: str, weights: torch.Tensor | None = None) -> float:
@@ -144,22 +156,11 @@ def compute_score_variants(
         "radial_component_uncertainty": torch.sqrt(radial_var),
         "tangential_component_uncertainty": torch.sqrt(tangential_var),
         "covariance_anisotropy": anisotropy,
-        # M1/M2 composites -- use the production scoring builders so the ablation evaluates exactly
-        # what `score_ensemble(scoring=...)` would compute (radial bias+spread; anisotropy gate).
-        "radial_expected_p95": radial_profile(
-            pred.mean_error.to(torch.float64), pred.std_components.to(torch.float64),
-            pred.positions.to(torch.float64),
-        ),
-        "anisotropy_gated_p95": expected * anisotropy_multiplier(C),
-        "expected_epistemic_p95": expected * pred.epistemic_fraction.to(torch.float64).clamp(0.0, 1.0),
     }
     agg_mode = {
         "expected_error_p95": "p95",
         "expected_error_max": "max",
         "expected_error_topk": "topk",
-        "radial_expected_p95": "p95",
-        "anisotropy_gated_p95": "p95",
-        "expected_epistemic_p95": "p95",
     }
 
     weight_list = [None] * len(traj_list) if weights is None else list(weights)
@@ -174,6 +175,20 @@ def compute_score_variants(
         for name, vals in point_values.items():
             mode = agg_mode.get(name, "mean")
             scores[name][i] = _aggregate(vals[sl], mode, weights=w_t if mode == "mean" else None)
+        for name, scoring in PRODUCTION_SCORE_VARIANTS.items():
+            scores[name][i] = score_sigma_profile(
+                sigma[sl],
+                radius[sl],
+                scoring=scoring,
+                low_altitude_radius=low_altitude_radius,
+                expected_error=expected[sl],
+                mean_error_vector=pred.mean_error[sl],
+                std_components=pred.std_components[sl],
+                covariance=C[sl],
+                positions=pred.positions[sl],
+                epistemic_fraction=pred.epistemic_fraction[sl],
+                weights=w_t,
+            ).risk_score
         scores["expected_error_periapsis_window"][i] = _periapsis_window_mean(expected[sl], r_i)
         scores["expected_error_low_alt_integral"][i] = _low_alt_integral(
             expected[sl], r_i, low_altitude_radius

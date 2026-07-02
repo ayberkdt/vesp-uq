@@ -1,10 +1,10 @@
 """VESP-UQ: equivalent-source uncertainty calibration layer for residual-gravity surrogates.
 
-This package reframes the equivalent-source machinery as a surrogate-agnostic *uncertainty*
-layer (not a better point-estimate surrogate). The headline object is :class:`VESPUQPlugin`,
-which fits the calibrated linear-Gaussian error posterior and scores Monte Carlo trajectories
-for selective high-fidelity rerun. See ``VESP_UQ_pipeline_and_usefulness_plan`` for the full
-positioning.
+This package reframes the equivalent-source machinery as a surrogate-interface-agnostic
+*uncertainty* layer (not a better point-estimate surrogate). The headline object is
+:class:`VESPUQPlugin`, which fits the calibrated linear-Gaussian error posterior and scores
+Monte Carlo trajectories for force-risk follow-up prioritization. See
+``VESP_UQ_pipeline_and_usefulness_plan`` for the full positioning.
 """
 
 from vesp.uq.data import (
@@ -21,8 +21,7 @@ from vesp.uq.metrics import (
     vector_calibration_metrics,
 )
 from vesp.uq.plugin import CovariancePrediction, UncertaintyPrediction, VESPUQPlugin
-from vesp.uq.trajectory import (
-    RiskScreeningReport,
+from vesp.uq.scoring import (
     TrajectoryScore,
     aggregate_trajectory_error,
     calibrate_risk_threshold,
@@ -30,8 +29,11 @@ from vesp.uq.trajectory import (
     is_absolute_scoring,
     is_expected_only_scoring,
     is_relative_scoring,
-    run_risk_screening,
     score_sigma_profile,
+)
+from vesp.uq.selection import (
+    RiskScreeningReport,
+    run_risk_screening,
     select_reruns,
 )
 

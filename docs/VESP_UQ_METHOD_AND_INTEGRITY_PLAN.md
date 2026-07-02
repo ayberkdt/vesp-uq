@@ -1,6 +1,7 @@
-# VESP-UQ Method-Strengthening & Integrity Plan (implementation-ready)
+# VESP-UQ Method-Strengthening & Integrity Plan (implementation log)
 
-Status: **planning — implementation-ready**. Two intertwined pillars:
+Status: **implemented core integrity + method hooks; measured verdicts pending for the real runs**.
+Two intertwined pillars:
 
 > *Stronger method and better results — and, while doing so, build features that guarantee we never
 > produce a fabricated metric.*
@@ -45,7 +46,8 @@ Tuned-config, 3-seed real GRAIL results:
   applied in `plugin.fit` step 5.
 - Artifacts/manifest: `src/vesp/uq/io/run_artifacts.py` `write_run_artifacts(...)` →
   `run_manifest.json` with `artifacts[name] = {sha256, bytes, origin}`, `inputs`, `_provenance`.
-- GP baseline: `src/vesp/uq/baselines_uq.py` (`GPResidualUQ`), comparison in
+- GP baseline: `src/vesp/uq/baselines/gp.py` (`GPResidualUQ`, also exported from
+  `vesp.uq.baselines`), comparison in
   `src/vesp/uq/uq_baseline_comparison.py`.
 
 **Convention for new integrity code:** put it under a new package `src/vesp/uq/integrity/`
@@ -62,21 +64,20 @@ radial vs tangential) and the bias direction. If any of these rank force error *
 bins, that is value beyond altitude — the central reviewer question.
 
 **Files.**
-- Modify `src/vesp/uq/scoring.py`: add per-point *profile builders* (pure functions on the predicted
-  arrays) and register new scoring names.
-- Modify `src/vesp/uq/plugin.py`: in `score_ensemble`/`_score_one`, pass the extra per-point arrays
-  (`std_components`, `covariance` if available, `mean_error`) into the profile builder.
-- Modify `scripts/run_score_ablation.py` to include the new variants (it already evaluates variants
-  on val→test).
+- Updated `src/vesp/uq/scoring.py` with per-point *profile builders* (pure functions on the predicted
+  arrays) and registered scoring names.
+- Updated `src/vesp/uq/plugin.py`: `score_ensemble` / `score_trajectory` pass the extra per-point
+  arrays (`std_components`, `covariance` if available, `mean_error`) into the profile builder.
+- Updated `scripts/run_score_ablation.py` / `src/vesp/uq/score_variants.py` so ablation variants map
+  back to production scoring modes on the validation-to-test path.
 
-**New scoring names (add to a new tuple `_DIRECTIONAL_MODES` and into `SCORING_FUNCTIONS`):**
+**Implemented scoring names (`_DIRECTIONAL_MODES`, registered in `SCORING_FUNCTIONS`):**
 - `radial_expected` — expected error projected onto the radial axis:
   `point_risk = |mean_error · r_hat| + sigma_radial`, aggregated p95.
 - `anisotropy_gated` — `expected_error * (1 + kappa * (lambda_max/lambda_min - 1))` where
   `lambda_*` are eigenvalues of the `3x3` covariance (anisotropy as a multiplier; `kappa` a fixed
   small constant, e.g. 0.5).
-- `largest_eigenvalue` — `sqrt(lambda_max(covariance))` per point (already partially present in the
-  ablation; make it a first-class scoring name).
+- `largest_eigenvalue` — `sqrt(lambda_max(covariance))` per point, now a first-class scoring name.
 
 **Signatures (scoring.py).**
 ```python
@@ -251,7 +252,7 @@ numbers all come from a fixture CSV → `ok True`; a manifest checksum mismatch 
 **Why.** Prevent (a) selecting/tuning on the test split and (b) the true-error oracle leaking into a
 score — the two failure modes that silently inflate results.
 
-**Files.** `src/vesp/uq/integrity/split_guard.py`; wire into `risk_baselines.prepare`,
+**Files.** `src/vesp/uq/integrity/split_guard.py`; wire into `baselines.prepare`,
 `suite.compute_run`, and `scoring`/`baselines` score builders.
 
 **Design.**
@@ -310,7 +311,7 @@ inputs (hypothesis).
 
 **Why.** A placebo that must score at chance is a continuous leakage/fabrication detector.
 
-**Files.** `src/vesp/uq/baselines.py` (add `label_shuffled_scores`), `suite.py` (add to
+**Files.** `src/vesp/uq/baselines/core.py` (add `label_shuffled_scores`), `suite.py` (add to
 `DEFAULT_SELECTORS` + a placebo-assertion in `run_suite`).
 
 **Design.** `random` already exists. Add `label_shuffled` = the true-error values permuted by a
@@ -396,10 +397,10 @@ baseline is written up as a **negative result** — exactly as conformal and `al
 | WP | status | outcome (measured) |
 |----|--------|--------------------|
 | G3 | **done** | `integrity/metric_invariants.py` (`validate_metric`/`validate_row`, `METRIC_DOMAINS`, `MetricRangeError`). Wired at every metric-record point: `suite.compute_run` (ranking/decision/calibration rows) + the three aggregators, and `uq_baseline_comparison.comparison_run` rows. None/NaN pass; finite or ±inf out-of-domain aborts with a precise `where`. Tests `tests/test_integrity_metric_invariants.py` (incl. a hypothesis property test that `detection_metrics`/`capture_auc`/`oracle_regret` stay in-domain). Smoke suite passes under it. |
-| G2 | **done** | `integrity/split_guard.py` (`Split`, `Tagged`, `tag`/`reveal`, `forbid_oracle`, `assert_no_test_access`; `SplitLeakageError`/`OracleLeakageError`; thread-local, reentrant). Wired at the seams: `suite.compute_run` tags the true-error oracle as TEST and assembles all scores inside `assert_no_test_access()`, revealing it (`allow_test=True`) only for post-selection metric eval + the placebo; `forbid_oracle(...)` at the top of `baselines.vespuq_scores` and `risk_baselines.assemble_baseline_scores`. Tests `tests/test_integrity_split_guard.py` (leak trips, clean path passes, oracle trips, thread-local, reentrant). **Note:** `ablation.py` val→test selection is already structurally val-only; wrapping its region is a low-value follow-up, deferred. |
+| G2 | **done** | `integrity/split_guard.py` (`Split`, `Tagged`, `tag`/`reveal`, `forbid_oracle`, `assert_no_test_access`; `SplitLeakageError`/`OracleLeakageError`; thread-local, reentrant). Wired at the seams: `suite.compute_run` tags the true-error oracle as TEST and assembles all scores inside `assert_no_test_access()`, revealing it (`allow_test=True`) only for post-selection metric eval + the placebo; `forbid_oracle(...)` at the top of `baselines.vespuq_scores` and `baselines.assemble_baseline_scores`. Tests `tests/test_integrity_split_guard.py` (leak trips, clean path passes, oracle trips, thread-local, reentrant). **Note:** `ablation.py` val→test selection is already structurally val-only; wrapping its region is a low-value follow-up, deferred. |
 | G4 | **done** | `baselines.label_shuffled_scores` (true error permuted: right marginal, no alignment) added to `DEFAULT_SELECTORS`; built outside the G2 guard (it deliberately uses the oracle). `suite.assert_placebos_at_chance` (+ `placebo_tolerance`, `PlaceboLeakageError`) asserts every placebo (`random`, `label_shuffled`) scores at chance at the primary budget per band — Spearman≈0 and capture≈rerun_fraction, tol = max(0.2, 3.5/√n_eff). Called in `run_suite`; a violation fails the run; results surfaced in `meta.placebo_checks`. Tests `tests/test_integrity_placebos.py`. Smoke suite placebos pass at chance. |
 | G1 | **done** | `integrity/number_audit.py` (`audit_report_numbers`, `audit_latex_tables`, `collect_csv_values`, `verify_csv_manifests`) + `scripts/run_number_audit.py` (exits non-zero on any orphan / manifest issue). Audits every data number against the source-CSV multiset (relative tol with abs floor; `%` matches the `/100` form); skips ints / years / identifiers (`L90`, `p95`, `picp_90`) / refs (`Table 3`, `Phase-14`) / code fences; verifies each CSV is manifested with a matching SHA-256. **Baseline against the real `outputs/journal/journal_validation_report.md`: 543 numbers checked, 0 orphans, 28 CSVs manifested + matching** (with the 11 study dirs the report ingests passed as `--csv-dir`). Tests `tests/test_integrity_number_audit.py` (planted orphan fails, clean passes, tampered-manifest fails, identifiers/refs/code-fences not flagged, `%`↔fraction, LaTeX orphan). |
-| M1 | **done (impl); verdict pending real run** | `scoring.py`: profile builders `radial_profile` (`|mean_error·r_hat| + sigma_radial`, diagonal projection via `local_radial_frame`), `anisotropy_multiplier` (`1+kappa(λmax/λmin−1)`, isotropic→1), `largest_eigenvalue_profile` (`sqrt(λmax)`); new first-class modes `radial_expected` / `anisotropy_gated` / `largest_eigenvalue` in `SCORING_FUNCTIONS` (+ `_DIRECTIONAL_MODES`, `_COVARIANCE_MODES`, `needs_covariance`). `score_sigma_profile` extended (`mean_error_vector`/`std_components`/`covariance`/`positions` kwargs, p95-aggregated, clear errors if inputs missing). `plugin.score_ensemble`/`score_trajectory`/`_score_profile` build `predict_covariance_3x3` **only when `needs_covariance`** (default scoring pays nothing); batched==sequential contract preserved. Ablation: `radial_expected_p95` / `anisotropy_gated_p95` added to `score_variants.SCORE_VARIANTS` (reuse the production builders). Tests `tests/test_uq_scoring.py` (manual radial projection, isotropic→1, requires-covariance guards, smoke-ensemble finiteness, batched==sequential). **Within-bin "beats altitude" verdict needs the real 3-seed L60/L90 ablation run (`scripts/run_score_ablation.py`).** |
+| M1 | **done (impl); verdict pending real run** | `scoring.py`: profile builders `radial_profile` (`|mean_error·r_hat| + sigma_radial`, diagonal projection via `local_radial_frame`), `anisotropy_multiplier` (`1+kappa(λmax/λmin−1)`, isotropic→1), `largest_eigenvalue_profile` (`sqrt(λmax)`); new first-class modes `radial_expected` / `anisotropy_gated` / `largest_eigenvalue` in `SCORING_FUNCTIONS` (+ `_DIRECTIONAL_MODES`, `_COVARIANCE_MODES`, `needs_covariance`). `score_sigma_profile` extended (`mean_error_vector`/`std_components`/`covariance`/`positions` kwargs, p95-aggregated, clear errors if inputs missing). `plugin.score_ensemble`/`score_trajectory`/`_score_profile` build `predict_covariance_3x3` **only when `needs_covariance`** (default scoring pays nothing); batched==sequential contract preserved. Ablation: `score_variants.PRODUCTION_SCORE_VARIANTS` maps `radial_expected_p95` / `anisotropy_gated_p95` back to production `SCORING_FUNCTIONS`, and the ablation calls `score_sigma_profile` rather than duplicating formulas. Tests `tests/test_uq_scoring.py` + `tests/test_score_variants_expanded.py` cover the registry link. **Within-bin "beats altitude" verdict needs the real 3-seed L60/L90 ablation run (`scripts/run_score_ablation.py`).** |
 | M2 | **done (impl); verdict pending real run** | `scoring.py`: mode `expected_epistemic` (`expected_error * epistemic_fraction**gamma`, p95; `gamma=0` ≡ `expected_abs_p95`; `epistemic_fraction = epistemic_sigma/sigma` already on `UncertaintyPrediction`). Wired through `score_sigma_profile` + plugin scoring path; ablation variant `expected_epistemic_p95` added. Tests: gamma=0 reduces to expected-p95, aleatoric-point downweighting, epistemic_fraction∈[0,1] on a fitted plugin. **capture-AUC / oracle-regret vs `expected_abs_p95` & `min_altitude` needs the real ablation run.** |
 | M3 | pending | — |
 | M4 | pending | — |

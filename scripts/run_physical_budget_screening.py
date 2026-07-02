@@ -200,7 +200,7 @@ def _screening_md(result: dict) -> str:
         ("**Zero alarms:** no trajectory's estimated force-risk exceeded the physical budget on this "
          "set." if result["n_flagged"] == 0 else
          "**Nonzero alarms:** the trajectories below carry estimated force-risk at or above the "
-         "physical budget and are flagged for high-fidelity rerun."),
+         "physical budget and are flagged as candidates for force-risk follow-up."),
         "",
         "## Top flagged trajectories",
         "",

@@ -1,7 +1,7 @@
-"""Selective high-fidelity rerun: turn per-trajectory risk scores into a flagged subset.
+"""Force-risk follow-up selection: turn per-trajectory risk scores into a flagged subset.
 
 Given one risk score per trajectory (from :mod:`vesp.uq.scoring`), :func:`select_reruns` flags
-which trajectories should be recomputed with a higher-fidelity force model. Three policies:
+which trajectories are candidates for reference-data or higher-fidelity follow-up. Three policies:
 
 - top-fraction (``rerun_fraction``, exact ``ceil(frac*n)`` top-k by default);
 - absolute threshold (``threshold``, may legitimately flag *zero* in a safe regime);
@@ -27,7 +27,7 @@ FRACTION_POLICIES = ("topk", "quantile")
 
 @dataclass
 class RiskScreeningReport:
-    """Outcome of selecting which trajectories to rerun at high fidelity."""
+    """Outcome of selecting which trajectories are flagged for force-risk follow-up."""
 
     n_trajectories: int
     threshold: float
@@ -96,7 +96,7 @@ def select_reruns(
     threshold_source: str | None = None,
     threshold_quantile: float | None = None,
 ) -> RiskScreeningReport:
-    """Flag the riskiest trajectories for high-fidelity rerun.
+    """Flag the riskiest trajectories for force-risk follow-up.
 
     Three selection policies:
 
@@ -258,12 +258,12 @@ def run_risk_screening(
     threshold_source: str | None = None,
     threshold_quantile: float | None = None,
 ) -> dict:
-    """Score a trajectory ensemble with ``plugin`` and select the high-fidelity rerun subset.
+    """Score a trajectory ensemble with ``plugin`` and select the force-risk follow-up subset.
 
     ``plugin`` is any object exposing ``score_ensemble(trajectories, scoring=..., weights=...)``
     (the :class:`~vesp.uq.plugin.VESPUQPlugin`). Returns a dict with:
       - ``trajectory_scores``: list of :class:`~vesp.uq.scoring.TrajectoryScore` (one per orbit),
-      - ``selected_reruns``: indices flagged for high-fidelity rerun,
+      - ``selected_reruns``: indices flagged for force-risk follow-up,
       - ``risk_screening_report``: the :class:`RiskScreeningReport` (validated when
         ``true_error`` -- one scalar per trajectory -- is supplied).
 

@@ -78,6 +78,33 @@ def test_ui_imports_stay_light():
     assert result.returncode == 0, result.stderr
 
 
+def test_scoring_modes_cover_backend_registry():
+    # The UI scoring list must stay in lockstep with the backend registry: a new mode (e.g. an M1/M2
+    # directional score) that is not surfaced here is a UI-drift bug. Compared against the canonical
+    # names so the backward-compatible aliases are not required in the dropdown.
+    from vesp.ui.helpers import SCORING_MODES, scoring_hint
+    from vesp.uq.scoring import SCORING_FUNCTIONS, canonical_scoring_name
+
+    canonical = {canonical_scoring_name(m) for m in SCORING_FUNCTIONS}
+    assert set(SCORING_MODES) == canonical
+    assert len(SCORING_MODES) == len(set(SCORING_MODES))  # no duplicates / stray aliases
+    # every M1/M2 mode carries a tooltip so the new capability is discoverable in the UI
+    for mode in ("radial_expected", "anisotropy_gated", "largest_eigenvalue", "expected_epistemic"):
+        assert mode in SCORING_MODES
+        assert scoring_hint(mode)
+    assert scoring_hint("supervisor_rel_p95").endswith("(p95-aggregated per trajectory)")
+
+
+def test_train_and_screen_pages_expose_full_scoring_list():
+    from vesp.ui.helpers import SCORING_MODES as CANON
+    from vesp.ui.pages import screen, train
+
+    assert set(CANON) <= set(screen.SCORING_MODES)
+    assert set(CANON) <= set(train.SCORING_MODES)
+    assert screen.SCORING_MODES[0] == screen.MODEL_DEFAULT   # sentinel stays first
+    assert train.SCORING_MODES[0] == train.CONFIG_DEFAULT
+
+
 def test_theme_builds_consistent_qss():
     from vesp.ui import theme
 

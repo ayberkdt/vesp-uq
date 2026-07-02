@@ -12,6 +12,8 @@ import csv as _csv
 import io
 import math
 
+_BAND_ORDER = ("all", "low", "mid", "high")
+
 
 def csv_text(header: list[str], rows: list[list]) -> str:
     buf = io.StringIO()
@@ -136,20 +138,79 @@ def build_tables(scores, screening, true_error, flagged_set) -> dict:
     return {"trajectory_header": traj_header, "trajectory_rows": traj_rows, "flagged_rows": flagged_rows}
 
 
-def calibration_table(calibration: dict) -> tuple[list[str], list[list]]:
+def _as_float_or_none(value) -> float | None:
+    try:
+        x = float(value)
+    except (TypeError, ValueError):
+        return None
+    return x if math.isfinite(x) else None
+
+
+def _conformal_scale_for_band(conformal: dict | None, band: str) -> float:
+    """Operational conformal std multiplier for a calibration band.
+
+    Reports use ``1.0`` when the operational conformal layer is absent or fitted but not applied.
+    For per-band conformal runs, named band scales override the global fallback.
+    """
+
+    conformal = conformal or {}
+    if not (conformal.get("enabled") and conformal.get("apply")):
+        return 1.0
+    scope = str(conformal.get("scope", "global"))
+    if band != "all" and "per_band" in scope:
+        for item in conformal.get("bands") or ():
+            if str(item.get("name")) == band and item.get("used", True):
+                scale = _as_float_or_none(item.get("scale"))
+                if scale is not None:
+                    return scale
+    global_scale = _as_float_or_none((conformal.get("global") or {}).get("scale"))
+    return 1.0 if global_scale is None else global_scale
+
+
+def _uncertainty_decomposition_fields(metrics: dict, conformal_scale: float) -> dict:
+    """Approximate per-band decomposition from band-mean standard deviations."""
+
+    pred = _as_float_or_none(metrics.get("mean_pred_std"))
+    epi = _as_float_or_none(metrics.get("mean_epistemic_std"))
+    out = {"conformal_prediction_scale": conformal_scale}
+    if pred is None or pred <= 0.0 or epi is None or epi < 0.0:
+        return out
+    remainder = math.sqrt(max(pred * pred - epi * epi, 0.0))
+    out.update(
+        {
+            "epistemic_to_pred_std_ratio": epi / pred,
+            "approx_posthoc_remainder_std": remainder,
+            "approx_posthoc_remainder_to_pred_std_ratio": remainder / pred,
+        }
+    )
+    return out
+
+
+def _calibration_fields_for_band(metrics: dict, conformal_scale: float) -> dict:
+    fields = dict(metrics)
+    fields.update(_uncertainty_decomposition_fields(metrics, conformal_scale))
+    return fields
+
+
+def calibration_table(calibration: dict, conformal: dict | None = None) -> tuple[list[str], list[list]]:
     metric_keys = [
         "n", "mean_radius", "rmse", "mean_pred_std", "mean_epistemic_std", "z_std",
         "picp_50", "picp_68", "picp_90", "picp_95", "nll", "crps",
         "ellipsoid_picp_50", "ellipsoid_picp_68", "ellipsoid_picp_90", "ellipsoid_picp_95",
         "mean_mahalanobis_d2", "median_mahalanobis_d2",
+        "radial_z_std", "tangential_z_std", "radial_picp_90", "tangential_picp_90",
+        "radial_winkler_90", "tangential_winkler_90", "calibration_error_90",
+        "epistemic_to_pred_std_ratio", "approx_posthoc_remainder_std",
+        "approx_posthoc_remainder_to_pred_std_ratio", "conformal_prediction_scale",
     ]
     header = ["band"] + metric_keys
     rows = []
-    for name in ("all", "low", "mid", "high"):
+    for name in _BAND_ORDER:
         m = calibration.get(name)
         if not m:
             continue
-        rows.append([name] + [m.get(k, "") for k in metric_keys])
+        fields = _calibration_fields_for_band(m, _conformal_scale_for_band(conformal, name))
+        rows.append([name] + [fields.get(k, "") for k in metric_keys])
     return header, rows
 
 
@@ -160,6 +221,71 @@ def fmt(x, spec: str = ".3g") -> str:
         return format(float(x), spec)
     except (TypeError, ValueError):
         return str(x)
+
+
+def _component_calibration_md(calibration: dict) -> list[str]:
+    has_component_metrics = any(
+        (calibration.get(name) or {}).get("radial_z_std") is not None for name in _BAND_ORDER
+    )
+    if not has_component_metrics:
+        return []
+    lines = [
+        "",
+        "### Component-wise calibration",
+        "",
+        "| band | radial_z_std | tangential_z_std | radial_picp_90 | tangential_picp_90 | cal_error_90 | radial_winkler_90 | tangential_winkler_90 |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for name in _BAND_ORDER:
+        m = calibration.get(name)
+        if not m or m.get("radial_z_std") is None:
+            continue
+        lines.append(
+            f"| {name} | {fmt(m.get('radial_z_std'), '.2f')} | "
+            f"{fmt(m.get('tangential_z_std'), '.2f')} | {fmt(m.get('radial_picp_90'), '.2f')} | "
+            f"{fmt(m.get('tangential_picp_90'), '.2f')} | {fmt(m.get('calibration_error_90'), '.3f')} | "
+            f"{fmt(m.get('radial_winkler_90'), '.3e')} | {fmt(m.get('tangential_winkler_90'), '.3e')} |"
+        )
+    return lines
+
+
+def _uncertainty_decomposition_md(calibration: dict, conformal: dict | None) -> list[str]:
+    has_decomposition = any(
+        (calibration.get(name) or {}).get("mean_pred_std") is not None
+        and (calibration.get(name) or {}).get("mean_epistemic_std") is not None
+        for name in _BAND_ORDER
+    )
+    if not has_decomposition:
+        return []
+    lines = [
+        "",
+        "### Uncertainty decomposition",
+        "",
+        "| band | final_mean_pred_std | raw_mean_epistemic_std | epi/pred | approx_posthoc_remainder_std | remainder/pred | conformal_scale |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for name in _BAND_ORDER:
+        m = calibration.get(name)
+        if not m:
+            continue
+        fields = _calibration_fields_for_band(m, _conformal_scale_for_band(conformal, name))
+        if "epistemic_to_pred_std_ratio" not in fields:
+            continue
+        lines.append(
+            f"| {name} | {fmt(fields.get('mean_pred_std'), '.3e')} | "
+            f"{fmt(fields.get('mean_epistemic_std'), '.3e')} | "
+            f"{fmt(fields.get('epistemic_to_pred_std_ratio'), '.3f')} | "
+            f"{fmt(fields.get('approx_posthoc_remainder_std'), '.3e')} | "
+            f"{fmt(fields.get('approx_posthoc_remainder_to_pred_std_ratio'), '.3f')} | "
+            f"{fmt(fields.get('conformal_prediction_scale'), '.3g')} |"
+        )
+    lines += [
+        "",
+        "Approximate diagnostic from band-mean standard deviations: the remainder term groups "
+        "post-hoc noise calibration and any applied conformal scaling, while the epistemic column "
+        "is the raw equivalent-source posterior contribution.",
+    ]
+    return lines
 
 
 def _conformal_prediction_summary(conformal: dict) -> str:
@@ -247,7 +373,7 @@ def build_report_md(report: dict) -> str:
         "| band | mean_radius | rmse | mean_pred_std | mean_epi_std | z_std | picp_90 | ell_picp_90 | mean_d2 | nll |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
-    for name in ("all", "low", "mid", "high"):
+    for name in _BAND_ORDER:
         m = cal.get(name)
         if not m:
             continue
@@ -258,6 +384,8 @@ def build_report_md(report: dict) -> str:
             f"{fmt(m.get('ellipsoid_picp_90'), '.2f')} | {fmt(m.get('mean_mahalanobis_d2'), '.2f')} | "
             f"{fmt(m.get('nll'), '.3f')} |"
         )
+    lines += _component_calibration_md(cal)
+    lines += _uncertainty_decomposition_md(cal, conformal)
     if "low_high_epistemic_std_ratio" in cal:
         grows = s.get("epistemic_grows_at_low_altitude")
         lines += [
@@ -490,8 +618,9 @@ def build_model_card(report: dict, *, model_filename: str, metadata: dict) -> st
     lines = [
         f"# Model card - `{model_filename}`",
         "",
-        "**VESP-UQ fitted equivalent-source force-error uncertainty layer.** Surrogate-agnostic: "
-        "wraps any residual-gravity model sampled as `e_a(x) = a_reference(x) - a_surrogate(x)`.",
+        "**VESP-UQ fitted equivalent-source force-error uncertainty layer.** "
+        "Surrogate-interface agnostic: wraps any residual-gravity model sampled as "
+        "`e_a(x) = a_reference(x) - a_surrogate(x)`.",
         "",
         "## Intended use",
         "",

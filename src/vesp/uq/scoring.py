@@ -1,8 +1,8 @@
 """Per-trajectory risk scoring for VESP-UQ (force-risk / OOD, not position error).
 
 This module turns a per-output-point profile (predictive ``sigma``, ``expected_error``, optional
-domain-support risk) into a single :class:`TrajectoryScore`. It is fully surrogate-agnostic: it
-consumes arrays, never a gravity model, and never claims to predict trajectory *position* error
+domain-support risk) into a single :class:`TrajectoryScore`. It is surrogate-interface agnostic:
+it consumes arrays, never a gravity model, and never claims to predict trajectory *position* error
 -- it summarizes the surrogate's expected *force-model* error and out-of-support risk.
 
 Three scoring families:
@@ -60,7 +60,7 @@ _SUPERVISOR_MODES = (
 #   largest_eigenvalue-- sqrt(lambda_max(covariance)); the worst-direction predictive std.
 _DIRECTIONAL_MODES = ("radial_expected", "anisotropy_gated", "largest_eigenvalue")
 # Epistemic-targeted screening (M2): up-weight points whose uncertainty is reducible (epistemic)
-# rather than aleatoric -- where a high-fidelity rerun actually helps.
+# rather than aleatoric -- useful for prioritizing reference-data follow-up.
 #   expected_epistemic -- expected_error * epistemic_fraction**gamma, p95-aggregated.
 _EPISTEMIC_MODES = ("expected_epistemic",)
 # Subset of the directional modes that need the FULL 3x3 covariance (not just std_components).

@@ -1,6 +1,6 @@
 """Head-to-head: VESP-UQ vs a Gaussian-process UQ baseline (WP-D).
 
-Fits the VESP-UQ plugin and a :class:`~vesp.uq.baselines_uq.GPResidualUQ` on the *same* train/held
+Fits the VESP-UQ plugin and a :class:`~vesp.uq.baselines.GPResidualUQ` on the *same* train/held
 split and scores them on identical metrics: per-band calibration (z_std, PICP90, ellipsoid PICP90,
 radial/tangential z_std, calibration error, Winkler), trajectory-screening decision quality
 (AUROC / capture-AUC / oracle-regret), and fit/predict runtime. The point is not to crown a winner
@@ -16,14 +16,19 @@ import copy
 import time
 from pathlib import Path
 
-from vesp.uq.baselines import min_altitude_scores, vespuq_scores
-from vesp.uq.baselines_uq import GPResidualUQ
+from vesp.uq.baselines import (
+    SUPERVISOR_SCORING,
+    GPResidualUQ,
+    min_altitude_scores,
+    prepare,
+    true_force_error,
+    vespuq_scores,
+)
 from vesp.uq.benchmarking import decision_quality_metrics
 from vesp.uq.experiment import _build_trajectories, _resolve_time_weighting, _time_weights
 from vesp.uq.integrity.metric_invariants import validate_row
 from vesp.uq.io.run_artifacts import write_run_artifacts
 from vesp.uq.plugin import VESPUQPlugin
-from vesp.uq.risk_baselines import SUPERVISOR_SCORING, prepare, true_force_error
 from vesp.uq.suite import _csv, _pm, band_label, git_commit_hash, mean_std
 
 CALIB_REGIONS = ("all", "low", "mid", "high")

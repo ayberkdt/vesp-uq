@@ -18,6 +18,7 @@ Everything here targets force-model residuals, never position error.
 from __future__ import annotations
 
 import copy
+import json
 import math
 import re
 from collections.abc import Sequence
@@ -26,11 +27,12 @@ from typing import Any
 
 import torch
 
+from vesp.uq.benchmarking import average_ranks
 from vesp.uq.cli import csv_text, fmt_float
 from vesp.uq.experiment import _build_trajectories, _resolve_time_weighting, _time_weights
 from vesp.uq.io.run_artifacts import write_run_artifacts
 from vesp.uq.metrics import local_radial_frame, safe_log
-from vesp.uq.risk_baselines import prepare
+from vesp.uq.baselines import prepare
 from vesp.uq.suite import band_label
 
 _REGIONS = ("all", "low", "mid", "high")
@@ -63,22 +65,13 @@ def _pearson(x: torch.Tensor, y: torch.Tensor) -> float:
 
 
 def _rankdata(x: torch.Tensor) -> torch.Tensor:
-    """Simple average ranks for Spearman correlations; ties receive their midpoint rank."""
+    """Average ranks for Spearman correlations; ties receive their midpoint rank (vectorized).
 
-    values = torch.as_tensor(x, dtype=torch.float64).reshape(-1)
-    order = torch.argsort(values)
-    ranks = torch.empty_like(values)
-    sorted_values = values[order]
-    n = int(values.numel())
-    i = 0
-    while i < n:
-        j = i + 1
-        while j < n and bool(sorted_values[j] == sorted_values[i]):
-            j += 1
-        rank = 0.5 * (i + j - 1)
-        ranks[order[i:j]] = rank
-        i = j
-    return ranks
+    Uses the shared 1-based helper -- the constant offset vs the previous 0-based ranks is
+    irrelevant since these ranks only ever feed the shift-invariant Pearson correlation.
+    """
+
+    return average_ranks(x, base=1.0)
 
 
 def _spearman(x: torch.Tensor, y: torch.Tensor) -> float:
@@ -524,6 +517,166 @@ def measurement_c_curl_ratio(
     }
 
 
+def _resolve_metadata_sidecar(data_path: str | Path) -> Path:
+    return Path(str(data_path) + ".metadata.json")
+
+
+def _resolve_maybe_relative_path(raw_path: str | Path, *, data_path: Path) -> Path:
+    path = Path(raw_path)
+    if path.exists():
+        return path
+    for candidate in (Path.cwd() / path, data_path.parent / path):
+        if candidate.exists():
+            return candidate
+    return path
+
+
+def measurement_c_sh_potential_curl_control(
+    data_path: str | Path | None,
+    positions: torch.Tensor,
+    field: torch.Tensor,
+    *,
+    max_points: int = 128,
+    k_neighbors: int = 24,
+    finite_difference_step: float | None = None,
+    threshold: float = 1.0e-6,
+) -> dict[str, Any]:
+    """Structured curl sanity check for SH residual CSVs generated from a scalar potential.
+
+    The scattered local-linear curl proxy can report material curl on sparse samples from a known
+    conservative field. For SH-derived residual datasets we can instead go back to the scalar
+    potential generator recorded in the sidecar metadata, compute the acceleration on matched
+    central-difference stencils, and measure the curl of that structured control. This is a sanity
+    gate for architecture decisions; the scattered proxy remains useful as a diagnostic artifact.
+    """
+
+    if data_path is None or str(data_path) == "":
+        return {"structured_control_status": "unavailable", "structured_control_method": "none"}
+    csv_path = Path(data_path)
+    metadata_path = _resolve_metadata_sidecar(csv_path)
+    if not metadata_path.exists():
+        return {
+            "structured_control_status": "unavailable",
+            "structured_control_method": "sh_potential_central_difference",
+            "structured_control_note": f"metadata sidecar not found: {metadata_path}",
+        }
+
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "structured_control_status": "error",
+            "structured_control_method": "sh_potential_central_difference",
+            "structured_control_error": str(exc),
+        }
+
+    required = ("gravity_model_path", "degree_min", "degree_max")
+    if not all(key in metadata for key in required):
+        return {
+            "structured_control_status": "unavailable",
+            "structured_control_method": "sh_potential_central_difference",
+            "structured_control_note": "metadata does not describe an SH scalar-potential residual",
+        }
+
+    try:
+        import numpy as np
+
+        from vesp.data.real_gravity import read_pds_sha, residual_acceleration_finite_difference
+    except Exception as exc:  # pragma: no cover - dependency/import failure path
+        return {
+            "structured_control_status": "error",
+            "structured_control_method": "sh_potential_central_difference",
+            "structured_control_error": str(exc),
+        }
+
+    pos = torch.as_tensor(positions, dtype=torch.float64).detach().cpu()
+    vec = torch.as_tensor(field, dtype=torch.float64).detach().cpu()
+    if pos.ndim != 2 or pos.shape[-1] != 3 or vec.shape != pos.shape or int(pos.shape[0]) < 5:
+        return {
+            "structured_control_status": "unavailable",
+            "structured_control_method": "sh_potential_central_difference",
+            "structured_control_note": "positions and field must both have shape (N, 3), N >= 5",
+        }
+
+    n = int(pos.shape[0])
+    sample = sorted(_flat_sample_indices(n, max_points) or set(range(n)))
+    query = pos[sample].numpy()
+    fd_step = float(finite_difference_step or metadata.get("finite_difference_step", 1.0e-4))
+    degree_min = int(metadata["degree_min"])
+    degree_max = int(metadata["degree_max"])
+    try:
+        model_path = _resolve_maybe_relative_path(metadata["gravity_model_path"], data_path=csv_path)
+        model = read_pds_sha(
+            model_path,
+            max_degree=degree_max,
+            name=metadata.get("gravity_model"),
+            strict=True,
+        )
+        jac = np.zeros((query.shape[0], 3, 3), dtype=np.float64)  # [point, d/dcoord, component]
+        for axis in range(3):
+            plus = query.copy()
+            minus = query.copy()
+            plus[:, axis] += fd_step
+            minus[:, axis] -= fd_step
+            acc_plus = residual_acceleration_finite_difference(
+                model,
+                plus,
+                degree_min=degree_min,
+                degree_max=degree_max,
+                step=fd_step,
+            )
+            acc_minus = residual_acceleration_finite_difference(
+                model,
+                minus,
+                degree_min=degree_min,
+                degree_max=degree_max,
+                step=fd_step,
+            )
+            if metadata.get("acceleration_output") == "physical":
+                radius = float(metadata.get("R_body", model.reference_radius_km))
+                acc_plus = acc_plus / radius
+                acc_minus = acc_minus / radius
+            jac[:, axis, :] = (acc_plus - acc_minus) / (2.0 * fd_step)
+    except Exception as exc:
+        return {
+            "structured_control_status": "error",
+            "structured_control_method": "sh_potential_central_difference",
+            "structured_control_error": str(exc),
+        }
+
+    curl = np.stack(
+        [
+            jac[:, 1, 2] - jac[:, 2, 1],
+            jac[:, 2, 0] - jac[:, 0, 2],
+            jac[:, 0, 1] - jac[:, 1, 0],
+        ],
+        axis=1,
+    )
+    curl_norm = torch.as_tensor(np.linalg.norm(curl, axis=1), dtype=torch.float64)
+    field_norm = torch.linalg.norm(vec[sample], dim=-1)
+    k = min(max(4, int(k_neighbors)), n - 1)
+    dist = torch.cdist(pos[sample], pos)
+    neighbor_idx = torch.argsort(dist, dim=1)[:, 1 : k + 1]
+    spacing = torch.median(torch.linalg.norm(pos[neighbor_idx] - pos[sample].unsqueeze(1), dim=-1))
+    rms_curl = float(torch.sqrt(torch.mean(curl_norm**2)))
+    rms_field = float(torch.sqrt(torch.mean(field_norm**2)))
+    scaled = rms_curl * float(spacing) / max(rms_field, torch.finfo(torch.float64).tiny)
+    status = "pass" if float(scaled) <= float(threshold) else "warn"
+    return {
+        "structured_control_status": status,
+        "structured_control_method": "sh_potential_central_difference",
+        "structured_control_n_points": len(sample),
+        "structured_control_step": fd_step,
+        "structured_control_scaled_curl_ratio": float(scaled),
+        "structured_control_threshold": float(threshold),
+        "structured_control_rms_curl": rms_curl,
+        "structured_control_rms_field": rms_field,
+        "structured_control_note": (
+            "central-difference curl of the metadata SH scalar-potential generator"
+        ),
+    }
+
+
 def _component_z_gap(calibration: dict) -> float:
     gaps: list[float] = []
     for region in _REGIONS:
@@ -561,18 +714,34 @@ def decision_table_rows(case_results: list[dict[str, Any]]) -> list[dict[str, An
         (_as_float(c["measurement_c"].get("conservative_control_scaled_curl_ratio")) or 0.0)
         for c in case_results
     )
+    structured_values = [
+        _as_float(c["measurement_c"].get("structured_control_scaled_curl_ratio"))
+        for c in case_results
+    ]
+    max_structured_control = max((v for v in structured_values if v is not None), default=float("nan"))
     all_emulated_sh = all(c.get("residual_field_kind") == "emulated_sh_residual" for c in case_results)
+    structured_sh_passes = (
+        all_emulated_sh
+        and all(c["measurement_c"].get("structured_control_status") == "pass" for c in case_results)
+    )
     any_consistency_warn = any(
         row.get("status") == "warn"
         for c in case_results
         for row in c.get("consistency_rows", [])
     )
-    if all_emulated_sh and max_curl_excess >= 0.10:
-        helmholtz_rationale = "no - SH curl sanity check failed"
-        helmholtz_decision = "do not add; replace Measurement C with a structured/analytic curl check"
+    if structured_sh_passes:
+        helmholtz_rationale = "no - structured SH curl sanity check passed"
+        helmholtz_decision = "do not add; keep scattered Measurement C as a diagnostic proxy only"
         helmholtz_uncertainty = (
-            "The known conservative SH-residual case should not open the Helmholtz gate; the current "
-            "scattered proxy is too noisy for this architectural decision."
+            "The metadata scalar-potential control is conservative; scattered excess curl on SH "
+            "residuals is treated as proxy/sampling error, not evidence for Helmholtz."
+        )
+    elif all_emulated_sh and max_curl_excess >= 0.10:
+        helmholtz_rationale = "no - SH structured curl sanity check unavailable/failed"
+        helmholtz_decision = "do not add; repair Measurement C before considering Helmholtz"
+        helmholtz_uncertainty = (
+            "Known conservative SH-residual cases should not open the Helmholtz gate. Without a "
+            "passing structured control, the scattered proxy is not decision-grade."
         )
     else:
         helmholtz_rationale = "no for SH residual; conditional for real NN residual"
@@ -621,7 +790,8 @@ def decision_table_rows(case_results: list[dict[str, Any]]) -> list[dict[str, An
             "proposal": "helmholtz_non_conservative_extension",
             "rationale_verified": helmholtz_rationale,
             "gate_result": (
-                f"max excess curl = {fmt_float(max_curl_excess)} "
+                f"structured control = {fmt_float(max_structured_control)}; "
+                f"max scattered excess curl = {fmt_float(max_curl_excess)} "
                 f"(raw {fmt_float(max_curl_raw)}, conservative-control {fmt_float(max_curl_control)})"
             ),
             "decision": helmholtz_decision,
@@ -722,8 +892,8 @@ def _summary_md(case_results: list[dict[str, Any]], decisions: list[dict[str, An
         "",
         "## Cases",
         "",
-        "| band | trajectories | factor mean | max factor corr | max altitude corr | cov points | curl excess | consistency |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+        "| band | trajectories | factor mean | max factor corr | max altitude corr | cov points | curl excess | structured curl | consistency |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     for case in case_results:
         warn_count = sum(1 for r in case["consistency_rows"] if r.get("status") == "warn")
@@ -734,6 +904,7 @@ def _summary_md(case_results: list[dict[str, Any]], decisions: list[dict[str, An
             f"| {case['band']} | {a['n_trajectories']} | {fmt_float(a['mean_abs_factor_corr'])} | "
             f"{fmt_float(a['max_abs_factor_corr'])} | {fmt_float(a['max_abs_altitude_corr'])} | "
             f"{b['n_points']} | {fmt_float(c.get('excess_scaled_curl_ratio'))} | "
+            f"{fmt_float(c.get('structured_control_scaled_curl_ratio'))} | "
             f"{'WARN ' + str(warn_count) if warn_count else 'ok'} |"
         )
     lines += [
@@ -754,12 +925,12 @@ def _summary_md(case_results: list[dict[str, Any]], decisions: list[dict[str, An
         "- `S_rms` is represented by the existing per-point expected force error.",
         "- `W_alt` uses the absolute altitude weight so trajectories share one altitude scale.",
         "- `d_OOD` is the domain-support distance factor; it is not a dynamical-instability metric.",
-        "- The curl diagnostic is a scattered local-linear finite-difference proxy. Treat it as a "
-        "gate, not a proof of non-conservative physics. The same proxy is run on the fitted "
-        "equivalent-source posterior mean as a conservative-field control; decision rules use "
-        "`max(0, residual_raw - conservative_control)`. If this proxy reports material excess curl "
-        "on a known conservative SH residual, that is a failed Measurement-C sanity check rather "
-        "than evidence for Helmholtz.",
+        "- The scattered curl diagnostic is a local-linear finite-difference proxy. It is reported "
+        "as a diagnostic, not as proof of non-conservative physics. For SH-derived residual CSVs "
+        "with metadata, the decision gate uses a structured central-difference curl control from "
+        "the recorded scalar-potential generator. If the structured control passes but the "
+        "scattered proxy reports material excess curl, the excess is treated as proxy/sampling "
+        "error rather than evidence for Helmholtz.",
         "",
     ]
     return "\n".join(lines)
@@ -800,6 +971,7 @@ def run_gate_diagnostics(
         time_weighting = _resolve_time_weighting(screen_cfg)
         weights = [_time_weights(t) for t in trajectories] if time_weighting == "kepler_r2" else None
 
+        data_path = str(cfg.get("data", {}).get("path") or "")
         residual_curl = measurement_c_curl_ratio(
             samples.positions, samples.error, max_points=max_curl_points, k_neighbors=curl_k
         )
@@ -816,8 +988,16 @@ def run_gate_diagnostics(
         residual_curl["control_note"] = (
             "same scattered curl proxy applied to the equivalent-source posterior mean"
         )
+        residual_curl.update(
+            measurement_c_sh_potential_curl_control(
+                data_path,
+                samples.positions,
+                samples.error,
+                max_points=min(int(max_curl_points), 128),
+                k_neighbors=curl_k,
+            )
+        )
 
-        data_path = str(cfg.get("data", {}).get("path") or "")
         residual_field_kind = (
             "emulated_sh_residual" if "lunar_grail" in data_path.lower() else "synthetic_or_unknown"
         )
@@ -872,7 +1052,11 @@ def run_gate_diagnostics(
                 "band", "n_points_total", "n_points_sampled", "k_neighbors", "rms_curl",
                 "rms_field", "median_neighbor_spacing", "scaled_curl_ratio",
                 "conservative_control_scaled_curl_ratio", "excess_scaled_curl_ratio",
-                "curl_norm_median", "curl_norm_p95", "control_note",
+                "structured_control_status", "structured_control_method",
+                "structured_control_scaled_curl_ratio", "structured_control_threshold",
+                "structured_control_n_points", "structured_control_step",
+                "curl_norm_median", "curl_norm_p95", "control_note", "structured_control_note",
+                "structured_control_error",
             ],
         ),
         "calibration_current.csv": csv_text(

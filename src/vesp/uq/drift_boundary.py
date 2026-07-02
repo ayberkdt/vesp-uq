@@ -10,6 +10,10 @@ caveat in VESP_UQ_LIMITATIONS.md).
 
 Horizons are in orbital periods (unit-free). Claims-safe: a positive result is reported as a rank
 correlation in a named regime; a null is reported as a scope boundary, never as a failure.
+
+Relationship to :mod:`vesp.uq.drift_horizon`: ``drift_horizon`` is the generic random-orbit
+multi-horizon sweep; this module is the family-conditioned boundary map that reuses the same
+linear-propagation primitive but intentionally fixes the trajectory families.
 """
 
 from __future__ import annotations
@@ -21,11 +25,11 @@ import numpy as np
 import torch
 
 from vesp.uq.altitude_controlled import spearman
+from vesp.uq.baselines import prepare
 from vesp.uq.benchmarking import evaluate_score_against_true_error
 from vesp.uq.ensemble import nearest_neighbor_error_magnitude
 from vesp.uq.io.run_artifacts import write_run_artifacts
 from vesp.uq.linear_propagation import LinearForceErrorCovariancePropagator
-from vesp.uq.risk_baselines import prepare
 from vesp.uq.scoring import aggregate_trajectory_error
 from vesp.uq.suite import _csv, _fmt, _pm, band_label, git_commit_hash, mean_std
 from vesp.uq.trajectory_families import generate_family

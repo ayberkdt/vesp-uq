@@ -195,7 +195,7 @@ def main(argv=None) -> None:
         f"config: `{args.config}`",
         "",
         "VESP-UQ is a force-risk / OOD calibration layer. The core benchmarks below test force-model",
-        "risk detection and selective rerun -- NOT trajectory position-error prediction.",
+        "risk detection and follow-up prioritization -- NOT trajectory position-error prediction.",
         "",
         f"- **force-error ranking** Spearman: {fe['spearman_force_risk_vs_true_force_error']}  "
         f"(lift {fe['lift_over_random']:.2f}x) -- the core claim.",

@@ -15,7 +15,7 @@ from vesp.uq.cli import csv_text, fmt_float
 from vesp.uq.gate_diagnostics import run_gate_diagnostics
 from vesp.uq.geometry_calibration import run_geometry_calibration
 from vesp.uq.io.run_artifacts import verify_manifest, write_run_artifacts
-from vesp.uq.rtn_noise_prototype import run_rtn_noise_prototype
+from vesp.uq.rtn_noise import run_rtn_noise_prototype
 
 DEFAULT_CONFIGS = [
     "configs/vespuq/vespuq_real_lunar.yaml",

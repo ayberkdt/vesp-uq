@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from vesp.common.config import load_config
-from vesp.uq.baselines_uq import GPResidualUQ
+from vesp.uq.baselines import GPResidualUQ
 
 ROOT = Path(__file__).resolve().parents[1]
 SMOKE_CONFIG = ROOT / "configs" / "vespuq" / "vespuq_smoke.yaml"

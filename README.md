@@ -1,8 +1,8 @@
 # VESP-UQ: Equivalent-Source Uncertainty Calibration for Lunar Gravity Surrogates
 
 Equivalent-source modeling of lunar residual gravity: a deterministic feasibility framework
-plus a surrogate-agnostic uncertainty / risk-calibration layer, sharing one core — interior
-equivalent sources that reproduce an *exterior* residual gravity field.
+plus a surrogate-interface-agnostic uncertainty / risk-calibration layer, sharing one core —
+interior equivalent sources that reproduce an *exterior*, conservative residual gravity field.
 
 ## What Is This?
 
@@ -23,10 +23,10 @@ The repository now has **two pillars** built on the same equivalent-source core:
 
 2. **VESP-UQ layer (`vesp.uq`)** — the current direction. Because the entropy point-estimate did
    **not** beat well-regularized ridge on accuracy, the equivalent-source machinery is reframed as
-   an uncertainty layer: given any residual-gravity surrogate's error
-   `e_a(x) = a_reference(x) - a_surrogate(x)`, VESP-UQ fits a calibrated equivalent-source
-   posterior, produces altitude-aware predictive uncertainty, and screens trajectories for
-   selective high-fidelity rerun. See the
+   an uncertainty layer: given acceleration-level samples of a residual-gravity surrogate's error
+   `e_a(x) = a_reference(x) - a_surrogate(x)`, VESP-UQ fits an exact linear-Gaussian
+   equivalent-source posterior, applies held-out/post-hoc force-error calibration, and prioritizes
+   trajectories by force-risk. See the
    [VESP-UQ section](#vesp-uq-equivalent-source-uncertainty-calibration-layer) and
    [`docs/VESP_UQ_IAC_PLAN.md`](docs/VESP_UQ_IAC_PLAN.md).
 
@@ -53,11 +53,12 @@ unit-safe potential/acceleration scaling; diagnostics for source collapse, shell
 cancellation, and monopole/dipole leakage; deterministic entropy regularization over
 source strengths.
 
-Implemented in the `vesp.uq` layer: the exact linear-Gaussian source posterior and the **local
-predictive acceleration-error covariance `Sigma_a(x)`** (`VESPUQPlugin.predict_covariance_3x3`).
+Implemented in the `vesp.uq` layer: the exact linear-Gaussian source posterior, held-out/post-hoc
+force-error calibration, and the **local predictive acceleration-error covariance `Sigma_a(x)`**
+(`VESPUQPlugin.predict_covariance_3x3`).
 
 Not implemented yet: full nonlinear/variational Bayesian posterior; neural source-density network;
-**validated operational** orbit/state covariance realism; irregular-body source placement.
+operational orbit/state covariance realism is not validated; irregular-body source placement.
 Exploratory MC and linearized STM tools do propagate the fitted force-error posterior into
 orbit-level dispersion/covariance, but they are not validated orbit-determination products.
 
@@ -68,22 +69,28 @@ The binding policy on what may and may not be claimed is
 
 VESP-UQ is a **force-risk / out-of-distribution (OOD) uncertainty-calibration layer** at the
 acceleration interface. It scores a surrogate's expected *force-model* error and OOD risk and
-prioritizes trajectories for selective high-fidelity rerun. It is **not** a position-error
+prioritizes trajectories for possible high-fidelity follow-up. It is **not** a position-error
 predictor: it does not predict or improve long-horizon trajectory position error (that is only
 ever used as an external *diagnostic*, see `benchmarks/position_error_diagnostic.md`). *Exploratory*
 orbit-dispersion tools (a Monte Carlo sampler `vesp.uq.propagation` and a deterministic linearized
-STM variant `vesp.uq.linear_propagation`) and an ST-LRPS adapter wiring exist but are **not**
-validated operational orbit-covariance products; see
+STM variant `vesp.uq.linear_propagation`) and an ST-LRPS adapter wiring exist but are not validated
+as operational orbit-covariance products; see
 [`docs/VESP_UQ_LIMITATIONS.md`](docs/VESP_UQ_LIMITATIONS.md).
 
 The deterministic entropy/point-estimate experiments showed that maximizing entropy over the
 sources does **not** beat well-regularized ridge on accuracy. The defensible value of the
 equivalent-source machinery is therefore reframed as an **uncertainty and risk-calibration
-layer** (`vesp.uq`), not a better surrogate. VESP-UQ is surrogate-agnostic: given samples of
-any residual-gravity model's error `e_a(x) = a_reference(x) - a_surrogate(x)`, it fits the
-exact linear-Gaussian equivalent-source posterior, calibrates altitude-dependent predictive
-uncertainty, and scores Monte Carlo trajectories so only the riskiest subset needs a
-high-fidelity rerun.
+layer** (`vesp.uq`), not a better surrogate. VESP-UQ is surrogate-interface agnostic: given
+acceleration-level samples of a model's residual error
+`e_a(x) = a_reference(x) - a_surrogate(x)`, it fits the exact linear-Gaussian equivalent-source
+posterior, applies held-out/post-hoc altitude-dependent predictive calibration, and scores Monte
+Carlo trajectories for force-risk prioritization.
+
+**Conservative-field limitation.** The current equivalent-source posterior represents gradients
+of a scalar potential, so it is structurally curl-free outside the source domain. That is the right
+model class for the committed spherical-harmonic residual datasets. A real surrogate residual with
+a material non-conservative component is out of model class unless a future measured gate justifies
+a Helmholtz-style extension.
 
 ```python
 from vesp.uq import VESPUQPlugin
@@ -108,7 +115,8 @@ The calibration report includes component-wise PICP/z_std/NLL/CRPS **and** 3D el
 modes (`uq.covariance_mode`).
 
 The posterior **mean equals the ridge point estimate** (accuracy is unchanged); the contribution
-is calibrated, altitude-aware error bars and the trajectory screen they enable. See
+is held-out/post-hoc calibrated, altitude-aware force-error bars and the force-risk screen they
+enable. See
 [`docs/VESP_UQ_IAC_PLAN.md`](docs/VESP_UQ_IAC_PLAN.md) and
 [`docs/VESP_UQ_LIMITATIONS.md`](docs/VESP_UQ_LIMITATIONS.md) for the full scope and claim boundaries.
 
@@ -123,7 +131,7 @@ plugin.save("vespuq_plugin.pt")                  # atomic, versioned, weights_on
 plugin = VESPUQPlugin.load("vespuq_plugin.pt")   # ready for predict / score / CorrectedForceField
 ```
 
-The two drivers split the lifecycle the way an operational pipeline does:
+The two drivers split a train/serve lifecycle without making an operational flight-product claim:
 
 ```text
 # TRAIN: fit from calibration data; package the model + decision policy + model card
@@ -228,18 +236,25 @@ python scripts/run_vespuq_system_readiness.py --out outputs/system_readiness
 ```
 
 The readiness gate is intentionally conservative: SHAP/LIME are not used, Helmholtz-style
-non-conservative extensions stay closed unless the curl diagnostic justifies them, and the RTN
-noise prototype is not promoted into production unless every case clears its guardrail.
+non-conservative extensions stay closed unless a structured conservative-field sanity check and a
+real surrogate residual both justify them, and the RTN noise prototype is not promoted into
+production unless every case clears its guardrail.
 
 ### Baseline Comparison for Risk Screening
 
-A core benchmark (`compare_risk_baselines.py`) compares the VESP-UQ trajectory risk scores against simple heuristics like minimum altitude or low-altitude exposure. This confirms that the VESP-UQ scores capture true force-model error better than trivial selectors.
+A core benchmark (`compare_risk_baselines.py`) compares VESP-UQ trajectory risk scores against
+registered baselines such as minimum altitude, low-altitude exposure, domain support,
+shuffled-label placebos, and learned/hybrid selectors. The implementations live in the canonical
+`src/vesp/uq/baselines/` package behind `BASELINE_REGISTRY`; the script is only the CLI/reporting
+entry point.
 
 ```text
 python scripts/compare_risk_baselines.py --config configs/vespuq/vespuq_smoke.yaml
 ```
 
-See [`benchmarks/baseline_comparison.md`](benchmarks/baseline_comparison.md) for details on how VESP-UQ earns its place against simple baselines.
+See [`benchmarks/baseline_comparison.md`](benchmarks/baseline_comparison.md) for the measured
+single-run comparison. Multi-seed claims should come from the journal suite below, not from this
+smoke-scale baseline script alone.
 
 ### Journal validation suite (multi-seed, reproducible)
 
@@ -294,7 +309,7 @@ To ensure that VESP-UQ's results are scientifically rigorous and structurally im
 - **Metric-Range Invariants (G3)**: Asserts mathematical bounds for all computed metrics (e.g. `capture_rate` in [0, 1]), loudly aborting on invalid scores.
 - **Negative Controls / Placebos (G4)**: Runs label-shuffled score variants alongside real selectors, mandating that they score at chance level to rule out indirect leakage.
 - **Reproducibility Gate (G5)**: Validates that multiple executions with the same seed yield byte-identical outputs.
-- **Forbidden-Claim Linter (G6)**: Automatically scans reports for unproven, overconfident phrasing (e.g., "guaranteed risk bound").
+- **Forbidden-Claim Linter (G6)**: Automatically scans reports for unproven, overconfident phrasing such as risk-bound guarantees.
 - **Provenance Completeness (G7)**: Re-hashes generated files against `run_manifest.json` checksums to detect modified or untracked outputs.
 
 See [`docs/VESP_UQ_METHOD_AND_INTEGRITY_PLAN.md`](docs/VESP_UQ_METHOD_AND_INTEGRITY_PLAN.md) for detailed design and operational status.
@@ -361,20 +376,25 @@ src/vesp/
                    summarize.py  standardized summary row + suite CSV/MD/Pareto + plots
                    suites.py     named suites (synthetic, real_lunar, ci, all)
     app/         ui.py (legacy PyQt6 Stage-1/2 workbench)
-    uq/          VESP-UQ: surrogate-agnostic uncertainty / risk-calibration layer
+    uq/          VESP-UQ: surrogate-interface-agnostic uncertainty / risk-calibration layer
                    plugin.py     VESPUQPlugin: fit / predict_uncertainty / predict_covariance_3x3
                                  / score_trajectory / save / load / update_error
                    run.py        TRAINING driver: calibration + screening -> JSON / MD / CSV
                    screen.py     SERVE driver: screen ensembles with a persisted model (no refit)
                    compare.py    model-vs-model promotion gate (drift / calibration / agreement)
-                   trajectory.py trajectory risk scoring + selective rerun (run_risk_screening)
+                   scoring.py    trajectory force-risk scoring modes + aggregation
+                   selection.py  selective rerun policies + run_risk_screening
+                   baselines/    registered risk-screening baselines (core / assembly / expanded / GP)
+                   suite.py      multi-seed benchmark orchestration + manifested outputs
+                   score_variants.py production-linked score-ablation variants
                    ensemble.py   synthetic orbit ensemble + nearest-neighbour ground-truth error
-                   data.py       surrogate-agnostic UQSamples loader (error / ref-surrogate modes)
+                   data.py       surrogate-interface-agnostic UQSamples loader (error / ref-surrogate modes)
                    metrics.py    vector (ellipsoid / Mahalanobis chi-square-3) calibration metrics
                    cli.py        shared config-load / CSV / float-format helpers (CLI wrappers + runners)
                    readiness.py  pre-results gate orchestration + top-level manifested report
+                   journal_report.py / figures.py manuscript tables + plots from measured CSVs
                    gate_diagnostics.py / attribution.py   measured A/B/C gates + exact log attribution
-                   rtn_noise.py / rtn_noise_prototype.py  RTN-style covariance prototype + guardrails
+                   rtn_noise.py  RTN-style covariance prototype core + artifact workflow + guardrails
                    geometry_calibration.py source-geometry auto-selection sweep
                    propagation.py / linear_propagation.py   exploratory MC / STM covariance
                    conformal.py / audit.py / physical_units.py / correction.py
@@ -392,9 +412,11 @@ scripts/         dataset builders, benchmarks, and orchestration helpers
                  run_experiment_suite.py / summarize_experiments.py / run_vespuq.py
                  compare_models.py / build_iac_pack.py / benchmark_gpu.py / benchmark_stm_dispersion.py
                  compare_risk_baselines.py / run_force_error_benchmark.py
+                 run_vespuq_benchmark_suite.py / run_score_ablation.py / run_journal_report.py
 benchmarks/      curated benchmark result docs (see benchmarks/README.md)
 docs/            SCIENTIFIC_CLAIMS.md + VESP_UQ_IAC_PLAN.md + VESP_UQ_LIMITATIONS.md
                  + VESP_UQ_NEXT_STEPS.md (implementation history + research backlog)
+                 + VESP_ARCHITECTURE_IMPROVEMENT_PLAN.md (architecture audit + completed refactors)
                  + VESP_SYSTEM_HARDENING_PLAN.md (completed H1-H8 hardening audit)
 tests/           pytest suite
 CHANGELOG.md     versioned release notes (semver on the `vesp` package surface)
@@ -433,8 +455,9 @@ Delta a(x) = sum_j sum_i w_ji sigma_ji (s_ji - x) / ||x - s_ji||^3
   strengths (entropy-regularized point estimate, warm-started from the ridge
   baseline) plus a data-error vs entropy Pareto sweep. See
   [Stage 3A](#stage-3a-discrete-maxent-regularization).
-- **Phase 2 (VESP-UQ):** Surrogate-agnostic equivalent-source uncertainty calibration. 
-  Provides calibrated altitude-aware predictive uncertainty (Stage 3C/3C+) and trajectory risk screening via the `vesp.uq` package.
+- **Phase 2 (VESP-UQ):** Surrogate-interface-agnostic equivalent-source uncertainty calibration.
+  Provides held-out/post-hoc calibrated altitude-aware force-error uncertainty (Stage 3C/3C+) and
+  trajectory force-risk screening via the `vesp.uq` package.
 
 ## What Is Not Implemented Yet?
 
@@ -880,11 +903,13 @@ leaves the low-altitude band overconfident (the model misfit grows toward the su
 python -m vesp.training.uncertainty --config configs/uncertainty/uncertainty_real_lunar.yaml
 ```
 
-On the real lunar (in-distribution, all altitudes in training) this **calibrates every altitude
-band**: the low band goes from PICP90 0.53 / z_std 4.13 → **0.86 / 1.22**, mid 0.74 → **0.93**,
-high stays ~1.0; the report prints the per-band before/after. On a pure altitude-OOD split the
-calibration must extrapolate the noise law into an unseen band and is fundamentally limited (it
-keeps the floor but cannot conjure the missing band) — reported honestly. See
+On the original real-lunar in-distribution run this substantially improved per-band coverage, but
+the current L60/L90 evidence should be read as **held-out calibration, not universal sharpness**:
+operational conformal scaling is implemented and documented, yet
+`benchmarks/vespuq_conformal_validation.md` shows only a partial pass across L60/L90 bands. On a
+pure altitude-OOD split the calibration must extrapolate the noise law into an unseen band and is
+fundamentally limited (it keeps the floor but cannot conjure the missing band) — reported honestly.
+See
 [`docs/SCIENTIFIC_CLAIMS.md`](docs/SCIENTIFIC_CLAIMS.md) for exactly what may be claimed.
 
 ### Automatic regularization (`lambda_l2: auto`)

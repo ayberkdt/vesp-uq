@@ -29,7 +29,7 @@ from vesp.uq.physical_units import (
     has_physical_acceleration_scale,
     resolve_acceleration_scale,
 )
-from vesp.uq.risk_baselines import prepare
+from vesp.uq.baselines import prepare
 from vesp.uq.scoring import aggregate_trajectory_error
 from vesp.uq.suite import _csv, _fmt, band_label, git_commit_hash
 

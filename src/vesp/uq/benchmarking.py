@@ -115,23 +115,36 @@ DECISION_METRIC_KEYS = (
 )
 
 
-def _avg_ranks(values: torch.Tensor) -> torch.Tensor:
-    """Ascending average ranks (ties share their mean rank); dependency-free, deterministic."""
+def average_ranks(values, *, base: float = 1.0) -> torch.Tensor:
+    """Ascending average ranks (ties share their mean rank); dependency-free, deterministic.
 
-    order = torch.argsort(values, stable=True)
-    sorted_v = values[order]
-    n = int(values.numel())
-    ranks_sorted = torch.empty(n, dtype=torch.float64)
-    start = 0
-    while start < n:
-        end = start + 1
-        while end < n and bool(sorted_v[end] == sorted_v[start]):
-            end += 1
-        ranks_sorted[start:end] = 0.5 * (start + end - 1) + 1.0  # 1-based average rank
-        start = end
+    Fully vectorized: no per-tie-group Python loop, so it stays fast even on the 50k-trajectory
+    resamples the significance bootstrap draws. ``base`` is the rank assigned to the smallest
+    element -- ``1.0`` gives 1-based ranks (required by the tie-aware Mann-Whitney AUROC identity),
+    ``0.0`` gives 0-based ranks (shift-invariant, harmless for Spearman/Pearson).
+    """
+
+    v = torch.as_tensor(values, dtype=torch.float64).reshape(-1)
+    n = int(v.numel())
     ranks = torch.empty(n, dtype=torch.float64)
-    ranks[order] = ranks_sorted
+    if n == 0:
+        return ranks
+    order = torch.argsort(v, stable=True)
+    sorted_v = v[order]
+    # Collapse equal-value runs; a run spanning 0-based [start, end) gets mean position
+    # 0.5*(start + end - 1), then shifted by ``base``.
+    counts = torch.unique_consecutive(sorted_v, return_counts=True)[1]
+    ends = torch.cumsum(counts, dim=0).to(torch.float64)
+    starts = ends - counts.to(torch.float64)
+    group_rank = 0.5 * (starts + ends - 1.0) + base
+    ranks[order] = group_rank.repeat_interleave(counts)
     return ranks
+
+
+def _avg_ranks(values: torch.Tensor) -> torch.Tensor:
+    """1-based average ranks (kept as the internal name used by :func:`detection_metrics`)."""
+
+    return average_ranks(values, base=1.0)
 
 
 def _high_error_labels(true_error: torch.Tensor, high_quantile: float) -> torch.Tensor:

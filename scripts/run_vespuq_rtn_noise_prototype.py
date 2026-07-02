@@ -6,7 +6,7 @@ import argparse
 from pathlib import Path
 
 from vesp.uq.cli import fmt_float, load_configs
-from vesp.uq.rtn_noise_prototype import run_rtn_noise_prototype
+from vesp.uq.rtn_noise import run_rtn_noise_prototype
 
 
 def main(argv=None) -> None:

@@ -40,8 +40,35 @@ def test_label_shuffled_scores_at_chance():
 
 
 def test_placebo_tolerance_scales_with_n():
+    import math
+
+    from vesp.uq.suite import PLACEBO_TOL_FLOOR
+
     assert placebo_tolerance(40) > placebo_tolerance(4000)         # tighter band at larger n
-    assert placebo_tolerance(10_000_000) == pytest.approx(0.20)    # floored, never zero
+    # small runs keep the protective floor (statistical band would be noisy at that size) ...
+    assert placebo_tolerance(500) == pytest.approx(PLACEBO_TOL_FLOOR)
+    # ... but large journal runs drop the floor and use the tight statistical band, so a subtle
+    # leak is not masked (the whole point of G4). The floor is small-n only.
+    big = placebo_tolerance(280_000)
+    assert big < PLACEBO_TOL_FLOOR
+    assert big == pytest.approx(3.5 / math.sqrt(280_000))
+
+
+def test_assert_placebos_catches_subtle_leak_at_journal_scale():
+    # 0.05 aggregate Spearman is invisible under the old fixed 0.20 floor but is a clear leak at
+    # journal-run scale (n_eff = 10000*28); the small-n-only floor now flags it.
+    agg = {("L60", "random", 0.20): _agg_entry(0.05, 0.20)}
+    with pytest.raises(PlaceboLeakageError):
+        assert_placebos_at_chance(agg, primary_fraction=0.20, n_trajectories=10_000, n_seeds=28)
+
+
+def test_assert_placebos_pass_on_real_run_aggregates():
+    # the actual 28-seed placebo aggregates (|Spearman| <= 0.0025, capture within 0.005 of chance)
+    # stay comfortably at chance under the tightened band -- no false positive on real runs.
+    agg = {("L60", "label_shuffled", 0.20): _agg_entry(0.0014, 0.2020),
+           ("L60", "random", 0.20): _agg_entry(0.0011, 0.1953)}
+    checks = assert_placebos_at_chance(agg, primary_fraction=0.20, n_trajectories=10_000, n_seeds=28)
+    assert all(c["ok"] for c in checks.values())
 
 
 def test_assert_placebos_passes_at_chance():

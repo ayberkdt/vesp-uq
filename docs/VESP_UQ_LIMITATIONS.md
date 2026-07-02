@@ -6,9 +6,20 @@ This document records what VESP-UQ does **not** do, so the IAC framing stays def
 
 The posterior mean equals the ridge / Tikhonov point estimate exactly. VESP-UQ does not improve
 deterministic acceleration or trajectory accuracy and must not be presented as doing so. Its
-contribution is **calibrated, altitude-aware error bars** and the trajectory risk screen they
-enable. The entropy / MaxEnt point-estimate experiments remain only as an ablation: maximizing
-entropy over the sources does not beat well-regularized ridge on accuracy.
+contribution is held-out/post-hoc calibrated, altitude-aware **force-error** bars and the trajectory
+force-risk screen they enable. The entropy / MaxEnt point-estimate experiments remain only as an
+ablation: maximizing entropy over the sources does not beat well-regularized ridge on accuracy.
+
+## Conservative-field model class
+
+The current equivalent-source posterior represents gradients of a scalar potential. Outside the
+interior source domain, the represented acceleration-error field is therefore conservative /
+curl-free. This is appropriate for the committed spherical-harmonic residual datasets, which are
+generated from scalar gravitational potentials. It is not a guarantee that every real surrogate's
+residual force error is conservative. If a neural or force-direct surrogate has a material
+non-conservative component, the current VESP-UQ posterior cannot represent or calibrate that
+component; it must be detected by a measured gate and kept out of claims unless a future
+Helmholtz-style extension is justified.
 
 ## Not a true lunar density reconstruction
 
@@ -22,7 +33,7 @@ VESP-UQ supplies a position-dependent force-error covariance `Sigma_a(x)`. An **
 Carlo orbit-dispersion sampler (`vesp.uq.propagation.VESPMonteCarloPropagator`,
 `scripts/run_propagation.py`) draws source-strength samples from the posterior and propagates a
 batch of trajectories to show the orbit-level *spread* implied by the force-error posterior. This is
-**not** a validated operational orbit-determination or state-covariance product:
+not validated as an operational orbit-determination or state-covariance product:
 
 - it samples the *local force-model* error posterior; it does not model measurement processing,
   realistic process noise, or dynamic mismodelling beyond the fitted residual;
@@ -45,8 +56,8 @@ softening `eps`, and source quadrature weights), so per-point sample mean/covari
 An ST-LRPS surrogate adapter exists (`vesp.adapters.st_lrps`, the Sobolev-Trained Lunar Residual
 Potential Surrogate package) and `scripts/run_stlrps_propagation.py` uses its runtime force model as
 the `base_accel_fn` of the exploratory MC sampler above. This is **exploratory wiring**, not a
-validated integration claim: there is no validated end-to-end orbit-accuracy or covariance-realism
-result, and a null force-risk vs position-error correlation is *expected* (position error is often
+validated integration claim: it is not validated for end-to-end orbit-accuracy or covariance-realism
+results, and a null force-risk vs position-error correlation is *expected* (position error is often
 not force-model-error dominated). Do not claim a validated ST-LRPS integration on the basis of this
 wiring.
 
@@ -84,10 +95,9 @@ does not exist yet.
 
 VESP-UQ implements the **local** predictive acceleration-error covariance `Sigma_a(x)` (the full
 `3x3` per-point covariance). The **exploratory** MC and linearized-STM propagators above map that
-local posterior into an orbit/state covariance, but only as a sampling / linearization diagnostic. A
-**validated operational** state/orbit covariance — one that models measurement processing, realistic
-process noise, and dynamic mismodelling beyond the fitted residual — is **not** implemented and must
-not be claimed.
+local posterior into an orbit/state covariance, but only as a sampling / linearization diagnostic.
+Operational state/orbit covariance is not validated here: measurement processing, realistic
+process noise, and dynamic mismodelling beyond the fitted residual are outside the claim.
 
 ## Online correction: implemented as an exploratory force-model correction
 
@@ -130,8 +140,9 @@ prototypes that deliberately stop short of production integration:
   validation; it is **not** SHAP/LIME and does not improve rerun selection by itself;
 - the RTN-style covariance prototype is a held-out before/after gate artifact. It is not applied
   by `VESPUQPlugin` unless a future measured run promotes it explicitly;
-- Helmholtz / non-conservative force-error extensions remain closed unless the curl diagnostic
-  justifies them on a real surrogate residual field;
+- Helmholtz / non-conservative force-error extensions remain closed unless a structured
+  conservative-field sanity check passes on known scalar-potential residuals and then a real
+  surrogate residual field shows material excess curl;
 - source-geometry auto-selection is a calibration sweep over equivalent-source placement, not a
   physical density inference.
 
@@ -164,7 +175,9 @@ calibration numbers.
   calibration residuals and future query residuals are exchangeable; it is not a license to claim
   position-error or orbit-covariance realism. When per-band scales are enabled, samples inside a
   fitted altitude band use that band's scale; under-populated bands and queries outside all fitted
-  bands fall back to the global scale.
+  bands fall back to the global scale. The committed L60/L90 operational conformal validation is a
+  partial result: it improves the prediction path but does not make every band both sharp and
+  nominal.
 - Vector (ellipsoid) calibration assumes an approximately Gaussian 3D error; heavy-tailed or
   strongly non-Gaussian residuals will violate the chi-square-3 expectation.
 - The trajectory-screening ground-truth oracle is a nearest-neighbour read from real samples;

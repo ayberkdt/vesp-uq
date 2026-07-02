@@ -34,9 +34,16 @@ def test_readme_matches_the_current_surface_and_claim_boundary():
 
     assert "Eight pages" in readme
     assert "**Compare**" in readme
-    assert "**validated operational** orbit/state covariance realism" in readme
+    assert "operational orbit/state covariance realism is not validated" in readme
+    assert "**Conservative-field limitation.**" in readme
+    assert "surrogate-interface agnostic" in readme
     assert "VESP_SYSTEM_HARDENING_PLAN.md" in readme
     assert "Seven pages" not in readme
+    assert "surrogate-agnostic uncertainty / risk-calibration layer" not in readme
+
+    iac_plan = _read("docs/VESP_UQ_IAC_PLAN.md")
+    assert "committed evidence is SH-derived" in iac_plan
+    assert "prioritization guidance, not a validated operational rerun loop" in iac_plan
 
 
 def test_benchmark_readme_keeps_evidence_pack_risks_visible():

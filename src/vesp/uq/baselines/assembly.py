@@ -13,7 +13,7 @@ from __future__ import annotations
 import torch
 
 from vesp.common.config import get_dtype
-from vesp.uq.baselines import (
+from vesp.uq.baselines.core import (
     altitude_residual_expected_scores,
     domain_support_scores,
     fit_altitude_expected_curve,

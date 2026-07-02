@@ -48,6 +48,20 @@ def test_run_smoke_writes_all_artifacts(tmp_path):
     assert "IAC claim summary" in md
     assert "not inside every integrator RHS call" in md
     assert "Accepted-set sentinel audit" in md
+    assert "Component-wise calibration" in md
+    assert "Uncertainty decomposition" in md
+
+    calibration_header = (run_dir / "calibration_by_band.csv").read_text(encoding="utf-8").splitlines()[0]
+    for col in (
+        "radial_z_std",
+        "tangential_z_std",
+        "radial_picp_90",
+        "tangential_picp_90",
+        "epistemic_to_pred_std_ratio",
+        "approx_posthoc_remainder_std",
+        "conformal_prediction_scale",
+    ):
+        assert col in calibration_header
 
 
 def test_trajectory_scores_csv_has_expected_columns(tmp_path):

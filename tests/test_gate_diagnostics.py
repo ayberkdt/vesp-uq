@@ -5,6 +5,7 @@ import math
 import torch
 
 from vesp.uq.gate_diagnostics import (
+    decision_table_rows,
     flatten_trajectories_with_frames,
     measurement_c_curl_ratio,
     parse_benchmark_report,
@@ -43,6 +44,29 @@ def test_curl_ratio_zero_for_constant_field():
 
     assert math.isclose(result["scaled_curl_ratio"], 0.0, abs_tol=1.0e-12)
     assert result["n_points_sampled"] == 6
+
+
+def test_decision_table_uses_structured_sh_control_over_scattered_proxy():
+    case = {
+        "residual_field_kind": "emulated_sh_residual",
+        "measurement_a": {"mean_abs_factor_corr": 0.95},
+        "measurement_b": {"dominant_axis_max_fraction": 1.0},
+        "measurement_c": {
+            "scaled_curl_ratio": 1.2,
+            "conservative_control_scaled_curl_ratio": 0.9,
+            "excess_scaled_curl_ratio": 0.3,
+            "structured_control_status": "pass",
+            "structured_control_scaled_curl_ratio": 1.0e-12,
+        },
+        "calibration": {},
+        "consistency_rows": [],
+    }
+
+    rows = decision_table_rows([case])
+    helmholtz = next(row for row in rows if row["proposal"] == "helmholtz_non_conservative_extension")
+
+    assert helmholtz["rationale_verified"] == "no - structured SH curl sanity check passed"
+    assert "scattered Measurement C" in helmholtz["decision"]
 
 
 def test_parse_benchmark_report_extracts_calibration_table(tmp_path):

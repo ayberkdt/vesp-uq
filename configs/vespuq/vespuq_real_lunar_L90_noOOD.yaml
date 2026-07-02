@@ -1,0 +1,133 @@
+# VESP-UQ -- second band-limited residual (N11): surrogate-agnosticism evidence.
+#   python -m vesp.uq.run --config configs/vespuq/vespuq_real_lunar_L90.yaml
+#
+# Runs Experiment 1 (standalone residual-error calibration) and Experiment 3 (trajectory risk
+# screening) on the GRAIL gl0420a degree-31..90 residual. That residual IS the error of a
+# degree-30 truncation surrogate (band-limited to degree 90), so the layer is fit on
+# e_a = a_reference - a_surrogate with the surrogate being the truncated model (surrogate = 0 in
+# residual space). A different error spectrum than the degree-2..60 set: see
+# benchmarks/vespuq_real_lunar_L90_report.md for the side-by-side calibration comparison.
+seed: 42
+device: cpu
+dtype: float64
+
+body:
+  R_body: 1.0
+  normalize_positions: true
+  physical_R_body: 1738.0
+  physical_R_body_units: km
+  position_units: normalized
+  potential_units: km^2/s^2
+  acceleration_units: km/s^2
+
+data:
+  type: csv
+  format: residual          # acceleration column IS the degree-30 truncation surrogate's error (31..90 band)
+  path: data/lunar_grail_gl0420a_L90_residual.csv
+  train_fraction: 0.6
+
+model:
+  type: multishell
+  # Surface-leaning two-shell placement. The geometry x calibration sweep
+  # (scripts/run_geometry_calibration.py, outputs/geometry_calibration/) showed the L90 (degree-31..90)
+  # near-surface high-frequency residual is under-resolved by the deep 3-shell baseline: the low-band
+  # held-out z_std was 0.257 (severely under-confident). Pulling the sources toward the surface
+  # (two_shell_surface) brings low-band z_std to ~0.86 AND reduces relative-acceleration RMSE
+  # (1.71 -> 1.06) -- a mechanistic placement fix, not a noise-law tweak. Selected on the held-out
+  # calibration split (disclosed); total source count is preserved at 1280.
+  shell_alphas: [0.85, 0.95]
+  n_sources_per_shell: [640, 640]
+  weight_mode: surface_area
+
+kernel:
+  eps: 0.0
+  acceleration_sign: 1.0
+  source_chunk_size: 1024
+
+evaluation:
+  altitude_bands:
+    low: [1.03, 1.15]
+    mid: [1.15, 1.35]
+    high: [1.35, 1.60]
+
+uq:
+  # equivalent-source regularization: L-curve corner (automatic), evidence, or fixed
+  regularization:
+    method: lcurve
+    lambda_l2: 30.0          # used only by method: fixed (and as a seed otherwise)
+  noise_model: heteroscedastic
+  covariance_mode: exact      # exact | diagonal | lowrank
+  val_fraction: 0.25
+  # Conformal recalibration was evaluated and intentionally DISABLED: with the surface-leaning
+  # geometry above the operationally-critical low band is already calibrated (held-out z_std ~0.93),
+  # and split-conformal (by_band OR global) over-corrected it -- by_band pushed the low band to ~0.51
+  # and the mid/high bands to over-confident (z_std 2.8-5.8), global pushed the low band to ~2.5
+  # (over-confident, the dangerous direction). The geometry fix alone is the stronger, safer choice;
+  # the residual mid/high over-coverage is the conservative direction and the noise-law limitation.
+  conformal:
+    apply: false
+    by_band: true
+    alpha: 0.10               # target 90% predictive coverage
+    prediction_mode: norm     # norm | component_max | mahalanobis
+  risk:
+    # Use supervisor_rel for relative rerun prioritization.
+    # Use expected_abs_p95 or supervisor_abs_p95 for absolute budget / zero-alarm screening.
+    # Legacy sigma-only:  max | mean | low_alt_integral | time_above | combined
+    # Expected-error:     expected(_abs) | expected(_abs)_p95 | expected_low_alt   (absolute scale)
+    # Supervisor (rank):  supervisor_rel (+ _p95)   -> per-trajectory altitude norm  (relative)
+    # Supervisor (budget):supervisor_abs (+ _p95)   -> fixed altitude reference      (absolute)
+    scoring: supervisor_rel
+    low_altitude_radius: 1.15
+    # altitude_reference_h: 0.15  # fixed reference altitude for the *_abs modes (default: low-1)
+    domain_support: false          # k-NN + radius (+ optional angular) out-of-support penalty
+    domain_k: 8
+    domain_weight: 1.0
+    domain_distance_weight: 1.0   # weight on the Euclidean k-NN component
+    domain_radial_weight: 1.0     # weight on the radial extrapolation component
+    domain_angular_weight: 0.0    # optional nearest-direction angular component (off by default)
+    domain_backend: torch         # torch (default) | kdtree (scipy cKDTree; falls back to torch)
+  # --- Optional physical acceleration-error budget (scripts/run_physical_budget_screening.py) ---
+  # This dataset declares body.acceleration_units: km/s^2 above, so the risk scores are already on a
+  # physical scale (1 model unit == 1 km/s^2 == 1e3 m/s^2) -- physical conversion is available WITHOUT
+  # an explicit acceleration_scale_m_s2. A budget given in m/s^2 is converted to the km/s^2 score
+  # scale (e.g. 1e-8 m/s^2 -> 1e-11 km/s^2 model-unit threshold). Requires an absolute scoring mode.
+  physical_budget:
+    enabled: false
+    value: null                  # required when enabled; e.g. 1.0e-8 (in `units`)
+    units: m/s^2                 # m/s^2 | km/s^2 | mm/s^2 | um/s^2
+    scoring: expected_abs_p95    # absolute scoring mode used for the budget screen
+    max_rerun_fraction: null     # optional cap on the flagged count
+  screening:
+    trajectory_source: generated  # generated (Keplerian orbits) | csv (external surrogate output)
+    # trajectory_path: data/my_surrogate_trajectories.csv   # required when trajectory_source: csv
+    # true_error_source: auto      # auto | residual_csv | oracle  (residual_csv needs accel pairs)
+    n_orbits: 10000
+    n_points: 120
+    r_peri_range: [1.03, 1.40]
+    r_apo_range: [1.40, 1.60]
+    rerun_fraction: 0.20
+    fraction_policy: topk        # topk (exact ceil(frac*n), tie-robust) | quantile (legacy)
+    true_error_aggregator: p95   # max | mean | p95  (decoupled from the risk scoring mode)
+    time_weighting: none         # none | kepler_r2  (kepler_r2 ~ weight points by dt ~ r^2)
+    oracle_source: heldout       # heldout (no leakage, default) | all (denser oracle)
+    # --- Absolute-threshold screening (omit all of these for fraction mode) ---
+    # threshold_source: manual | pointwise_calibration_quantile | trajectory_calibration_quantile
+    #
+    # threshold_source: manual
+    # threshold: 0.0             # absolute force-risk budget; a safe regime may then flag zero
+    #
+    # threshold_source: pointwise_calibration_quantile
+    # threshold_quantile: 0.99   # quantile of held-out pointwise expected_error
+    #   # scoring MUST be expected_abs* or supervisor_abs* for pointwise thresholds
+    #
+    # threshold_source: trajectory_calibration_quantile
+    # threshold_quantile: 0.95   # works with relative OR absolute scoring -- it calibrates
+    #   # trajectory-level risk on a held-out calibration ensemble (calibration_n_orbits etc.)
+    # threshold_multiplier: 1.0  # scales the calibrated budget
+    # max_rerun_fraction: 0.20   # cap the flagged count when an absolute threshold is supplied
+
+output:
+  output_dir: outputs
+  run_name: vespuq_real_lunar_L90
+  save_plots: false
+  save_model: false

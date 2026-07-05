@@ -57,6 +57,7 @@ from vesp.uq.metrics import (
     mahalanobis_squared,
     vector_calibration_metrics,
 )
+from vesp.uq.ranking import average_ranks
 from vesp.uq.scoring import (
     TrajectoryScore,
     needs_covariance,
@@ -486,15 +487,9 @@ class VESPUQPlugin:
         if x.numel() < 2 or not bool(torch.isfinite(x).all()) or not bool(torch.isfinite(y).all()):
             return float("nan")
 
-        def _rank(v: torch.Tensor) -> torch.Tensor:
-            _, inverse, counts = torch.unique(v, sorted=True, return_inverse=True, return_counts=True)
-            counts = counts.to(dtype=torch.float64)
-            starts = torch.cumsum(counts, dim=0) - counts
-            avg = starts + (counts - 1.0) / 2.0
-            return avg[inverse]
-
-        rx = _rank(x)
-        ry = _rank(y)
+        # base is irrelevant here: ranks only feed the shift-invariant correlation below.
+        rx = average_ranks(x, base=0.0)
+        ry = average_ranks(y, base=0.0)
         rx = rx - rx.mean()
         ry = ry - ry.mean()
         denom = torch.sqrt((rx * rx).sum() * (ry * ry).sum())

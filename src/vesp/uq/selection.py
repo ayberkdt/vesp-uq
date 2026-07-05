@@ -19,6 +19,8 @@ from dataclasses import asdict, dataclass
 
 import torch
 
+from vesp.uq.ranking import average_ranks
+
 from vesp.uq.scoring import _as_1d
 
 # Fraction-mode selection policies for select_reruns.
@@ -68,14 +70,8 @@ def _spearman(a: torch.Tensor, b: torch.Tensor) -> float:
     if a.numel() < 2 or not bool(torch.isfinite(a).all()) or not bool(torch.isfinite(b).all()):
         return float("nan")
 
-    def _rank(x: torch.Tensor) -> torch.Tensor:
-        _, inverse, counts = torch.unique(x, sorted=True, return_inverse=True, return_counts=True)
-        counts = counts.to(dtype=torch.float64)
-        starts = torch.cumsum(counts, dim=0) - counts
-        average_ranks = starts + (counts - 1.0) / 2.0
-        return average_ranks[inverse]
-
-    ra, rb = _rank(a), _rank(b)
+    # base is irrelevant here: ranks only feed the shift-invariant Pearson correlation below.
+    ra, rb = average_ranks(a, base=0.0), average_ranks(b, base=0.0)
     ra = ra - ra.mean()
     rb = rb - rb.mean()
     denom = torch.sqrt((ra * ra).sum() * (rb * rb).sum())

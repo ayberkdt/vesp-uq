@@ -22,7 +22,8 @@ import math
 
 import torch
 
-from vesp.uq.benchmarking import average_ranks, evaluate_score_against_true_error
+from vesp.uq.benchmarking import evaluate_score_against_true_error
+from vesp.uq.ranking import average_ranks
 
 __all__ = [
     "min_radius_scores",

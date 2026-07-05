@@ -27,8 +27,8 @@ from typing import Any
 
 import torch
 
-from vesp.uq.benchmarking import average_ranks
 from vesp.uq.cli import csv_text, fmt_float
+from vesp.uq.ranking import average_ranks
 from vesp.uq.experiment import _build_trajectories, _resolve_time_weighting, _time_weights
 from vesp.uq.io.run_artifacts import write_run_artifacts
 from vesp.uq.metrics import local_radial_frame, safe_log

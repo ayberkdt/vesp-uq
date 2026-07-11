@@ -25,8 +25,8 @@ from pathlib import Path
 
 import torch
 
-from vesp.uq.io.run_artifacts import write_run_artifacts
 from vesp.uq.baselines import prepare
+from vesp.uq.io.run_artifacts import write_run_artifacts
 from vesp.uq.suite import _csv, _fmt, _pm, band_label, git_commit_hash, mean_std
 
 

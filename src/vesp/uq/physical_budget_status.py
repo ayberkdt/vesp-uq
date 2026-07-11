@@ -20,6 +20,7 @@ from pathlib import Path
 
 import torch
 
+from vesp.uq.baselines import prepare
 from vesp.uq.ensemble import nearest_neighbor_error_magnitude
 from vesp.uq.experiment import _build_trajectories
 from vesp.uq.io.run_artifacts import write_run_artifacts
@@ -29,7 +30,6 @@ from vesp.uq.physical_units import (
     has_physical_acceleration_scale,
     resolve_acceleration_scale,
 )
-from vesp.uq.baselines import prepare
 from vesp.uq.scoring import aggregate_trajectory_error
 from vesp.uq.suite import _csv, _fmt, band_label, git_commit_hash
 

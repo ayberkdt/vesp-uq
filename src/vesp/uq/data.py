@@ -186,7 +186,7 @@ def load_uq_samples_from_csv(
         reference = torch.tensor(ref_rows, dtype=dtype)
         surrogate = torch.tensor(sur_rows, dtype=dtype)
         error = reference - surrogate
-        meta = {"mode": "reference_surrogate", "path": str(path)}
+        meta: dict = {"mode": "reference_surrogate", "path": str(path)}
     else:
         error = torch.tensor(err_rows, dtype=dtype)
         reference = error.clone()

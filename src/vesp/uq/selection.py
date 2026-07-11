@@ -20,7 +20,6 @@ from dataclasses import asdict, dataclass
 import torch
 
 from vesp.uq.ranking import average_ranks
-
 from vesp.uq.scoring import _as_1d
 
 # Fraction-mode selection policies for select_reruns.

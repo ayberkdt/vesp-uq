@@ -42,7 +42,7 @@ import platform
 import sys
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import torch
@@ -62,7 +62,7 @@ _QUICK_N_ORBITS = 200
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _memory_mb() -> float | None:

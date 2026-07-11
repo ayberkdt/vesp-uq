@@ -37,7 +37,13 @@ from vesp.uq.altitude_controlled import (
     partial_correlations,
     within_altitude_bin_ranking,
 )
-from vesp.uq.baselines import independent_random_scores, label_shuffled_scores
+from vesp.uq.baselines import (
+    assemble_baseline_scores,
+    independent_random_scores,
+    label_shuffled_scores,
+    prepare,
+    true_force_error,
+)
 from vesp.uq.benchmarking import (
     DECISION_METRIC_KEYS,
     compare_baselines,
@@ -47,7 +53,6 @@ from vesp.uq.experiment import _build_trajectories, _resolve_time_weighting, _ti
 from vesp.uq.integrity.metric_invariants import validate_metric, validate_row
 from vesp.uq.integrity.split_guard import Split, assert_no_test_access, reveal, tag
 from vesp.uq.io.run_artifacts import write_run_artifacts
-from vesp.uq.baselines import assemble_baseline_scores, prepare, true_force_error
 from vesp.uq.significance import (
     metric_auroc,
     metric_capture,

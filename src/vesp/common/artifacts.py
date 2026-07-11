@@ -12,7 +12,7 @@ import sys
 import tempfile
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -60,7 +60,7 @@ def ensure_run_layout(run_dir: str | Path) -> RunLayout:
 
 
 def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def json_safe(value: Any) -> Any:

@@ -15,10 +15,9 @@ import copy
 from pathlib import Path
 
 from vesp.uq.altitude_controlled import min_radius_scores, partial_pearson_given_altitude
-from vesp.uq.baselines import independent_random_scores
+from vesp.uq.baselines import assemble_baseline_scores, independent_random_scores, prepare, true_force_error
 from vesp.uq.benchmarking import compare_baselines
 from vesp.uq.io.run_artifacts import write_run_artifacts
-from vesp.uq.baselines import assemble_baseline_scores, prepare, true_force_error
 from vesp.uq.suite import _csv, _fmt, _pm, band_label, git_commit_hash, mean_std
 from vesp.uq.trajectory_families import FAMILIES, family_descriptor, generate_family
 

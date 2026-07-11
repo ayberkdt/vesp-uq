@@ -19,6 +19,12 @@ surface; the binding science scope lives in `docs/SCIENTIFIC_CLAIMS.md` and
   torch 2.5.1 this ran only via 0-dim cross-device broadcasting (per-iteration syncs, not a
   guaranteed contract). Parameters now follow `radii.device`; CUDA-vs-CPU fit parity is pinned in
   `tests/test_uq_gpu_parity.py` (verified on a CUDA machine).
+- **Changed (R2WP-3): `VESPUQPlugin.from_config` is now fail-closed on scientific settings.**
+  Unknown dtype names raise (previously fell back silently to float32); an unparseable
+  `lambda_l2` raises (previously became 30.0 and silently mutated `reg_method` fixed→lcurve);
+  unknown keys in the `uq` block and its `regularization`/`conformal`/`noise`/`risk` sub-blocks
+  raise with the valid-key list; `risk.scoring` is validated at construction. All shipped
+  configs pass the new validation (pinned by `tests/test_uq_config_failclosed.py`).
 - Added the measured pre-results readiness gate (`vesp.uq.readiness` and
   `scripts/run_vespuq_system_readiness.py`) that runs A/B/C diagnostics, exact log attribution,
   the RTN covariance prototype, optional geometry auto-selection, and manifest verification.

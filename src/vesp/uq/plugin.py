@@ -32,6 +32,7 @@ from pathlib import Path
 import torch
 
 from vesp.common.artifacts import atomic_torch_save, json_safe
+from vesp.common.config import get_dtype
 from vesp.core.diagnostics import source_diagnostics
 from vesp.core.operators import build_acceleration_operator
 from vesp.core.regularization import lcurve_lambda
@@ -60,6 +61,7 @@ from vesp.uq.metrics import (
 from vesp.uq.ranking import average_ranks
 from vesp.uq.scoring import (
     TrajectoryScore,
+    _validate_scoring,
     needs_covariance,
     score_sigma_profile,
 )
@@ -70,6 +72,92 @@ from vesp.uq.scoring import (
 COVARIANCE_MODES = ("exact", "diagonal", "lowrank")
 NOISE_MODELS = ("homoscedastic", "heteroscedastic", "altitude_binned")
 PREDICTIVE_CONFORMAL_MODES = ("norm", "component_max", "mahalanobis")
+
+# Fail-closed allowlists for the ``uq`` config block (R2WP-3). Keys the plugin itself consumes
+# plus the documented script-consumed sub-blocks (validated by their own consumers); anything
+# else is a typo and must abort the run instead of silently falling back to a default.
+_UQ_CONFIG_KEYS = frozenset(
+    {
+        "regularization",
+        "reg_method",
+        "query_chunk_size",
+        "noise_model",
+        "altitude_noise_bins",
+        "covariance_mode",
+        "lowrank_rank",
+        "val_fraction",
+        "conformal",
+        "noise",
+        "risk",
+        # consumed by benchmark / screening / audit harnesses, opaque to the plugin
+        "audit",
+        "hyperparams",
+        "physical_budget",
+        "propagation",
+        "screening",
+    }
+)
+_UQ_REGULARIZATION_KEYS = frozenset({"method", "lambda_l2"})
+_UQ_CONFORMAL_KEYS = frozenset(
+    {
+        "enabled",
+        "apply",
+        "alpha",
+        "prediction_mode",
+        "mode",
+        "by_band",
+        "per_band",
+        "bands",
+        "min_band_n",
+        "by_region",
+        "per_region",
+        "min_region_n",
+    }
+)
+_UQ_NOISE_KEYS = frozenset({"altitude_bins"})
+_UQ_RISK_KEYS = frozenset(
+    {
+        "scoring",
+        "sigma_threshold",
+        "altitude_reference_h",
+        "low_altitude_radius",
+        "calibrated_supervisor",
+        "calibrate_supervisor",
+        "domain_support",
+        "domain_k",
+        "domain_weight",
+        "domain_distance_weight",
+        "domain_radial_weight",
+        "domain_angular_weight",
+        "domain_backend",
+    }
+)
+
+
+def _reject_unknown_keys(block: dict, allowed: frozenset[str], where: str) -> None:
+    unknown = sorted(set(block) - allowed)
+    if unknown:
+        raise ValueError(f"unknown {where} key(s) {unknown}; valid keys: {sorted(allowed)}")
+
+
+def _validate_uq_config_keys(uq: dict) -> None:
+    """Reject unknown keys in the ``uq`` block and the sub-blocks the plugin consumes."""
+
+    if not isinstance(uq, dict):
+        raise ValueError(f"uq config block must be a mapping, got {type(uq).__name__}")
+    _reject_unknown_keys(uq, _UQ_CONFIG_KEYS, "uq")
+    for name, allowed in (
+        ("regularization", _UQ_REGULARIZATION_KEYS),
+        ("conformal", _UQ_CONFORMAL_KEYS),
+        ("noise", _UQ_NOISE_KEYS),
+        ("risk", _UQ_RISK_KEYS),
+    ):
+        block = uq.get(name)
+        if block is None:
+            continue
+        if not isinstance(block, dict):
+            raise ValueError(f"uq.{name} must be a mapping, got {type(block).__name__}")
+        _reject_unknown_keys(block, allowed, f"uq.{name}")
 
 # Versioned on-disk format for a fitted plugin (see VESPUQPlugin.save / .load).
 PLUGIN_STATE_FORMAT = "vesp.uq.plugin"
@@ -221,7 +309,7 @@ class VESPUQPlugin:
         self.conformal_min_region_n = int(conformal_min_region_n)
         self.conformal_calibration: dict | None = None
         self.low_altitude_radius = float(low_altitude_radius)
-        self.risk_scoring = risk_scoring
+        self.risk_scoring = _validate_scoring(risk_scoring)
         self.sigma_threshold = sigma_threshold
         self.altitude_reference_h = (
             float(altitude_reference_h) if altitude_reference_h is not None else None
@@ -259,9 +347,14 @@ class VESPUQPlugin:
     # ------------------------------------------------------------------ construction
     @classmethod
     def from_config(cls, config: dict) -> VESPUQPlugin:
-        """Build a plugin from a config dict (reuses the ``model``/``kernel`` conventions)."""
+        """Build a plugin from a config dict (reuses the ``model``/``kernel`` conventions).
 
-        dtype = torch.float64 if str(config.get("dtype", "float64")).lower() in {"float64", "double"} else torch.float32
+        Scientific settings are fail-closed: an unknown ``uq`` key, an unrecognized dtype, or an
+        unparseable ``lambda_l2`` raises instead of silently falling back to a default (a typo
+        must abort the run, not change the numerical experiment).
+        """
+
+        dtype = get_dtype({"dtype": config.get("dtype", "float64")})
         device = torch.device(config.get("device", "cpu"))
         model = config.get("model", {})
         if model.get("type") == "multishell":
@@ -279,6 +372,7 @@ class VESPUQPlugin:
         )
         kernel = config.get("kernel", {})
         uq = config.get("uq", config.get("uncertainty", {}))
+        _validate_uq_config_keys(uq)
         reg = uq.get("regularization", {})
         reg_method = str(reg.get("method", uq.get("reg_method", "lcurve"))).lower()
         # accept a numeric lambda either as the fixed value or as the seed for other methods
@@ -286,9 +380,10 @@ class VESPUQPlugin:
         try:
             lambda_l2 = float(lam_raw)
         except (TypeError, ValueError):
-            lambda_l2 = 30.0
-            if reg_method == "fixed":
-                reg_method = "lcurve"
+            raise ValueError(
+                f"uq.regularization.lambda_l2 must be numeric, got {lam_raw!r}; a typo'd lambda "
+                "must abort the run rather than silently change the regularization"
+            ) from None
         risk = uq.get("risk", {})
         bands = config.get("evaluation", {}).get("altitude_bands", {}) or {}
         low_band = bands.get("low") or [1.03, 1.15]

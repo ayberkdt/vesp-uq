@@ -1639,11 +1639,14 @@ class VESPUQPlugin:
         )
 
     # ------------------------------------------------------------------ calibration report
-    def evaluate_calibration(self, positions, error, *, altitude_bands: dict | None = None) -> dict:
-        """Per-band calibration metrics (PICP, z_std, NLL, CRPS) for held-out error samples.
+    def _calibration_arrays(self, positions, error) -> dict[str, torch.Tensor]:
+        """Predictive arrays behind :meth:`evaluate_calibration`, exactly as served.
 
-        This is Experiment 1: does the layer's nominal interval cover the held-out residuals,
-        and does its uncertainty grow toward low altitude where the surrogate is overconfident?
+        ``_predict_covariance_block`` already applies the operational conformal scale (once);
+        scaling again here would report ``c^2 * sigma`` / ``c^4 * cov`` instead of the served
+        ``c * sigma`` / ``c^2 * cov``. The regression tests assert these arrays match
+        :meth:`predict_uncertainty` / :meth:`predict_covariance_3x3` outputs, so the report can
+        never drift from the serving path.
         """
 
         self._require_fitted()
@@ -1651,7 +1654,6 @@ class VESPUQPlugin:
         error = self._prep_positions(error)
         n = positions.shape[0]
         radius = torch.linalg.norm(positions, dim=-1)
-        row_radii = radius.repeat(3)
 
         # One operator build per query chunk feeds BOTH the row-level prediction and the 3x3
         # covariance (the operator is the expensive part). Chunk row outputs come back in
@@ -1666,25 +1668,40 @@ class VESPUQPlugin:
             mean_parts.append(rows["mean"].reshape(3, nb))
             epi_parts.append(rows["epistemic_variance"].reshape(3, nb))
             cov_blk = self._predict_covariance_block(pos_blk, operator=op_blk)
-            std3, cov3 = cov_blk.std_components, cov_blk.covariance
-            # Reflect the operational (opt-in) conformal scaling so the reported calibration matches
-            # what predict_uncertainty / predict_covariance_3x3 actually serve. No-op when apply=False;
-            # the posterior mean is never scaled (conformal recalibrates spread only).
-            if self.conformal_apply and self.conformal_calibration:
-                std3, _ = self._apply_conformal_to_std(std3, cov_blk.sigma, radius[a:b], pos_blk)
-                cov3 = self._apply_conformal_to_covariance(cov3, radius[a:b], pos_blk)
-            std_parts.append(std3.transpose(0, 1))
-            cov_parts.append(cov3)
+            std_parts.append(cov_blk.std_components.transpose(0, 1))
+            cov_parts.append(cov_blk.covariance)
             mean3_parts.append(cov_blk.mean_error)
-        mean = torch.cat(mean_parts, dim=1).reshape(-1)
-        std = torch.cat(std_parts, dim=1).reshape(-1)
-        epistemic_std = torch.sqrt(torch.cat(epi_parts, dim=1).reshape(-1).clamp_min(0.0))
-        covariance = torch.cat(cov_parts, dim=0)
-        target = _flatten_acc(error)
+        return {
+            "positions": positions,
+            "radius": radius,
+            "row_radii": radius.repeat(3),
+            "mean": torch.cat(mean_parts, dim=1).reshape(-1),
+            "std": torch.cat(std_parts, dim=1).reshape(-1),
+            "epistemic_std": torch.sqrt(torch.cat(epi_parts, dim=1).reshape(-1).clamp_min(0.0)),
+            "covariance": torch.cat(cov_parts, dim=0),
+            "target": _flatten_acc(error),
+            # vector (ellipsoid) calibration uses the full 3x3 predictive covariance per point and
+            # the predictive RESIDUAL (observed error minus the posterior-mean error prediction).
+            "residual_vec": error - torch.cat(mean3_parts, dim=0),
+        }
 
-        # vector (ellipsoid) calibration uses the full 3x3 predictive covariance per point and
-        # the predictive RESIDUAL (observed error minus the posterior-mean error prediction).
-        residual_vec = error - torch.cat(mean3_parts, dim=0)
+    def evaluate_calibration(self, positions, error, *, altitude_bands: dict | None = None) -> dict:
+        """Per-band calibration metrics (PICP, z_std, NLL, CRPS) for held-out error samples.
+
+        This is Experiment 1: does the layer's nominal interval cover the held-out residuals,
+        and does its uncertainty grow toward low altitude where the surrogate is overconfident?
+        """
+
+        arrays = self._calibration_arrays(positions, error)
+        positions = arrays["positions"]
+        radius = arrays["radius"]
+        row_radii = arrays["row_radii"]
+        mean = arrays["mean"]
+        std = arrays["std"]
+        epistemic_std = arrays["epistemic_std"]
+        covariance = arrays["covariance"]
+        target = arrays["target"]
+        residual_vec = arrays["residual_vec"]
         point_radius = radius
         point_mask_all = torch.ones_like(point_radius, dtype=torch.bool)
 

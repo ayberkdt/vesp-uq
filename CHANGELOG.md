@@ -6,6 +6,14 @@ surface; the binding science scope lives in `docs/SCIENTIFIC_CLAIMS.md` and
 
 ## Unreleased
 
+- **Fixed (R2WP-1): double conformal scaling in the calibration report.**
+  `evaluate_calibration` re-applied the operational conformal scale on top of
+  `_predict_covariance_block` (which already applies it once), so post-conformal reports measured
+  `c^2·sigma` / `c^4·cov` while served predictions carried `c·sigma` / `c^2·cov`. The report path
+  now shares `_calibration_arrays` with the serving path, and
+  `tests/test_uq_conformal_parity.py` pins report-vs-serving parity (conformal on and off) plus
+  linear-in-`c` reported sigma. Pre-fix post-conformal tables
+  (`benchmarks/vespuq_conformal_validation.md`) are marked stale pending regeneration.
 - Added the measured pre-results readiness gate (`vesp.uq.readiness` and
   `scripts/run_vespuq_system_readiness.py`) that runs A/B/C diagnostics, exact log attribution,
   the RTN covariance prototype, optional geometry auto-selection, and manifest verification.

@@ -44,6 +44,10 @@ Established results (report as-is, do not soften):
   the current L60/L90 evidence is conservative rather than uniformly sharp; operational conformal
   scaling is implemented and partially validated, not a universal fix. On a pure altitude-OOD split
   the calibration must extrapolate the law into an unseen band and is fundamentally limited.
+  **Note (2026-07-11):** post-conformal calibration tables generated before the R2WP-1 fix
+  (`benchmarks/vespuq_conformal_validation.md`) double-applied the conformal scale in the report
+  path and are marked stale; post-conformal coverage/sharpness numbers must be regenerated before
+  being cited.
 - `lambda_l2: auto` selects the Tikhonov weight at the L-curve corner (lands in the stable
   knee, λ≈1e-3 on the synthetic multi-shell case).
 - **Source geometry is only a weak lever for the low-altitude bottleneck** (experiment E8).

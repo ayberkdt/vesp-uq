@@ -1,5 +1,12 @@
 # VESP-UQ Operational Conformal Validation
 
+> **STALE — pre-fix numbers (R2WP-1, 2026-07-11).** These tables were generated before the
+> double-conformal-scaling bug in `evaluate_calibration` was fixed: the report path applied the
+> conformal scale a second time on top of the served prediction, so post-conformal std was
+> overstated by the band scale `c` (cov by `c^2`). Post-conformal z_std / PICP90 columns here do
+> NOT describe the served predictions; baseline (pre-conformal) columns are unaffected. Do not
+> cite the conformal columns; regenerate via `scripts` conformal validation before use.
+
 This report reruns the real-lunar L60 and L90 residual-band configs with `uq.conformal.apply: true` and per-band conformal scaling enabled. It validates the operational prediction path, not the older audit-only conformal threshold path.
 
 Acceptance target: z_std in [0.70, 1.30], PICP90 in [0.85, 0.95] for low/mid/high bands.

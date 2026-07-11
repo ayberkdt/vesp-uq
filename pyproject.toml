@@ -10,19 +10,24 @@ description = "MaxEnt-VESP equivalent-source gravity feasibility framework + VES
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-requires-python = ">=3.10"
+# CI tests exactly 3.12; the floor matches what is actually tested (R2WP-8: no untested floor).
+requires-python = ">=3.12"
+# torch stays a core dependency: the equivalent-source operators and the UQ layer import it at
+# module level. UI (PyQt6) and plotting (matplotlib) are optional: headless analysis must not
+# pull a GUI toolkit (R2WP-8). Plot helpers already import matplotlib lazily and degrade
+# gracefully when it is missing.
 dependencies = [
     "numpy>=1.22.0",
     "scipy>=1.8.0",
     "pandas>=1.4.0",
-    "matplotlib>=3.5.0",
     "PyYAML>=6.0",
     "torch>=2.0.0",
-    "PyQt6>=6.4.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "ruff==0.15.16", "hypothesis", "mypy"]
+ui = ["PyQt6>=6.4.0", "matplotlib>=3.5.0"]
+plots = ["matplotlib>=3.5.0"]
+dev = ["pytest", "ruff==0.15.16", "hypothesis", "mypy", "vesp[ui]"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -41,7 +46,7 @@ testpaths = ["tests"]
 # in CI, so this stays a behavior-preserving bug/import hygiene check rather than a reformat.
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py312"
 
 [tool.ruff.lint]
 # E/W (pycodestyle), F (pyflakes -- catches stray/placeholder + unused imports), I (import

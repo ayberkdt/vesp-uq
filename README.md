@@ -598,11 +598,14 @@ localized or physically brittle.
 ## Installation
 
 The package uses a `src/` layout and is installed in editable mode so that the
-`vesp` package and the `python -m vesp.*` entry points resolve from anywhere:
+`vesp` package and the `python -m vesp.*` entry points resolve from anywhere.
+Python 3.12+ is required (the floor matches what CI actually tests). Core install is headless
+(numpy/scipy/pandas/PyYAML/torch); the desktop UI and plotting are optional extras:
 
 ```powershell
-pip install -r requirements.txt
-pip install -e .
+pip install -e .            # headless core (equivalent sources + VESP-UQ)
+pip install -e ".[ui]"      # + PyQt6 desktop UI and matplotlib plots
+pip install -r requirements.txt   # everything, pinned-by-name convenience list
 ```
 
 For the same lint, typecheck, and test tools used by CI, install the development extra and run

@@ -54,6 +54,11 @@ surface; the binding science scope lives in `docs/SCIENTIFIC_CLAIMS.md` and
   `plugin.fit_info["split"]` and the `run_vespuq` report — a calibration table without its split
   regime is not paper-usable. Multi-seed random-vs-spatial evidence sweeps are still pending (run
   via the overnight runner).
+- **Changed (R2WP-8): packaging honesty.** `PyQt6` and `matplotlib` moved out of core
+  dependencies into the `ui` / `plots` extras (headless installs no longer pull a GUI toolkit;
+  plot helpers already degrade gracefully without matplotlib). `requires-python` raised to
+  `>=3.12` to match the only CI-tested version — no untested floor is advertised. `torch` stays
+  core (imported at module level throughout).
 - Added the measured pre-results readiness gate (`vesp.uq.readiness` and
   `scripts/run_vespuq_system_readiness.py`) that runs A/B/C diagnostics, exact log attribution,
   the RTN covariance prototype, optional geometry auto-selection, and manifest verification.

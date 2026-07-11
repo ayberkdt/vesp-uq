@@ -9,9 +9,10 @@ plugin (so the comparison is apples-to-apples).
 
 The GP is deliberately exact (Cholesky), with a median-heuristic lengthscale and a per-component
 noise chosen by evidence over a small grid -- a strong, well-understood baseline, not a tuned
-competitor. It carries no physics structure and does not extrapolate altitude the way the
-equivalent-source posterior does; the comparison is expected to show VESP-UQ's value as
-physics-structured, cheap, altitude-aware covariance, not necessarily lower in-support error.
+competitor. The vanilla :class:`GPResidualUQ` carries no physics structure and no altitude
+information; :class:`AltitudeAwareGPResidualUQ` (R2WP-6) closes the information gap -- altitude
+input feature + the same post-hoc altitude noise law the plugin gets -- so that any claimed
+VESP-UQ superiority is measured against an altitude-fair control, not an altitude-blind one.
 
 No new dependency: implemented in torch (the repo ships neither scikit-learn nor gpytorch). Targets
 force-model error only; never position error; no density claim.
@@ -24,7 +25,7 @@ from dataclasses import dataclass
 
 import torch
 
-from vesp.extensions.probabilistic import calibration_metrics
+from vesp.extensions.probabilistic import AltitudeNoiseModel, calibration_metrics
 from vesp.uq.metrics import component_calibration_metrics, vector_calibration_metrics
 
 _NOISE_FRACTION_GRID = (0.01, 0.03, 0.1, 0.3, 1.0)
@@ -70,6 +71,18 @@ class GPResidualUQ:
         d2 = torch.cdist(a, b) ** 2
         return torch.exp(-0.5 * d2 / (self.lengthscale_ ** 2))
 
+    def _features(self, x: torch.Tensor) -> torch.Tensor:
+        """Kernel input features for positions ``x`` (identity here; subclass hook)."""
+
+        return x
+
+    def _predictive_variance(
+        self, epistemic: torch.Tensor, noise: float, radius: torch.Tensor
+    ) -> torch.Tensor:
+        """Per-point predictive variance from the epistemic (latent) part (subclass hook)."""
+
+        return epistemic + noise
+
     def fit(self, positions, error) -> GPResidualUQ:
         x = torch.as_tensor(positions, dtype=self.dtype)
         y = torch.as_tensor(error, dtype=self.dtype)
@@ -81,15 +94,16 @@ class GPResidualUQ:
             idx = torch.randperm(n, generator=g)[: self.max_train]
             x, y = x[idx], y[idx]
         self.train_x_ = x
+        self.train_f_ = self._features(x)
         m = x.shape[0]
 
-        # median-heuristic lengthscale over pairwise distances (exclude the zero diagonal)
+        # median-heuristic lengthscale over pairwise feature distances (exclude the zero diagonal)
         with torch.no_grad():
-            dists = torch.cdist(x, x)
+            dists = torch.cdist(self.train_f_, self.train_f_)
             triu = dists[torch.triu(torch.ones(m, m, dtype=torch.bool), diagonal=1)]
             self.lengthscale_ = float(torch.median(triu).clamp_min(1.0e-6)) if triu.numel() else 1.0
 
-        base = self._rbf(x, x)
+        base = self._rbf(self.train_f_, self.train_f_)
         eye = torch.eye(m, dtype=self.dtype)
         self.signal_var_ = []
         self.noise_var_ = []
@@ -133,19 +147,20 @@ class GPResidualUQ:
         if x.ndim != 2 or x.shape[-1] != 3:
             raise ValueError("positions must have shape (Q, 3)")
         q = x.shape[0]
+        radius = torch.linalg.norm(x, dim=-1)
         means = torch.empty(q, 3, dtype=self.dtype)
         stds = torch.empty(q, 3, dtype=self.dtype)
         for a in range(0, q, chunk):
             b = min(q, a + chunk)
-            ks = self._rbf(x[a:b], self.train_x_)            # (nb, m)
+            ks = self._rbf(self._features(x[a:b]), self.train_f_)  # (nb, m)
             for c in range(3):
                 signal, noise = self.signal_var_[c], self.noise_var_[c]
                 ks_c = signal * ks
                 means[a:b, c] = ks_c @ self.alpha_[c]
                 v = torch.linalg.solve_triangular(self.chol_[c], ks_c.transpose(0, 1), upper=False)
-                latent_var = (signal + noise) - (v ** 2).sum(dim=0)  # prior var (incl. noise) - reduction
-                stds[a:b, c] = latent_var.clamp_min(1.0e-30).sqrt()
-        radius = torch.linalg.norm(x, dim=-1)
+                epistemic = (signal - (v ** 2).sum(dim=0)).clamp_min(0.0)  # latent prior - reduction
+                var = self._predictive_variance(epistemic, noise, radius[a:b])
+                stds[a:b, c] = var.clamp_min(1.0e-30).sqrt()
         sigma = torch.sqrt((stds ** 2).sum(dim=-1))
         mean_mag = torch.linalg.norm(means, dim=-1)
         expected = torch.sqrt(mean_mag ** 2 + sigma ** 2)
@@ -208,5 +223,85 @@ class GPResidualUQ:
             out[i] = aggregate_trajectory_error(profile[off:off + n], aggregator)
             off += n
         return out
+
+
+class AltitudeAwareGPResidualUQ(GPResidualUQ):
+    """GP baseline given the SAME altitude information diet as VESP-UQ (R2WP-6).
+
+    The vanilla :class:`GPResidualUQ` is deliberately altitude-blind (stationary RBF on Cartesian
+    positions, homoscedastic per-component noise), while the plugin gets a heteroscedastic
+    altitude noise law plus optional conformal scaling -- so "better calibration than the GP"
+    partly measures information access, not method quality. This control closes that gap two ways:
+
+    - **altitude input feature**: the kernel operates on standardized ``(x, y, z, log h)`` with
+      ``h = r - 1``, so the stationary RBF can express altitude dependence;
+    - **heteroscedastic altitude noise**: the same 2-parameter power law
+      (:class:`~vesp.extensions.probabilistic.AltitudeNoiseModel`) the plugin uses, fit post-hoc
+      on a held-in validation split's residuals -- the identical recalibration budget. At predict
+      time it replaces the homoscedastic noise term: ``var = epistemic + sigma^2(h)``.
+
+    Whatever calibration/decision superiority VESP-UQ claims over a GP must be measured against
+    this variant, not (only) the altitude-blind one.
+    """
+
+    def __init__(self, *, val_fraction: float = 0.25, h_floor: float = 1.0e-3, **kw) -> None:
+        super().__init__(**kw)
+        self.val_fraction = float(val_fraction)
+        self.h_floor = float(h_floor)
+        self.altitude_noise_: AltitudeNoiseModel | None = None
+        self._feat_mean_: torch.Tensor | None = None
+        self._feat_scale_: torch.Tensor | None = None
+
+    def _raw_features(self, x: torch.Tensor) -> torch.Tensor:
+        h = (torch.linalg.norm(x, dim=-1) - 1.0).clamp_min(self.h_floor)
+        return torch.cat([x, torch.log(h).unsqueeze(-1)], dim=-1)
+
+    def _features(self, x: torch.Tensor) -> torch.Tensor:
+        f = self._raw_features(x)
+        if self._feat_mean_ is None:  # standardization params come from the training positions
+            return f
+        return (f - self._feat_mean_) / self._feat_scale_
+
+    def _predictive_variance(
+        self, epistemic: torch.Tensor, noise: float, radius: torch.Tensor
+    ) -> torch.Tensor:
+        if self.altitude_noise_ is None:
+            return epistemic + noise
+        return epistemic + self.altitude_noise_.variance(radius)
+
+    def fit(self, positions, error) -> AltitudeAwareGPResidualUQ:
+        x = torch.as_tensor(positions, dtype=self.dtype)
+        y = torch.as_tensor(error, dtype=self.dtype)
+        if x.ndim != 2 or x.shape[-1] != 3 or y.shape != x.shape:
+            raise ValueError("positions and error must both have shape (N, 3)")
+        n = x.shape[0]
+
+        # held-in validation split for the post-hoc altitude noise law (same budget as the plugin)
+        g = torch.Generator().manual_seed(self.seed)
+        perm = torch.randperm(n, generator=g)
+        n_val = int(round(self.val_fraction * n))
+        use_val = n_val >= 30 and (n - n_val) >= 30
+        val_idx, tr_idx = (perm[:n_val], perm[n_val:]) if use_val else (perm[:0], perm)
+
+        raw = self._raw_features(x[tr_idx])
+        self._feat_mean_ = raw.mean(dim=0)
+        self._feat_scale_ = raw.std(dim=0).clamp_min(1.0e-12)
+
+        self.altitude_noise_ = None  # base fit + val prediction run with homoscedastic noise
+        super().fit(x[tr_idx], y[tr_idx])
+
+        if use_val:
+            pred = self.predict(x[val_idx])
+            residual = y[val_idx] - pred.mean_error  # (n_val, 3)
+            noise = torch.tensor(self.noise_var_, dtype=self.dtype)  # (3,)
+            epistemic = (pred.std_components**2 - noise).clamp_min(0.0)  # (n_val, 3)
+            radii3 = pred.radius.repeat(3)
+            self.altitude_noise_ = AltitudeNoiseModel.fit(
+                radii3,
+                residual.transpose(0, 1).reshape(-1),
+                epistemic.transpose(0, 1).reshape(-1),
+                h_floor=self.h_floor,
+            )
+        return self
 
 

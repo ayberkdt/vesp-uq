@@ -1,11 +1,16 @@
-"""Head-to-head: VESP-UQ vs a Gaussian-process UQ baseline (WP-D).
+"""Head-to-head: VESP-UQ vs Gaussian-process UQ baselines (WP-D, extended by R2WP-6).
 
-Fits the VESP-UQ plugin and a :class:`~vesp.uq.baselines.GPResidualUQ` on the *same* train/held
-split and scores them on identical metrics: per-band calibration (z_std, PICP90, ellipsoid PICP90,
+Fits the VESP-UQ plugin, the altitude-blind :class:`~vesp.uq.baselines.GPResidualUQ`, and the
+altitude-fair :class:`~vesp.uq.baselines.AltitudeAwareGPResidualUQ` on the *same* train/held split
+and scores all three on identical metrics: per-band calibration (z_std, PICP90, ellipsoid PICP90,
 radial/tangential z_std, calibration error, Winkler), trajectory-screening decision quality
-(AUROC / capture-AUC / oracle-regret), and fit/predict runtime. The point is not to crown a winner
-on in-support error but to show, with numbers, what each method buys -- the GP is a strong,
-well-understood spatial UQ baseline; VESP-UQ adds physics-structured, altitude-aware covariance.
+(AUROC / capture-AUC / oracle-regret), and fit/predict runtime.
+
+The altitude-aware GP exists because the vanilla comparison is not information-fair: VESP-UQ gets
+a heteroscedastic altitude noise law while the vanilla GP is altitude-blind, so "beats the GP"
+partly measures information access. Any claimed VESP-UQ superiority must cite the ``gp_alt``
+column; where the altitude-aware GP matches VESP-UQ, the honest differentiator is the
+physics-structured covariance / extrapolation behavior and cost, not calibration.
 
 Everything targets trajectory-level true FORCE-model error; no position-error or density claim.
 """
@@ -18,6 +23,7 @@ from pathlib import Path
 
 from vesp.uq.baselines import (
     SUPERVISOR_SCORING,
+    AltitudeAwareGPResidualUQ,
     GPResidualUQ,
     min_altitude_scores,
     prepare,
@@ -61,17 +67,25 @@ def comparison_run(config: dict, *, seed: int, rerun_fractions=DEFAULT_FRACTIONS
     gp.fit(train.positions, train.error)
     gp_fit_s = time.perf_counter() - t0
 
-    # calibration (same metrics for both)
+    gp_alt = AltitudeAwareGPResidualUQ(seed=int(seed), dtype=dtype)
+    t0 = time.perf_counter()
+    gp_alt.fit(train.positions, train.error)
+    gp_alt_fit_s = time.perf_counter() - t0
+
+    # calibration (same metrics for all three)
     t0 = time.perf_counter()
     plugin_cal = plugin.evaluate_calibration(held.positions, held.error, altitude_bands=bands)
     plugin_pred_s = time.perf_counter() - t0
     t0 = time.perf_counter()
     gp_cal = gp.evaluate_calibration(held.positions, held.error, altitude_bands=bands)
     gp_pred_s = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    gp_alt_cal = gp_alt.evaluate_calibration(held.positions, held.error, altitude_bands=bands)
+    gp_alt_pred_s = time.perf_counter() - t0
     n_held = int(held.positions.shape[0])
 
     calib_rows = []
-    for model, cal in (("vespuq", plugin_cal), ("gp", gp_cal)):
+    for model, cal in (("vespuq", plugin_cal), ("gp", gp_cal), ("gp_alt", gp_alt_cal)):
         for region in CALIB_REGIONS:
             bm = cal.get(region)
             if not isinstance(bm, dict):
@@ -94,6 +108,7 @@ def comparison_run(config: dict, *, seed: int, rerun_fractions=DEFAULT_FRACTIONS
     scores = {
         "vespuq": vespuq_scores(plugin, trajectories, SUPERVISOR_SCORING, weights=weights),
         "gp": gp.score_trajectories(trajectories, aggregator=aggregator),
+        "gp_alt": gp_alt.score_trajectories(trajectories, aggregator=aggregator),
         "min_altitude": min_altitude_scores(trajectories),
     }
     decision_rows = []
@@ -111,6 +126,9 @@ def comparison_run(config: dict, *, seed: int, rerun_fractions=DEFAULT_FRACTIONS
         {"band": band, "seed": int(seed), "model": "gp", "fit_seconds": gp_fit_s,
          "predict_seconds_held": gp_pred_s, "n_held": n_held,
          "gp_lengthscale": gp.lengthscale_, "gp_n_train": int(gp.train_x_.shape[0])},
+        {"band": band, "seed": int(seed), "model": "gp_alt", "fit_seconds": gp_alt_fit_s,
+         "predict_seconds_held": gp_alt_pred_s, "n_held": n_held,
+         "gp_lengthscale": gp_alt.lengthscale_, "gp_n_train": int(gp_alt.train_x_.shape[0])},
     ]
     return {"band": band, "seed": int(seed), "calib_rows": calib_rows,
             "decision_rows": decision_rows, "runtime_rows": runtime_rows,
@@ -147,11 +165,13 @@ def _decision_csv(agg) -> str:
 
 def _md(calib_agg, decision_agg, runtime_agg) -> str:
     lines = [
-        "# VESP-UQ vs Gaussian-Process UQ Baseline (WP-D)",
+        "# VESP-UQ vs Gaussian-Process UQ Baselines (WP-D / R2WP-6)",
         "",
-        "Both models are fit on the same train split and evaluated on identical held-out calibration "
-        "and trajectory-screening metrics. The GP is a strong, well-understood spatial UQ baseline; "
-        "VESP-UQ adds physics-structured, altitude-aware covariance. Mean +/- std across seeds.",
+        "All models are fit on the same train split and evaluated on identical held-out calibration "
+        "and trajectory-screening metrics. `gp` is the altitude-blind stationary-RBF GP; `gp_alt` "
+        "is the altitude-FAIR control (log-altitude kernel feature + the same post-hoc altitude "
+        "noise law VESP-UQ gets). Superiority claims must cite the `gp_alt` column. "
+        "Mean +/- std across seeds.",
         "",
         "## Calibration (per band)",
         "",
@@ -188,9 +208,11 @@ def _md(calib_agg, decision_agg, runtime_agg) -> str:
                      f"{_pm(a['predict_seconds_held'], '.4f')} |")
     lines += [
         "",
-        "Interpretation: where the GP matches or beats VESP-UQ on in-support calibration, VESP-UQ's "
-        "contribution is its physics-structured covariance and altitude extrapolation, not a lower "
-        "in-support error. Reported honestly either way; force-model error only.",
+        "Interpretation: where the altitude-aware GP (`gp_alt`) matches or beats VESP-UQ on "
+        "in-support calibration, VESP-UQ's contribution is its physics-structured covariance and "
+        "altitude extrapolation, not a lower in-support error. The altitude-blind `gp` column is "
+        "kept only to show how much of the gap is information access rather than method. Reported "
+        "honestly either way; force-model error only.",
         "",
     ]
     return "\n".join(lines) + "\n"

@@ -39,6 +39,12 @@ surface; the binding science scope lives in `docs/SCIENTIFIC_CLAIMS.md` and
   docstrings and claim docs, and relabeled report lines ("RMS predictive force-error magnitude").
   The hard field rename is deferred to avoid churning persisted report schemas; new code should
   use `rms_predictive_error`.
+- **Added (R2WP-6): altitude-fair GP baseline.** `AltitudeAwareGPResidualUQ` gives the GP the
+  same altitude information diet as VESP-UQ — a standardized `log(h)` kernel input feature plus
+  the identical post-hoc `AltitudeNoiseModel` power-law recalibration on a held-in validation
+  split. `run_uq_baseline_comparison` now reports three columns (`vespuq`, `gp`, `gp_alt`);
+  superiority claims must cite `gp_alt`, with the altitude-blind `gp` kept only to show how much
+  of the gap is information access.
 - Added the measured pre-results readiness gate (`vesp.uq.readiness` and
   `scripts/run_vespuq_system_readiness.py`) that runs A/B/C diagnostics, exact log attribution,
   the RTN covariance prototype, optional geometry auto-selection, and manifest verification.

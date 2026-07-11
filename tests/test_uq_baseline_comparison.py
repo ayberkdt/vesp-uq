@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from vesp.common.config import load_config
-from vesp.uq.baselines import GPResidualUQ
+from vesp.uq.baselines import AltitudeAwareGPResidualUQ, GPResidualUQ
 
 ROOT = Path(__file__).resolve().parents[1]
 SMOKE_CONFIG = ROOT / "configs" / "vespuq" / "vespuq_smoke.yaml"
@@ -60,6 +60,51 @@ def test_gp_fit_validates_shape():
         GPResidualUQ().fit(torch.randn(10, 3), torch.randn(10, 2))
 
 
+def _altitude_field(n=800, seed=3):
+    """Residuals whose magnitude grows toward low altitude (power law in h = r - 1)."""
+
+    g = torch.Generator().manual_seed(seed)
+    dirs = torch.randn(n, 3, generator=g, dtype=torch.float64)
+    dirs = dirs / torch.linalg.norm(dirs, dim=-1, keepdim=True)
+    radii = 1.05 + 0.55 * torch.rand(n, generator=g, dtype=torch.float64)
+    pos = dirs * radii.unsqueeze(-1)
+    scale = 0.05 * (radii - 1.0).clamp_min(1e-3).pow(-0.5)
+    err = scale.unsqueeze(-1) * torch.randn(n, 3, generator=g, dtype=torch.float64)
+    return pos, err
+
+
+def test_altitude_aware_gp_fits_growing_noise_law():
+    # R2WP-6: the altitude-fair control must actually learn altitude-dependent noise (b > 0) and
+    # predict a larger std at low altitude than at high altitude on an altitude-heteroscedastic
+    # field -- exactly the information the vanilla GP cannot represent.
+    pos, err = _altitude_field()
+    gp_alt = AltitudeAwareGPResidualUQ(seed=3).fit(pos, err)
+    assert gp_alt.altitude_noise_ is not None
+    assert gp_alt.altitude_noise_.b > 0.0
+
+    def _shell(r, n=100, seed=9):
+        g = torch.Generator().manual_seed(seed)
+        d = torch.randn(n, 3, generator=g, dtype=torch.float64)
+        return r * d / torch.linalg.norm(d, dim=-1, keepdim=True)
+
+    low = gp_alt.predict(_shell(1.06)).sigma.mean()
+    high = gp_alt.predict(_shell(1.55)).sigma.mean()
+    assert float(low) > float(high)
+
+
+def test_altitude_aware_gp_interface_matches_vanilla():
+    pos, err = _calibrated_field()
+    gp_alt = AltitudeAwareGPResidualUQ(seed=0).fit(pos, err)
+    pred = gp_alt.predict(pos[:40])
+    assert pred.mean_error.shape == (40, 3)
+    assert pred.std_components.shape == (40, 3)
+    assert torch.all(pred.std_components > 0)
+    cal = gp_alt.evaluate_calibration(pos[:100], err[:100], altitude_bands={"low": [1.0, 1.6]})
+    assert "z_std" in cal["all"]
+    scores = gp_alt.score_trajectories([1.1 + 0.3 * torch.rand(20, 3, dtype=torch.float64)])
+    assert scores.shape == (1,) and torch.isfinite(scores).all()
+
+
 def test_gp_predict_before_fit_raises():
     with pytest.raises(RuntimeError):
         GPResidualUQ().predict(torch.randn(3, 3, dtype=torch.float64))
@@ -79,3 +124,6 @@ def test_comparison_runner_writes_manifested_artifacts(tmp_path):
     manifest = json.loads((out / "manifest.json").read_text())
     entry = manifest["artifacts"]["uq_baseline_comparison.csv"]
     assert entry["sha256"] and entry["bytes"] > 0
+    # R2WP-6: the altitude-fair GP column must be present in both tables
+    assert ",gp_alt," in (out / "uq_baseline_comparison.csv").read_text().replace('"', "")
+    assert ",gp_alt," in (out / "uq_baseline_decision.csv").read_text().replace('"', "")

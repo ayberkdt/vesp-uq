@@ -47,7 +47,7 @@ from vesp.uq.baselines.expanded import (
     fit_ridge_ranker,
     zscore,
 )
-from vesp.uq.baselines.gp import GPPrediction, GPResidualUQ
+from vesp.uq.baselines.gp import AltitudeAwareGPResidualUQ, GPPrediction, GPResidualUQ
 
 BaselineKind = Literal["trajectory", "plugin", "oracle_control", "expanded", "probabilistic"]
 
@@ -142,13 +142,23 @@ BASELINE_REGISTRY: dict[str, BaselineEntry] = {
         "gp_residual_uq",
         "probabilistic",
         GPResidualUQ,
-        description="independent-output exact GP residual uncertainty baseline",
+        description="independent-output exact GP residual uncertainty baseline (altitude-blind)",
+    ),
+    "gp_residual_uq_altitude": BaselineEntry(
+        "gp_residual_uq_altitude",
+        "probabilistic",
+        AltitudeAwareGPResidualUQ,
+        description=(
+            "altitude-fair GP control: log-altitude kernel feature + the plugin's post-hoc "
+            "altitude noise law (same information diet as VESP-UQ)"
+        ),
     ),
 }
 
 __all__ = [
     "ALTITUDE_RESIDUAL_AGGREGATOR",
     "BASELINE_REGISTRY",
+    "AltitudeAwareGPResidualUQ",
     "BaselineEntry",
     "GPResidualUQ",
     "GPPrediction",

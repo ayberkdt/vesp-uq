@@ -8,10 +8,15 @@ Monte Carlo trajectories for force-risk follow-up prioritization. See
 """
 
 from vesp.uq.data import (
+    UQ_SPLIT_METHODS,
     UQSamples,
     load_uq_samples_from_csv,
     make_synthetic_uq_samples,
     split_uq_samples,
+    split_uq_samples_altitude_disjoint,
+    split_uq_samples_angular_block,
+    split_uq_samples_by_config,
+    split_uq_samples_trajectory_group,
     validate_uq_samples,
 )
 from vesp.uq.io import TrajectoryDataset, flatten_acceleration_pairs, load_trajectory_csv
@@ -53,8 +58,13 @@ __all__ = [
     "is_absolute_scoring",
     "is_expected_only_scoring",
     "UQSamples",
+    "UQ_SPLIT_METHODS",
     "load_uq_samples_from_csv",
     "split_uq_samples",
+    "split_uq_samples_altitude_disjoint",
+    "split_uq_samples_angular_block",
+    "split_uq_samples_by_config",
+    "split_uq_samples_trajectory_group",
     "validate_uq_samples",
     "make_synthetic_uq_samples",
     "vector_calibration_metrics",

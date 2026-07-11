@@ -22,7 +22,7 @@ from vesp.uq.data import (
     UQSamples,
     load_uq_samples_from_csv,
     make_synthetic_uq_samples,
-    split_uq_samples,
+    split_uq_samples_by_config,
 )
 from vesp.uq.ensemble import generate_orbit_ensemble, nearest_neighbor_error_magnitude
 from vesp.uq.io import load_trajectory_csv
@@ -238,14 +238,19 @@ def run_vespuq(config: dict, *, return_plugin: bool = False):
     dtype = get_dtype(config)
     samples = _load_samples(config, dtype)
     seed = int(config.get("seed", 0))
-    train, held = split_uq_samples(
-        samples, train_fraction=float(config.get("data", {}).get("train_fraction", 0.7)), seed=seed
+    data_cfg = config.get("data", {})
+    train, held, split_info = split_uq_samples_by_config(
+        samples,
+        data_cfg.get("split"),
+        train_fraction=float(data_cfg.get("train_fraction", 0.7)),
+        seed=seed,
     )
 
     plugin = VESPUQPlugin.from_config(config)
     t0 = time.perf_counter()
     plugin.fit(train.positions, train.surrogate, train.reference)
     fit_seconds = time.perf_counter() - t0
+    plugin.fit_info["split"] = split_info
 
     bands = config.get("evaluation", {}).get("altitude_bands")
     t0 = time.perf_counter()
@@ -340,6 +345,8 @@ def run_vespuq(config: dict, *, return_plugin: bool = False):
     )
     report = {
         "dataset": str(config.get("data", {}).get("path") or (samples.metadata or {}).get("mode", "synthetic")),
+        # A calibration table without its split regime is not paper-usable (R2WP-7).
+        "split": split_info,
         "fit": plugin.fit_info,
         "conformal_calibration": (
             plugin.conformal_calibration or {"enabled": False, "apply": plugin.conformal_apply}

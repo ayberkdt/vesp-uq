@@ -10,6 +10,7 @@ from vesp.uq.data import (
     load_uq_samples_from_csv,
     make_synthetic_uq_samples,
     split_uq_samples,
+    split_uq_samples_by_config,
     validate_uq_samples,
 )
 
@@ -87,3 +88,70 @@ def test_validate_rejects_bad_shapes():
         validate_uq_samples(UQSamples(positions=torch.zeros(4, 2), error=torch.zeros(4, 3)))
     with pytest.raises(ValueError):
         validate_uq_samples(UQSamples(positions=torch.zeros(4, 3), error=torch.zeros(3, 3)))
+
+
+# ------------------------------------------------------------------ spatial splits (R2WP-7)
+def test_altitude_disjoint_split_separates_radius_bands():
+    s = make_synthetic_uq_samples(n=600, seed=5)
+    train, held, info = split_uq_samples_by_config(
+        s, {"method": "altitude_disjoint", "held_quantile": [0.0, 0.3], "buffer": 0.02}, seed=0
+    )
+    assert info["method"] == "altitude_disjoint"
+    # every held radius sits below every train radius, with at least the buffer between them
+    assert float(held.radius.max()) + 0.02 <= float(train.radius.min()) + 1e-12
+    assert info["n_train"] == train.n and info["n_held"] == held.n
+    assert train.n + held.n + info["n_dropped_buffer"] == s.n
+
+
+def test_angular_block_split_holds_out_whole_cells():
+    s = make_synthetic_uq_samples(n=800, seed=6)
+    train, held, info = split_uq_samples_by_config(
+        s, {"method": "angular_block", "n_blocks": 10, "buffer_deg": 5.0}, train_fraction=0.7, seed=1
+    )
+    assert info["method"] == "angular_block"
+    assert train.n > 0 and held.n > 0
+    # the angular buffer must hold: no train direction within 5 deg of a held direction
+    tr = train.positions / torch.linalg.norm(train.positions, dim=-1, keepdim=True)
+    hd = held.positions / torch.linalg.norm(held.positions, dim=-1, keepdim=True)
+    max_cos = (tr @ hd.transpose(0, 1)).max()
+    assert float(max_cos) < torch.cos(torch.deg2rad(torch.tensor(5.0))) + 1e-9
+
+
+def test_trajectory_group_split_never_splits_a_group():
+    s = make_synthetic_uq_samples(n=90, seed=7)
+    groups = [f"traj{i % 9}" for i in range(90)]
+    train, held, info = split_uq_samples_by_config(
+        s, {"method": "trajectory_group"}, train_fraction=0.7, seed=2, groups=groups
+    )
+    assert info["n_train_groups"] + info["n_held_groups"] == 9
+    # reconstruct group membership by matching positions back to the parent set
+    def _labels(part):
+        out = []
+        for p in part.positions:
+            j = int(torch.argmin(torch.linalg.norm(s.positions - p, dim=-1)))
+            out.append(groups[j])
+        return set(out)
+
+    assert _labels(train).isdisjoint(_labels(held))
+
+
+def test_split_by_config_random_default_and_failclosed():
+    s = make_synthetic_uq_samples(n=100, seed=8)
+    train, held, info = split_uq_samples_by_config(s, None, train_fraction=0.7, seed=3)
+    assert info["method"] == "random" and train.n == 70 and held.n == 30
+    with pytest.raises(ValueError, match="unknown split method"):
+        split_uq_samples_by_config(s, {"method": "altitute_disjoint"})
+    with pytest.raises(ValueError, match="key"):
+        split_uq_samples_by_config(s, {"method": "angular_block", "n_block": 8})
+    with pytest.raises(ValueError, match="group labels"):
+        split_uq_samples_by_config(s, {"method": "trajectory_group"})
+
+
+def test_group_column_loads_into_metadata(tmp_path):
+    p = _write(
+        tmp_path / "grp.csv",
+        ["x", "y", "z", "ax_err", "ay_err", "az_err", "traj_id"],
+        [[1.1, 0.0, 0.0, 0.1, 0.2, 0.3, "a"], [0.0, 1.2, 0.0, 0.2, 0.1, 0.0, "b"]],
+    )
+    s = load_uq_samples_from_csv(p)
+    assert s.metadata["groups"] == ["a", "b"]

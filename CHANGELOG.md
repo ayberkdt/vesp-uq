@@ -45,6 +45,15 @@ surface; the binding science scope lives in `docs/SCIENTIFIC_CLAIMS.md` and
   split. `run_uq_baseline_comparison` now reports three columns (`vespuq`, `gp`, `gp_alt`);
   superiority claims must cite `gp_alt`, with the altitude-blind `gp` kept only to show how much
   of the gap is information access.
+- **Added (R2WP-7): spatial-generalization splits as first-class config.** `data.split.method`
+  now selects `random` (legacy default) / `altitude_disjoint` (held radius band + buffer gap) /
+  `angular_block` (spherical-Voronoi cells held out whole, optional great-circle buffer) /
+  `trajectory_group` (whole groups on one side; group labels from a CSV
+  `group`/`traj_id`/`trajectory_id`/`orbit_id` column or passed explicitly). The dispatcher is
+  fail-closed on unknown methods/params, and the split regime is stamped into
+  `plugin.fit_info["split"]` and the `run_vespuq` report — a calibration table without its split
+  regime is not paper-usable. Multi-seed random-vs-spatial evidence sweeps are still pending (run
+  via the overnight runner).
 - Added the measured pre-results readiness gate (`vesp.uq.readiness` and
   `scripts/run_vespuq_system_readiness.py`) that runs A/B/C diagnostics, exact log attribution,
   the RTN covariance prototype, optional geometry auto-selection, and manifest verification.

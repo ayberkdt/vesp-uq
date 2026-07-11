@@ -22,7 +22,7 @@ from vesp.uq.baselines.core import (
     min_altitude_scores,
     vespuq_scores,
 )
-from vesp.uq.data import split_uq_samples
+from vesp.uq.data import split_uq_samples_by_config
 from vesp.uq.ensemble import nearest_neighbor_error_magnitude
 from vesp.uq.experiment import _load_samples
 from vesp.uq.integrity.split_guard import forbid_oracle
@@ -49,16 +49,24 @@ def prepare(config: dict):
 
     The split and trajectory generation are both keyed on ``config['seed']``, so cloning the
     config with a fresh ``seed`` yields an independent realization (used for multi-seed runs).
+    The split method honors ``data.split`` (random / altitude_disjoint / angular_block /
+    trajectory_group, R2WP-7) and its parameters are stamped into ``plugin.fit_info['split']``
+    so every downstream report carries its split regime.
     """
 
     dtype = get_dtype(config)
     samples = _load_samples(config, dtype)
     seed = int(config.get("seed", 0))
-    train, held = split_uq_samples(
-        samples, train_fraction=float(config.get("data", {}).get("train_fraction", 0.7)), seed=seed
+    data_cfg = config.get("data", {})
+    train, held, split_info = split_uq_samples_by_config(
+        samples,
+        data_cfg.get("split"),
+        train_fraction=float(data_cfg.get("train_fraction", 0.7)),
+        seed=seed,
     )
     plugin = VESPUQPlugin.from_config(config)
     plugin.fit(train.positions, train.surrogate, train.reference)
+    plugin.fit_info["split"] = split_info
     return plugin, samples, train, held, dtype, seed
 
 

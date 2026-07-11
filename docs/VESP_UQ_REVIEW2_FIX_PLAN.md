@@ -1,7 +1,9 @@
 # VESP-UQ Review-2 Fix Plan (conformal double-scaling + fail-closed config + fair baselines)
 
 Created: 2026-07-11
-Status: DRAFT — nothing implemented yet
+Status: R2WP-1..8 implemented 2026-07-11 (see Status Log); evidence sweeps (R2WP-1 table
+regeneration, R2WP-4 L60/L90 ablation, R2WP-7 random-vs-spatial multi-seed) still pending on the
+overnight runner
 
 This plan responds to the second external review (2026-07-11). It is separate from
 `VESP_UQ_REVIEW_RESPONSE_PLAN.md` (which answered the 2026-07-02 review) and narrower than
@@ -243,11 +245,11 @@ precisely the guard that makes the decomposition safe.
 
 | WP | Status | Evidence / commit |
 | --- | --- | --- |
-| R2WP-1 | pending | |
-| R2WP-2 | pending | |
-| R2WP-3 | pending | |
-| R2WP-4 | pending | |
-| R2WP-5 | pending | |
-| R2WP-6 | pending | |
-| R2WP-7 | pending | |
-| R2WP-8 | pending | |
+| R2WP-1 | **done** (code + tests + stale markers); conformal table regeneration pending | double application removed from `evaluate_calibration` (now shares `_calibration_arrays` with serving); `tests/test_uq_conformal_parity.py`; stale banner on `benchmarks/vespuq_conformal_validation.md`; SCIENTIFIC_CLAIMS note |
+| R2WP-2 | **done**, verified on a CUDA machine | `device=radii.device` in `AltitudeNoiseModel.fit`; CUDA-vs-CPU parity + device-contract tests in `tests/test_uq_gpu_parity.py`. Note: on torch 2.5.1 the old code ran via 0-dim cross-device broadcasting (per-iteration syncs), not a hard crash |
+| R2WP-3 | **done** | strict dtype via `common.config.get_dtype`; unparseable `lambda_l2` raises (fixed→lcurve mutation deleted); uq-block + sub-block key allowlists; `risk_scoring` validated at construction; `tests/test_uq_config_failclosed.py` incl. shipped-config sweep. Manifest `config_defaults_applied` recording deferred to AWP-1 |
+| R2WP-4 | **done** (code); L60/L90 ranking-delta ablation pending | `radial_profile_full` (`r̂ᵀΣr̂`); `radial_expected` needs covariance; `radial_expected_diag` (+`_p95` variant) kept as ablation; anisotropic-disagreement unit test. Synthetic smoke: ranking unchanged (bias-dominated) |
+| R2WP-5 | **done** (alias-forward variant) | canonical `rms_predictive_error` property on `UncertaintyPrediction`/`GPPrediction`; RMS formula + Jensen caveat in docstrings, SCIENTIFIC_CLAIMS, and report labels. Deviation from plan: hard field rename deferred (would churn persisted report schemas); no doc presents the quantity as expected absolute error |
+| R2WP-6 | **done** (code); real-data three-way tables pending | `AltitudeAwareGPResidualUQ` (standardized log-h kernel feature + same `AltitudeNoiseModel` post-hoc budget); `gp_alt` column in `run_uq_baseline_comparison` CSV/decision tables; narrative requires citing `gp_alt` |
+| R2WP-7 | **done** (code); random-vs-spatial multi-seed sweep pending | `data.split.method` = random / altitude_disjoint / angular_block / trajectory_group (fail-closed dispatcher); split info stamped into `fit_info["split"]` + `run_vespuq` report; CSV group-column support; tests in `tests/test_uq_data.py`. Internal-split inheritance (plugin val split following the outer spatial regime) NOT yet implemented — noted as follow-up |
+| R2WP-8 | **done** | PyQt6/matplotlib → `ui`/`plots` extras; `requires-python >=3.12` (matches CI); ruff target py312; README install section updated. CI matrix expansion not taken (floor raised instead, per plan option 2) |

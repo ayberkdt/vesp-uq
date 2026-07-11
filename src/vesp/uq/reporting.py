@@ -495,7 +495,8 @@ def build_report_md(report: dict) -> str:
     lines += [
         f"- flagged {sc['n_flagged']}/{sc['n_trajectories']} ({fmt(100 * sc['rerun_fraction'], '.1f')}%)"
         + ("  -- **no trajectory exceeded the absolute force-risk budget (zero alarms)**" if zero_alarms and sel_mode != "fraction" else ""),
-        f"- expected force-error per orbit (ensemble mean | max): mean "
+        f"- RMS predictive force-error magnitude per orbit, sqrt(bias^2 + sigma^2) "
+        f"(ensemble mean | max): mean "
         f"{fmt((ee.get('mean_expected_error') or {}).get('mean'), '.3e')} | "
         f"max {fmt((ee.get('max_expected_error') or {}).get('max'), '.3e')} "
         f"({units.get('risk_score_units', 'normalized accel units') if units else 'normalized accel units'})",
@@ -504,7 +505,7 @@ def build_report_md(report: dict) -> str:
         "",
         "### What these metrics mean",
         "",
-        "- **force-risk score** = the VESP-UQ trajectory risk (expected force-model error / OOD). "
+        "- **force-risk score** = the VESP-UQ trajectory risk (RMS predictive force-model error / OOD). "
         "The **supplied true-error metric** is an external diagnostic oracle (e.g. a position-error "
         "read) used only to *validate* ranking; VESP-UQ does not predict it by construction.",
         "- **force-risk ranking** (Spearman, lift): does the force-risk score order orbits the way "

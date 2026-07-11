@@ -32,6 +32,13 @@ surface; the binding science scope lives in `docs/SCIENTIFIC_CLAIMS.md` and
   `radial_expected_diag` / variant `radial_expected_diag_p95`. On the synthetic in-span smoke case
   the ranking is unchanged (bias-dominated); the L60/L90 ablation runs with the next evidence
   sweep.
+- **Clarified (R2WP-5): `expected_error` is an RMS predictive error magnitude.** The quantity is
+  `sqrt(||mu_e||^2 + tr(Sigma_e)) = sqrt(E[||e||^2])`, which upper-bounds `E[||e||]` — a ranking
+  score, not an expected absolute error. Added the canonical `rms_predictive_error` accessor on
+  `UncertaintyPrediction` / `GPPrediction`, stated the formula in the prediction/scoring
+  docstrings and claim docs, and relabeled report lines ("RMS predictive force-error magnitude").
+  The hard field rename is deferred to avoid churning persisted report schemas; new code should
+  use `rms_predictive_error`.
 - Added the measured pre-results readiness gate (`vesp.uq.readiness` and
   `scripts/run_vespuq_system_readiness.py`) that runs A/B/C diagnostics, exact log attribution,
   the RTN covariance prototype, optional geometry auto-selection, and manifest verification.

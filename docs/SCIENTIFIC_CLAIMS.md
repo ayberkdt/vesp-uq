@@ -61,7 +61,9 @@ Established results (report as-is, do not soften):
 Implemented in the `vesp.uq` force-risk layer:
 
 - the **local predictive acceleration-error covariance `Sigma_a(x)`** (the full `3x3` per-point
-  covariance, `VESPUQPlugin.predict_covariance_3x3`), plus expected-force-error and
+  covariance, `VESPUQPlugin.predict_covariance_3x3`), plus RMS-predictive-force-error
+  (`expected_error = sqrt(||mu_e||^2 + tr(Sigma_e))` — an RMS magnitude `sqrt(E[||e||^2])`, which
+  upper-bounds `E[||e||]`; a ranking score, not an expected absolute error) and
   domain-support / OOD scoring and trajectory-level force-risk prioritization,
 - a **simple post-hoc altitude-dependent heteroscedastic recalibration** of the predictive noise
   (`floor + a·h^(-b)`, 2 parameters) fit on held-out validation residuals.

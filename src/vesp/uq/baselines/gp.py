@@ -39,7 +39,13 @@ class GPPrediction:
     mean_error: torch.Tensor      # (N, 3)
     std_components: torch.Tensor  # (N, 3) per-axis predictive std (latent + noise)
     sigma: torch.Tensor           # (N,) sqrt(sum of component variances)
-    expected_error: torch.Tensor  # (N,) sqrt(||mean||^2 + sigma^2)
+    expected_error: torch.Tensor  # (N,) sqrt(||mean||^2 + sigma^2) -- RMS magnitude, not E||e||
+
+    @property
+    def rms_predictive_error(self) -> torch.Tensor:
+        """Canonical name for :attr:`expected_error` (RMS predictive error magnitude)."""
+
+        return self.expected_error
 
 
 class GPResidualUQ:

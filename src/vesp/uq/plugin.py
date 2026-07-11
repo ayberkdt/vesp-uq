@@ -178,6 +178,11 @@ class UncertaintyPrediction:
     "how wrong is the surrogate expected to be here", used by the stronger trajectory-scoring
     modes. ``epistemic_fraction`` is ``epistemic_sigma / sigma`` (share of the spread that is
     reducible source-posterior uncertainty rather than the aleatoric floor).
+
+    Naming caveat (R2WP-5): ``expected_error`` is ``sqrt(E[||e||^2])`` -- an RMS predictive error
+    MAGNITUDE, which upper-bounds the true expected norm ``E[||e||]`` (Jensen). It is a valid
+    ranking score, but must never be presented as an "expected absolute error" against a physical
+    acceleration-error budget. :attr:`rms_predictive_error` is the canonical, honest accessor.
     """
 
     positions: torch.Tensor  # (N, 3)
@@ -190,6 +195,15 @@ class UncertaintyPrediction:
     expected_error: torch.Tensor  # (N,) sqrt(mean_error_magnitude^2 + sigma^2)
     epistemic_fraction: torch.Tensor  # (N,) epistemic_sigma / sigma in [0, 1]
     risk_score: torch.Tensor  # (N,)
+
+    @property
+    def rms_predictive_error(self) -> torch.Tensor:
+        """Canonical name for :attr:`expected_error`: ``sqrt(||mu_e||^2 + tr(Sigma_e))``.
+
+        This is the RMS predictive error magnitude ``sqrt(E[||e||^2])``, not ``E[||e||]``.
+        """
+
+        return self.expected_error
 
     def to_numpy(self) -> dict:
         return {k: v.detach().cpu().numpy() for k, v in asdict(self).items()}

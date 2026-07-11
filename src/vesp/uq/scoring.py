@@ -13,7 +13,9 @@ Three scoring families:
 - *absolute* expected-error / supervisor modes, normalized by a fixed altitude reference -- so a
   single physical force-risk budget means the same thing for every trajectory (zero-alarm screen).
 
-``expected_error = sqrt(bias^2 + sigma^2)`` underpins both supervisor families.
+``expected_error = sqrt(bias^2 + sigma^2)`` underpins both supervisor families. Note it is an RMS
+predictive error MAGNITUDE (``sqrt(E[||e||^2])``, upper-bounding ``E[||e||]``) -- a ranking score,
+never to be presented as an expected absolute error against a physical budget (R2WP-5).
 """
 
 from __future__ import annotations

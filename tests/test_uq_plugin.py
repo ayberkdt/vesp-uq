@@ -73,6 +73,11 @@ def test_predict_shapes_and_nonnegative_uncertainty():
     assert torch.all(pred.sigma >= 0)
     assert torch.all(pred.sigma >= pred.epistemic_sigma - 1.0e-12)  # total >= epistemic
     assert torch.allclose(pred.risk_score, pred.sigma)
+    # R2WP-5: canonical RMS accessor aliases expected_error, and the quantity really is the RMS
+    # combination sqrt(||mu||^2 + tr(Sigma)) (upper bound on E||e||), not an expected norm.
+    assert pred.rms_predictive_error is pred.expected_error
+    recon = torch.sqrt(pred.mean_error_magnitude**2 + pred.sigma**2)
+    assert torch.allclose(pred.expected_error, recon, rtol=1.0e-12, atol=0.0)
 
 
 def test_epistemic_uncertainty_grows_at_low_altitude_ood():

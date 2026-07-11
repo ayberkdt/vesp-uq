@@ -14,6 +14,11 @@ surface; the binding science scope lives in `docs/SCIENTIFIC_CLAIMS.md` and
   `tests/test_uq_conformal_parity.py` pins report-vs-serving parity (conformal on and off) plus
   linear-in-`c` reported sigma. Pre-fix post-conformal tables
   (`benchmarks/vespuq_conformal_validation.md`) are marked stale pending regeneration.
+- **Fixed (R2WP-2): heteroscedastic noise fit now creates its optimized parameters on the input
+  device.** `AltitudeNoiseModel.fit` built `log_a`/`raw_b` on CPU even for CUDA inputs; on
+  torch 2.5.1 this ran only via 0-dim cross-device broadcasting (per-iteration syncs, not a
+  guaranteed contract). Parameters now follow `radii.device`; CUDA-vs-CPU fit parity is pinned in
+  `tests/test_uq_gpu_parity.py` (verified on a CUDA machine).
 - Added the measured pre-results readiness gate (`vesp.uq.readiness` and
   `scripts/run_vespuq_system_readiness.py`) that runs A/B/C diagnostics, exact log attribution,
   the RTN covariance prototype, optional geometry auto-selection, and manifest verification.

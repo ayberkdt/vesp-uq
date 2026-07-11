@@ -138,6 +138,44 @@ def test_gpu_float32_scoring_proxy_contract(base_config):
     assert agreement > 0.9
 
 
+def _noise_fit_data(device: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    g = torch.Generator(device="cpu").manual_seed(7)
+    radii = 1.05 + 0.55 * torch.rand(400, generator=g, dtype=torch.float64)
+    residuals = (1.0e-3 * (radii - 1.0).pow(-0.5)) * torch.randn(400, generator=g, dtype=torch.float64)
+    epistemic = torch.full((400,), 1.0e-10, dtype=torch.float64)
+    return radii.to(device), residuals.to(device), epistemic.to(device)
+
+
+def test_altitude_noise_fit_keeps_input_device_contract():
+    """R2WP-2 contract: the fitted power law comes back as plain floats regardless of the input
+    device, and the optimized parameters live on the input device during the fit (the pre-fix
+    code created them on CPU even for CUDA inputs, relying on 0-dim cross-device broadcasting)."""
+
+    from vesp.extensions.probabilistic import AltitudeNoiseModel
+
+    radii, residuals, epistemic = _noise_fit_data("cpu")
+    model = AltitudeNoiseModel.fit(radii, residuals, epistemic)
+    assert isinstance(model.log_a, float) and isinstance(model.b, float)
+    var = model.variance(radii)
+    assert var.device == radii.device
+    assert bool(torch.isfinite(var).all()) and bool((var > 0).all())
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_altitude_noise_fit_cuda_matches_cpu():
+    """Heteroscedastic noise fit on CUDA inputs must run natively (params on the input device)
+    and land on the same power law as the CPU fit."""
+
+    from vesp.extensions.probabilistic import AltitudeNoiseModel
+
+    cpu = AltitudeNoiseModel.fit(*_noise_fit_data("cpu"))
+    gpu = AltitudeNoiseModel.fit(*_noise_fit_data("cuda"))
+    assert gpu.log_a == pytest.approx(cpu.log_a, abs=1.0e-6)
+    assert gpu.b == pytest.approx(cpu.b, abs=1.0e-6)
+    radii_gpu = _noise_fit_data("cuda")[0]
+    assert gpu.variance(radii_gpu).device.type == "cuda"
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_gpu_float32_fit_runs_but_carries_no_parity_claim(base_config):
     """Fitting directly in float32 on GPU must at least run and produce finite, positive

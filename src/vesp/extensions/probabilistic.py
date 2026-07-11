@@ -224,8 +224,8 @@ class AltitudeNoiseModel:
         h = (radii - 1.0).clamp_min(h_floor)
 
         init_var = float(torch.clamp(torch.mean(res2) - torch.mean(epistemic_var), min=1.0e-12).detach().cpu())
-        log_a = torch.tensor(math.log(init_var), dtype=radii.dtype, requires_grad=True)
-        raw_b = torch.zeros((), dtype=radii.dtype, requires_grad=True)
+        log_a = torch.tensor(math.log(init_var), dtype=radii.dtype, device=radii.device, requires_grad=True)
+        raw_b = torch.zeros((), dtype=radii.dtype, device=radii.device, requires_grad=True)
         optimizer = torch.optim.Adam([log_a, raw_b], lr=lr)
         for _ in range(int(iters)):
             b = torch.nn.functional.softplus(raw_b)

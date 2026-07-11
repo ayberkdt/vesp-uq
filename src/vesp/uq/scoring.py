@@ -52,19 +52,22 @@ _SUPERVISOR_MODES = (
 # Directional risk modes (M1): exploit the per-point 3x3 covariance geometry / bias direction to
 # rank force error *within* an altitude band -- value beyond the scalar altitude heuristic. All are
 # p95-aggregated per trajectory.
-#   radial_expected   -- |mean_error . r_hat| + sigma_radial  (bias projected onto the radial axis
-#                        plus the radial predictive spread; the radial component dominates the
-#                        altitude-dependent force-model error).
+#   radial_expected   -- |mean_error . r_hat| + sigma_radial with the EXACT radial predictive std
+#                        sigma_radial = sqrt(r_hat^T Sigma r_hat) (full 3x3 covariance; the radial
+#                        component dominates the altitude-dependent force-model error).
+#   radial_expected_diag -- ablation variant of radial_expected under the diagonal-covariance
+#                        approximation (cross-covariance terms dropped); kept to measure how much
+#                        the off-diagonal terms change the ranking (R2WP-4).
 #   anisotropy_gated  -- expected_error * (1 + kappa*(lambda_max/lambda_min - 1)); anisotropy as a
 #                        multiplier on the expected error (isotropic covariance -> factor 1).
 #   largest_eigenvalue-- sqrt(lambda_max(covariance)); the worst-direction predictive std.
-_DIRECTIONAL_MODES = ("radial_expected", "anisotropy_gated", "largest_eigenvalue")
+_DIRECTIONAL_MODES = ("radial_expected", "radial_expected_diag", "anisotropy_gated", "largest_eigenvalue")
 # Epistemic-targeted screening (M2): up-weight points whose uncertainty is reducible (epistemic)
 # rather than aleatoric -- useful for prioritizing reference-data follow-up.
 #   expected_epistemic -- expected_error * epistemic_fraction**gamma, p95-aggregated.
 _EPISTEMIC_MODES = ("expected_epistemic",)
 # Subset of the directional modes that need the FULL 3x3 covariance (not just std_components).
-_COVARIANCE_MODES = frozenset({"anisotropy_gated", "largest_eigenvalue"})
+_COVARIANCE_MODES = frozenset({"radial_expected", "anisotropy_gated", "largest_eigenvalue"})
 # Default anisotropy gate strength for ``anisotropy_gated``.
 ANISOTROPY_KAPPA_DEFAULT = 0.5
 
@@ -155,10 +158,11 @@ def is_expected_only_scoring(scoring: str) -> bool:
 
 
 def needs_covariance(scoring: str) -> bool:
-    """True if ``scoring`` needs the full per-point 3x3 covariance (anisotropy / largest eigenvalue).
+    """True if ``scoring`` needs the full per-point 3x3 covariance.
 
     The plugin uses this to gate the extra :meth:`predict_covariance_3x3` build so default scoring
-    pays nothing -- ``radial_expected`` (diagonal projection) and the epistemic mode do not need it.
+    pays nothing -- ``radial_expected_diag`` (diagonal projection ablation) and the epistemic mode
+    do not need it; ``radial_expected`` does (exact ``r_hat^T Sigma r_hat`` radial projection).
     """
 
     return _validate_scoring(scoring) in _COVARIANCE_MODES
@@ -177,14 +181,12 @@ def _as_matrix(x, n: int, cols: int, name: str) -> torch.Tensor:
 def radial_profile(
     mean_error: torch.Tensor, std_components: torch.Tensor, positions: torch.Tensor
 ) -> torch.Tensor:
-    """Per-point radial force-risk ``(N,)``: ``|mean_error . r_hat| + sigma_radial``.
+    """DIAGONAL-approximation radial force-risk ``(N,)`` (the ``radial_expected_diag`` ablation).
 
-    ``mean_error`` ``(N, 3)`` is the predicted bias vector, ``std_components`` ``(N, 3)`` the per-axis
-    predictive std, ``positions`` ``(N, 3)`` the query points. The radial axis ``r_hat`` is taken
-    from :func:`vesp.uq.metrics.local_radial_frame`; ``sigma_radial`` is the predictive std along it
-    under the diagonal-covariance approximation (``sqrt(sum_k (r_hat_k * std_k)^2)``). The radial
-    component carries the altitude-dependent force-model error, so this isolates the part of the risk
-    that altitude alone cannot rank.
+    ``|mean_error . r_hat| + sigma_radial`` with ``sigma_radial = sqrt(sum_k (r_hat_k * std_k)^2)``
+    -- the cross-covariance terms are dropped. Production ``radial_expected`` uses
+    :func:`radial_profile_full` (exact ``r_hat^T Sigma r_hat``); this variant is kept only to
+    measure the ranking impact of the diagonal approximation (R2WP-4).
     """
 
     me = torch.as_tensor(mean_error).to(torch.float64)
@@ -196,6 +198,33 @@ def radial_profile(
     r_hat = local_radial_frame(pos)[:, 0, :]  # (N, 3) radial axis
     bias_radial = (me * r_hat).sum(dim=-1).abs()
     var_radial = (std.clamp_min(0.0) ** 2 * r_hat**2).sum(dim=-1)
+    return bias_radial + var_radial.clamp_min(0.0).sqrt()
+
+
+def radial_profile_full(
+    mean_error: torch.Tensor, covariance: torch.Tensor, positions: torch.Tensor
+) -> torch.Tensor:
+    """Per-point radial force-risk ``(N,)``: ``|mean_error . r_hat| + sqrt(r_hat^T Sigma r_hat)``.
+
+    ``mean_error`` ``(N, 3)`` is the predicted bias vector, ``covariance`` the ``(N, 3, 3)``
+    predictive covariance, ``positions`` ``(N, 3)`` the query points. The radial axis ``r_hat``
+    is taken from :func:`vesp.uq.metrics.local_radial_frame`; the radial predictive variance is
+    the exact quadratic form ``r_hat^T Sigma r_hat`` (cross-covariance terms included). The radial
+    component carries the altitude-dependent force-model error, so this isolates the part of the
+    risk that altitude alone cannot rank.
+    """
+
+    me = torch.as_tensor(mean_error).to(torch.float64)
+    if me.ndim != 2 or me.shape[-1] != 3:
+        raise ValueError("mean_error must have shape (N, 3)")
+    n = me.shape[0]
+    cov = torch.as_tensor(covariance).to(torch.float64)
+    if cov.ndim != 3 or cov.shape != (n, 3, 3):
+        raise ValueError(f"covariance must have shape ({n}, 3, 3), got {tuple(cov.shape)}")
+    pos = _as_matrix(positions, n, 3, "positions")
+    r_hat = local_radial_frame(pos)[:, 0, :]  # (N, 3) radial axis
+    bias_radial = (me * r_hat).sum(dim=-1).abs()
+    var_radial = torch.einsum("ni,nij,nj->n", r_hat, cov, r_hat)
     return bias_radial + var_radial.clamp_min(0.0).sqrt()
 
 
@@ -475,11 +504,15 @@ def score_sigma_profile(
             f"scoring={scoring!r} requires a calibrated_point_risk profile; fit VESPUQPlugin "
             "with risk.calibrated_supervisor.enabled=true or pass calibrated_point_risk explicitly"
         )
-    if scoring == "radial_expected" and (
+    if scoring == "radial_expected" and (mean_error_vector is None or positions is None):
+        raise ValueError(
+            "scoring='radial_expected' requires mean_error_vector, covariance and positions"
+        )
+    if scoring == "radial_expected_diag" and (
         mean_error_vector is None or std_components is None or positions is None
     ):
         raise ValueError(
-            "scoring='radial_expected' requires mean_error_vector, std_components and positions"
+            "scoring='radial_expected_diag' requires mean_error_vector, std_components and positions"
         )
     if scoring in _COVARIANCE_MODES and covariance is None:
         raise ValueError(f"scoring={scoring!r} requires a per-point 3x3 covariance profile")
@@ -575,6 +608,9 @@ def score_sigma_profile(
     if scoring in _GEOMETRIC_MODES:
         # inputs are validated non-None above; assert to narrow the types for the builders.
         if scoring == "radial_expected":
+            assert mean_error_vector is not None and covariance is not None and positions is not None
+            profile = radial_profile_full(mean_error_vector, covariance, positions)
+        elif scoring == "radial_expected_diag":
             assert mean_error_vector is not None and std_components is not None and positions is not None
             profile = radial_profile(mean_error_vector, std_components, positions)
         elif scoring == "anisotropy_gated":
@@ -615,6 +651,7 @@ def score_sigma_profile(
         "calibrated_supervisor_p95": p95_cal_pr,
         # M1 directional + M2 epistemic (p95 of the per-point geometric/epistemic risk profile)
         "radial_expected": geometric_risk,
+        "radial_expected_diag": geometric_risk,
         "anisotropy_gated": geometric_risk,
         "largest_eigenvalue": geometric_risk,
         "expected_epistemic": geometric_risk,

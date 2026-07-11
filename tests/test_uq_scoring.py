@@ -16,10 +16,11 @@ from vesp.uq.scoring import (
     largest_eigenvalue_profile,
     needs_covariance,
     radial_profile,
+    radial_profile_full,
     score_sigma_profile,
 )
 
-_DIRECTIONAL = ("radial_expected", "anisotropy_gated", "largest_eigenvalue")
+_DIRECTIONAL = ("radial_expected", "radial_expected_diag", "anisotropy_gated", "largest_eigenvalue")
 
 
 def _query_shell(n: int, r_lo: float, r_hi: float, seed: int = 0) -> torch.Tensor:
@@ -58,6 +59,44 @@ def test_radial_profile_matches_manual_projection():
     assert torch.allclose(got, torch.tensor([1.1, 5.5, 9.9], dtype=torch.float64), atol=1e-12)
 
 
+def test_radial_profile_full_matches_quadratic_form():
+    # exact projection r_hat^T Sigma r_hat, checked against einsum on a random PSD batch
+    g = torch.Generator().manual_seed(11)
+    n = 32
+    positions = torch.randn(n, 3, generator=g, dtype=torch.float64) + 2.0
+    mean_error = torch.randn(n, 3, generator=g, dtype=torch.float64)
+    a = torch.randn(n, 3, 3, generator=g, dtype=torch.float64)
+    cov = a @ a.transpose(-1, -2) + 1e-9 * torch.eye(3, dtype=torch.float64)
+    got = radial_profile_full(mean_error, cov, positions)
+    r_hat = positions / torch.linalg.norm(positions, dim=-1, keepdim=True)
+    bias = (mean_error * r_hat).sum(-1).abs()
+    var = torch.einsum("ni,nij,nj->n", r_hat, cov, r_hat)
+    assert torch.allclose(got, bias + var.sqrt(), atol=1e-12)
+
+
+def test_radial_full_vs_diag_disagree_on_rotated_anisotropic_covariance():
+    # A covariance with strong off-diagonal terms: the diagonal approximation must miss the radial
+    # variance that lives in the cross terms. Radial axis = e_x; Sigma has large xy coupling.
+    positions = torch.tensor([[2.0, 0.0, 0.0]], dtype=torch.float64)
+    mean_error = torch.zeros(1, 3, dtype=torch.float64)
+    cov = torch.tensor(
+        [[[1.0, 0.9, 0.0], [0.9, 1.0, 0.0], [0.0, 0.0, 1.0]]], dtype=torch.float64
+    )
+    std = cov.diagonal(dim1=-2, dim2=-1).sqrt()
+    full = radial_profile_full(mean_error, cov, positions)
+    diag = radial_profile(mean_error, std, positions)
+    # radial axis is e_x: full radial var = Sigma_xx = 1 here, same as diag -- rotate the frame
+    # 45 degrees instead so the cross term enters: r_hat = (1,1,0)/sqrt(2)
+    positions_rot = torch.tensor([[2.0, 2.0, 0.0]], dtype=torch.float64)
+    full_rot = radial_profile_full(mean_error, cov, positions_rot)
+    diag_rot = radial_profile(mean_error, std, positions_rot)
+    # full: r^T S r = (1 + 0.9 + 0.9 + 1)/2 = 1.9 -> sqrt ~ 1.378; diag: sqrt((1+1)/2) = 1.0
+    assert full_rot.item() == pytest.approx(math.sqrt(1.9), abs=1e-12)
+    assert diag_rot.item() == pytest.approx(1.0, abs=1e-12)
+    assert abs(full_rot.item() - diag_rot.item()) > 0.3
+    assert full.item() == pytest.approx(diag.item(), abs=1e-12)  # axis-aligned case agrees
+
+
 def test_anisotropy_multiplier_ge_one_and_isotropic_is_one():
     isotropic = torch.eye(3, dtype=torch.float64).unsqueeze(0) * 2.5
     assert anisotropy_multiplier(isotropic).item() == pytest.approx(1.0)
@@ -77,7 +116,8 @@ def test_largest_eigenvalue_profile_matches_eig():
 
 def test_needs_covariance_gating():
     assert needs_covariance("anisotropy_gated") and needs_covariance("largest_eigenvalue")
-    assert not needs_covariance("radial_expected")  # diagonal projection, no full 3x3
+    assert needs_covariance("radial_expected")  # exact r_hat^T Sigma r_hat needs the full 3x3
+    assert not needs_covariance("radial_expected_diag")  # diagonal-projection ablation does not
     assert not needs_covariance("expected_epistemic")
     assert not needs_covariance("supervisor_rel_p95")
 

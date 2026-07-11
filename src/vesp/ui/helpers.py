@@ -19,7 +19,7 @@ SCORING_MODES: tuple[str, ...] = (
     # expected force error on an absolute scale
     "expected_abs", "expected_abs_p95", "expected_low_alt",
     # directional / covariance-geometry (M1) -- within-band ranking beyond the scalar altitude cue
-    "radial_expected", "anisotropy_gated", "largest_eigenvalue",
+    "radial_expected", "radial_expected_diag", "anisotropy_gated", "largest_eigenvalue",
     # epistemic-targeted (M2) -- up-weight reducible uncertainty where a rerun actually helps
     "expected_epistemic",
     # legacy sigma-only
@@ -33,7 +33,8 @@ SCORING_HINTS: dict[str, str] = {
     "calibrated_supervisor": "Supervisor driven by the calibrated point risk.",
     "expected_abs": "Expected force error on an absolute scale (physical budgets).",
     "expected_low_alt": "Expected force error weighted toward low altitude.",
-    "radial_expected": "M1: |bias . r_hat| + radial predictive spread -- the radial force-error axis.",
+    "radial_expected": "M1: |bias . r_hat| + exact radial spread sqrt(r_hat' Sigma r_hat) from the 3x3 covariance.",
+    "radial_expected_diag": "M1 ablation: radial_expected under the diagonal-covariance approximation.",
     "anisotropy_gated": "M1: expected error x anisotropy multiplier from the 3x3 covariance.",
     "largest_eigenvalue": "M1: worst-direction predictive std, sqrt(lambda_max).",
     "expected_epistemic": "M2: expected error weighted by the reducible (epistemic) fraction.",

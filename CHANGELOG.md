@@ -25,6 +25,13 @@ surface; the binding science scope lives in `docs/SCIENTIFIC_CLAIMS.md` and
   unknown keys in the `uq` block and its `regularization`/`conformal`/`noise`/`risk` sub-blocks
   raise with the valid-key list; `risk.scoring` is validated at construction. All shipped
   configs pass the new validation (pinned by `tests/test_uq_config_failclosed.py`).
+- **Changed (R2WP-4): `radial_expected` now uses the exact radial projection
+  `sqrt(r_hat^T Sigma r_hat)`** (full 3x3 predictive covariance, cross-covariance terms included)
+  instead of the diagonal approximation; it therefore now requires the covariance build
+  (`needs_covariance` returns true). The diagonal version is kept as the explicit ablation mode
+  `radial_expected_diag` / variant `radial_expected_diag_p95`. On the synthetic in-span smoke case
+  the ranking is unchanged (bias-dominated); the L60/L90 ablation runs with the next evidence
+  sweep.
 - Added the measured pre-results readiness gate (`vesp.uq.readiness` and
   `scripts/run_vespuq_system_readiness.py`) that runs A/B/C diagnostics, exact log attribution,
   the RTN covariance prototype, optional geometry auto-selection, and manifest verification.

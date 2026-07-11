@@ -43,6 +43,9 @@ SCORE_VARIANTS = (
     "covariance_anisotropy",
     # M1 directional + M2 epistemic first-class composites (production scoring modes; p95-aggregated)
     "radial_expected_p95",
+    # diagonal-covariance ablation of radial_expected_p95 (R2WP-4: measures the ranking impact of
+    # dropping the cross-covariance terms from the radial projection)
+    "radial_expected_diag_p95",
     "anisotropy_gated_p95",
     "expected_epistemic_p95",
 )
@@ -51,6 +54,7 @@ SCORE_VARIANTS = (
 # Keys are report/table names; values are entries from ``scoring.SCORING_FUNCTIONS``.
 PRODUCTION_SCORE_VARIANTS = {
     "radial_expected_p95": "radial_expected",
+    "radial_expected_diag_p95": "radial_expected_diag",
     "anisotropy_gated_p95": "anisotropy_gated",
     "expected_epistemic_p95": "expected_epistemic",
 }
